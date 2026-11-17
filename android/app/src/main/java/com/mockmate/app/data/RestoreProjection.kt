@@ -25,7 +25,8 @@ class RestoreUiGate(
             current.navigationEpoch == scope.navigationEpoch &&
             current.screen == scope.screen &&
             current.preparationId == scope.preparationId &&
-            current.materialId == scope.materialId
+            current.materialId == scope.materialId &&
+            current.interviewSessionId == scope.interviewSessionId
     }
 
     suspend fun gate(result: RestoreResult): RestoreUiEffect {

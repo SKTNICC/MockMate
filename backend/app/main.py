@@ -14,7 +14,15 @@ from fastapi.responses import JSONResponse, Response
 from sqlalchemy import text
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from app.api import auth, catalog_routes, jobs_routes, materials_routes, plans_routes, preparations_routes
+from app.api import (
+    auth,
+    catalog_routes,
+    interviews_routes,
+    jobs_routes,
+    materials_routes,
+    plans_routes,
+    preparations_routes,
+)
 from app.core.config import get_settings
 from app.core.db import SessionLocal
 from app.core.errors import AppError
@@ -134,6 +142,7 @@ def create_app() -> FastAPI:
     app.include_router(materials_routes.router, prefix="/v1")
     app.include_router(preparations_routes.router, prefix="/v1")
     app.include_router(plans_routes.router, prefix="/v1")
+    app.include_router(interviews_routes.router, prefix="/v1")
     app.include_router(jobs_routes.router, prefix="/v1")
 
     @app.get("/healthz", include_in_schema=False)

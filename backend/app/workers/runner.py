@@ -10,7 +10,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.ai.provider import get_provider
@@ -18,6 +18,10 @@ from app.core.config import Settings, get_settings
 from app.core.db import SessionLocal
 from app.core.errors import AppError
 from app.models import (
+    InterviewAnswer,
+    InterviewQuestion,
+    InterviewSession,
+    InterviewTurn,
     Job,
     JobWorkItem,
     MaterialDraft,
@@ -28,6 +32,7 @@ from app.models import (
 )
 from app.schemas import Anchor, MatchRow, SemanticReview
 from app.services import catalog
+from app.services import interviews as interviews_service
 from app.services import jobs as jobs_service
 from app.services.bank import content_digest, eligible_bank_questions, eligible_fact_cards
 from app.services.materials import read_file
@@ -138,6 +143,8 @@ class JobWorker:
                     "parse": self._handle_parse,
                     "match": self._handle_match,
                     "plan": self._handle_plan,
+                    "follow_up": self._handle_follow_up,
+                    "interview_report": self._handle_interview_report,
                 }[job.kind]
                 handler(job)
             except AppError as exc:
@@ -710,6 +717,293 @@ class JobWorker:
                 candidate_stems=candidate_stems,
             )
             jobs_service.mark_succeeded(fenced, entity_type="plan", entity_id=published.id)
+            db.commit()
+        finally:
+            db.close()
+
+    # -- M2 追问判定
+
+    def _validate_follow_up_decision(
+        self,
+        decision: dict,
+        question: dict,
+        answer_text: str,
+        exposed_prompts: list[str] | None = None,
+    ) -> None:
+        from app.schemas import FollowUpDecisionOutput
+
+        try:
+            model = FollowUpDecisionOutput.model_validate(decision)
+        except Exception as exc:
+            raise AppError(
+                "AI_INVALID_OUTPUT",
+                "追问判定输出结构不符合契约",
+                details=[type(exc).__name__],
+            )
+        if model.decision == "advance":
+            if model.prompt or model.answer_quote or model.target:
+                raise AppError("AI_INVALID_OUTPUT", "无需追问时不能携带问题或引文")
+            return
+        prompt = (model.prompt or "").strip()
+        if not (8 <= len(prompt) <= 220):
+            raise AppError("AI_INVALID_OUTPUT", "追问长度必须在 8–220 码点之间")
+        quote = model.answer_quote or ""
+        if not quote or len(quote) > 240 or quote not in answer_text:
+            raise AppError("AI_INVALID_OUTPUT", "追问引文必须逐字出现在本题主回答中")
+        if not model.target:
+            raise AppError("AI_INVALID_OUTPUT", "追问缺少考察点")
+        if any(word in prompt for word in ("参考答案", "正确答案", "评分", "分数", "点评")):
+            raise AppError("AI_INVALID_OUTPUT", "追问包含参考答案、评分或点评内容")
+        if normalized_stem(prompt) == normalized_stem(question["stem"]):
+            raise AppError("AI_INVALID_OUTPUT", "追问与主问题重复")
+        if stem_similarity(prompt, question["stem"]) >= 0.85:
+            raise AppError("AI_INVALID_OUTPUT", "追问与主问题过于相似")
+        for exposed in exposed_prompts or []:
+            if not exposed:
+                continue
+            if normalized_stem(prompt) == normalized_stem(exposed):
+                raise AppError("AI_INVALID_OUTPUT", "追问与已曝光题目重复")
+            if stem_similarity(prompt, exposed) >= 0.85:
+                raise AppError("AI_INVALID_OUTPUT", "追问与已曝光题目过于相似")
+
+    def _handle_follow_up(self, job: Job) -> None:
+        provider = get_provider(self.settings)
+        db = SessionLocal()
+        try:
+            session = db.get(InterviewSession, job.target_id)
+            if session is None or session.owner_id != job.owner_id:
+                raise AppError("NOT_FOUND", "面试不存在")
+            if session.status == "ended" or session.phase != "deciding_follow_up":
+                return
+            if session.follow_up_job_id != job.id:
+                return
+            question = db.scalars(
+                select(InterviewQuestion).where(
+                    InterviewQuestion.session_id == session.id,
+                    InterviewQuestion.status == "current",
+                )
+            ).one_or_none()
+            if question is None:
+                return
+            main_turn = db.scalars(
+                select(InterviewTurn).where(
+                    InterviewTurn.question_id == question.id,
+                    InterviewTurn.kind == "main",
+                )
+            ).one_or_none()
+            if main_turn is None:
+                return
+            answer = db.scalars(
+                select(InterviewAnswer).where(InterviewAnswer.turn_id == main_turn.id)
+            ).one_or_none()
+            if answer is None:
+                return
+            first_position = db.scalar(
+                select(func.min(InterviewQuestion.position)).where(
+                    InterviewQuestion.session_id == session.id,
+                    InterviewQuestion.source == question.source,
+                )
+            )
+            question_data = {
+                "id": str(question.id),
+                "position": question.position,
+                "source": question.source,
+                "stem": question.stem,
+                "focus": (question.evaluation or {}).get("goal", ""),
+                "evaluation": question.evaluation,
+                "anchors": question.anchors,
+                "bank_ref": question.bank_ref,
+            }
+            answer_text = answer.text
+            is_first = first_position == question.position
+            exposed_prompts = list(
+                db.scalars(
+                    select(InterviewTurn.prompt)
+                    .join(
+                        InterviewQuestion,
+                        InterviewTurn.question_id == InterviewQuestion.id,
+                    )
+                    .where(InterviewQuestion.session_id == session.id)
+                ).all()
+            )
+        finally:
+            db.close()
+
+        decision = self._call_ai(
+            job,
+            provider,
+            stage="follow_up",
+            slot=str(question_data["id"]),
+            func=provider.decide_follow_up,
+            question=question_data,
+            answer_text=answer_text,
+            context={"is_first_of_source": is_first},
+        )
+        self._validate_follow_up_decision(
+            decision, question_data, answer_text, exposed_prompts
+        )
+
+        db = SessionLocal()
+        try:
+            session = jobs_service.lock_job_target(
+                db,
+                owner_id=job.owner_id,
+                kind=job.kind,
+                target_id=job.target_id,
+                input_revision=job.input_revision,
+            )
+            fenced = self._fence(db, job)
+            if fenced is None:
+                return
+            if (
+                session.status == "ended"
+                or session.phase != "deciding_follow_up"
+                or session.follow_up_job_id != job.id
+            ):
+                jobs_service.supersede_job(fenced)
+                db.commit()
+                return
+            interviews_service.apply_follow_up_decision(
+                db,
+                session=session,
+                job=fenced,
+                decision=decision,
+                max_attempts=self.settings.max_job_attempts,
+            )
+            db.commit()
+        finally:
+            db.close()
+
+    # -- M2 面后评分与报告
+
+    def _handle_interview_report(self, job: Job) -> None:
+        provider = get_provider(self.settings)
+        db = SessionLocal()
+        try:
+            session = db.get(InterviewSession, job.target_id)
+            if session is None or session.owner_id != job.owner_id:
+                raise AppError("NOT_FOUND", "面试不存在")
+            if session.status != "ended" or session.report_job_id != job.id:
+                return
+            questions = list(
+                db.scalars(
+                    select(InterviewQuestion)
+                    .where(InterviewQuestion.session_id == session.id)
+                    .order_by(InterviewQuestion.position)
+                ).all()
+            )
+            turns = list(
+                db.scalars(
+                    select(InterviewTurn).where(
+                        InterviewTurn.question_id.in_([q.id for q in questions])
+                    )
+                ).all()
+            )
+            answers = {
+                answer.turn_id: answer
+                for answer in db.scalars(
+                    select(InterviewAnswer).where(
+                        InterviewAnswer.turn_id.in_([t.id for t in turns])
+                    )
+                ).all()
+            }
+            work_items = {
+                item.slot_key: item
+                for item in db.scalars(
+                    select(JobWorkItem).where(
+                        JobWorkItem.job_id == job.id, JobWorkItem.validated.is_(True)
+                    )
+                ).all()
+            }
+            planned: list[tuple[InterviewQuestion, list[InterviewTurn], dict]] = []
+            for question in questions:
+                if question.status != "answered":
+                    continue
+                question_turns = sorted(
+                    [t for t in turns if t.question_id == question.id],
+                    key=lambda t: (t.kind != "main", str(t.id)),
+                )
+                question_answers = {
+                    t.id: answers[t.id] for t in question_turns if t.id in answers
+                }
+                if not question_answers:
+                    continue
+                planned.append((question, question_turns, question_answers))
+        finally:
+            db.close()
+
+        for question, question_turns, question_answers in planned:
+            expected_hash = interviews_service.question_slot_hash(
+                question, question_turns, question_answers
+            )
+            cached = work_items.get(str(question.id))
+            if cached is not None and cached.content_hash == expected_hash:
+                continue
+            answers_payload = [
+                {
+                    "answer_id": str(question_answers[t.id].id),
+                    "kind": t.kind,
+                    "text": question_answers[t.id].text,
+                }
+                for t in question_turns
+                if t.id in question_answers
+            ]
+            question_data = {
+                "id": str(question.id),
+                "position": question.position,
+                "source": question.source,
+                "stem": question.stem,
+                "focus": (question.evaluation or {}).get("goal", ""),
+                "evaluation": question.evaluation,
+                "anchors": question.anchors,
+            }
+            dimensions = interviews_service._expected_dimensions(question)
+            output = self._call_ai(
+                job,
+                provider,
+                stage="interview_score",
+                slot=str(question.id),
+                func=provider.score_interview_question,
+                question=question_data,
+                answers=answers_payload,
+                dimensions=dimensions,
+            )
+            validated = interviews_service.validate_question_score(
+                question, question_turns, question_answers, output
+            )
+            package = {
+                "question_id": str(question.id),
+                "content_hash": expected_hash,
+                "dimensions": [dim.model_dump(mode="json") for dim in validated],
+            }
+            if not self._save_slot(job, str(question.id), package, expected_hash):
+                return
+
+        db = SessionLocal()
+        try:
+            session = jobs_service.lock_job_target(
+                db,
+                owner_id=job.owner_id,
+                kind=job.kind,
+                target_id=job.target_id,
+                input_revision=job.input_revision,
+            )
+            fenced = self._fence(db, job)
+            if fenced is None:
+                return
+            if session.status != "ended" or session.report_job_id != job.id:
+                jobs_service.supersede_job(fenced)
+                db.commit()
+                return
+            report = interviews_service.publish_report_from_work(
+                db,
+                session=session,
+                job=fenced,
+                max_attempts=self.settings.max_job_attempts,
+            )
+            jobs_service.mark_succeeded(
+                fenced, entity_type="interview_report", entity_id=report.id
+            )
             db.commit()
         finally:
             db.close()

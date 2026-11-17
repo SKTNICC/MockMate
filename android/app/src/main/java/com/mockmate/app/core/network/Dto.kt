@@ -263,3 +263,207 @@ data class PublicPlanDto(
     val created_at: String,
     val confirmed_at: String? = null,
 )
+
+// ------------------------------------------------------------------ M2 文字面试
+
+@Serializable
+data class StartInterviewRequest(
+    val plan_revision: Int,
+    val external_processing_consent: Boolean,
+)
+
+@Serializable
+data class InterviewStartReceiptDto(val session_id: String, val revision: Int)
+
+@Serializable
+data class InterviewAnswerRequest(
+    val revision: Int,
+    val turn_id: String,
+    val text: String,
+)
+
+@Serializable
+data class InterviewSkipRequest(val revision: Int, val turn_id: String)
+
+@Serializable
+data class InterviewContinueRequest(val revision: Int, val job_id: String)
+
+@Serializable
+data class InterviewBasicReportRequest(val revision: Int, val job_id: String)
+
+@Serializable
+data class InterviewReceiptDto(
+    val session_id: String,
+    val revision: Int,
+    val answer_id: String? = null,
+    val job_id: String? = null,
+)
+
+@Serializable
+data class InterviewMaterialVersionDto(
+    val kind: String,
+    val snapshot_id: String,
+    val material_id: String,
+    val title: String,
+    val source_revision: Int,
+)
+
+@Serializable
+data class InterviewPlanSummaryDto(
+    val plan_id: String,
+    val main_question_count: Int,
+    val source_counts: SourceCountsDto,
+    val material_versions: List<InterviewMaterialVersionDto> = emptyList(),
+    val sample_only: Boolean = false,
+)
+
+@Serializable
+data class InterviewAnswerDto(
+    val answer_id: String,
+    val text: String,
+    val submitted_at: String,
+)
+
+@Serializable
+data class InterviewTurnDto(
+    val turn_id: String,
+    val question_id: String,
+    val position: Int,
+    val kind: String,
+    val prompt: String,
+    val status: String,
+    val answer: InterviewAnswerDto? = null,
+)
+
+@Serializable
+data class InterviewJobSummaryDto(
+    val id: String,
+    val state: String,
+    val attempt: Int,
+    val retryable: Boolean = false,
+    val error_code: String? = null,
+)
+
+@Serializable
+data class InterviewDetailDto(
+    val session_id: String,
+    val plan_id: String,
+    val preparation_id: String,
+    val role_id: String,
+    val level: String,
+    val mode: String,
+    val status: String,
+    val phase: String,
+    val revision: Int,
+    val started_at: String,
+    val ended_at: String? = null,
+    val end_reason: String? = null,
+    val plan_summary: InterviewPlanSummaryDto,
+    val opening_text: String,
+    val closing_text: String? = null,
+    val current_main_position: Int? = null,
+    val answered_main_count: Int = 0,
+    val skipped_main_count: Int = 0,
+    val current_turn: InterviewTurnDto? = null,
+    val allowed_actions: List<String> = emptyList(),
+    val transcript: List<InterviewTurnDto> = emptyList(),
+    val follow_up_job: InterviewJobSummaryDto? = null,
+    val report_job: InterviewJobSummaryDto? = null,
+    val report_state: String = "not_requested",
+)
+
+@Serializable
+data class InterviewHistoryItemDto(
+    val session_id: String,
+    val plan_id: String,
+    val preparation_id: String,
+    val role_id: String,
+    val level: String,
+    val status: String,
+    val started_at: String,
+    val ended_at: String? = null,
+    val end_reason: String? = null,
+    val main_question_count: Int,
+    val answered_main_count: Int,
+    val report_state: String,
+)
+
+@Serializable
+data class InterviewHistoryDto(
+    val items: List<InterviewHistoryItemDto> = emptyList(),
+    val next_cursor: String? = null,
+)
+
+@Serializable
+data class InterviewEvidenceDto(val answer_id: String, val quote: String)
+
+@Serializable
+data class InterviewDimensionResultDto(
+    val dimension_id: String,
+    val name: String,
+    val weight: Double,
+    val verdict: String,
+    val score: Int? = null,
+    val evidence: List<InterviewEvidenceDto> = emptyList(),
+    val explanation: String = "",
+    val improvement: String = "",
+)
+
+@Serializable
+data class InterviewReportQuestionDto(
+    val question_id: String,
+    val position: Int,
+    val source: String,
+    val outcome: String,
+    val prompt: String? = null,
+    val bank_version: Int? = null,
+    val turns: List<InterviewTurnDto> = emptyList(),
+    val assessment_trust: String,
+    val rubric_version: String,
+    val question_score: Int? = null,
+    val dimensions: List<InterviewDimensionResultDto> = emptyList(),
+    val follow_up_outcome: String? = null,
+)
+
+@Serializable
+data class InterviewCoverageDto(
+    val planned: Int,
+    val presented: Int,
+    val answered: Int,
+    val skipped: Int,
+    val unanswered: Int,
+    val not_reached: Int,
+    val scored: Int,
+    val bank_planned: Int,
+    val bank_answered: Int,
+    val generated_planned: Int,
+    val generated_answered: Int,
+    val follow_up_presented: Int,
+    val follow_up_answered: Int,
+)
+
+@Serializable
+data class InterviewFindingDto(
+    val question_id: String,
+    val position: Int,
+    val dimension_id: String,
+    val text: String,
+    val evidence: List<InterviewEvidenceDto> = emptyList(),
+)
+
+@Serializable
+data class InterviewReportDto(
+    val report_id: String,
+    val session_id: String,
+    val role_id: String,
+    val level: String,
+    val material_versions: List<InterviewMaterialVersionDto> = emptyList(),
+    val quality: String,
+    val rubric_policy_version: String,
+    val created_at: String,
+    val end_reason: String,
+    val coverage: InterviewCoverageDto,
+    val strengths: List<InterviewFindingDto> = emptyList(),
+    val improvements: List<InterviewFindingDto> = emptyList(),
+    val questions: List<InterviewReportQuestionDto> = emptyList(),
+)

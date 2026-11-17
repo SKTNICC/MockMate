@@ -199,13 +199,142 @@ def build_schema():
     s["ErrorInfo"] = obj({"code": string(), "message": string(), "retryable": {"type": "boolean"},
                           "details": strings, "request_id": ident})
     s["ErrorResponse"] = obj({"error": ref("ErrorInfo")})
-    s["ResultRef"] = obj({"entity_type": enum("material", "match_report", "plan"), "id": ident})
-    s["Job"] = obj({"id": ident, "kind": enum("extract", "parse", "match", "plan"),
+    s["ResultRef"] = obj({"entity_type": enum("material", "match_report", "plan",
+                                               "interview_session", "interview_report"), "id": ident})
+    s["Job"] = obj({"id": ident, "kind": enum("extract", "parse", "match", "plan",
+                                               "follow_up", "interview_report"),
                     "target_id": ident, "input_revision": revision,
                     "state": enum("queued", "running", "succeeded", "failed", "interrupted", "superseded"),
                     "attempt": {"type": "integer", "minimum": 1, "maximum": 2},
                     "retryable": {"type": "boolean"}, "result_ref": nullable(ref("ResultRef")),
                     "error": nullable(ref("ErrorInfo")), "created_at": date, "updated_at": date})
+
+    # ------------------------------------------------------------------ M2 文字面试
+    s["StartInterviewInput"] = obj({
+        "plan_revision": revision, "external_processing_consent": {"type": "boolean"}})
+    s["InterviewStartReceipt"] = obj({"session_id": ident, "revision": revision})
+    s["InterviewAnswerInput"] = obj({
+        "revision": revision, "turn_id": ident,
+        "text": string(min_length=1, maxLength=4000)})
+    s["InterviewSkipInput"] = obj({"revision": revision, "turn_id": ident})
+    s["InterviewContinueInput"] = obj({"revision": revision, "job_id": ident})
+    s["InterviewBasicReportInput"] = obj({"revision": revision, "job_id": ident})
+    s["InterviewReceipt"] = obj({
+        "session_id": ident, "revision": revision,
+        "answer_id": nullable(ident), "job_id": nullable(ident)})
+    s["InterviewMaterialVersion"] = obj({
+        "kind": enum("resume", "jd"), "snapshot_id": ident, "material_id": ident,
+        "title": string(maxLength=120), "source_revision": revision})
+    s["InterviewPlanSummary"] = obj({
+        "plan_id": ident, "main_question_count": count,
+        "source_counts": obj({"bank": {"type": "integer", "minimum": 1, "maximum": 3},
+                              "generated": {"type": "integer", "minimum": 1, "maximum": 3}}),
+        "material_versions": array(ref("InterviewMaterialVersion"), 2),
+        "sample_only": {"type": "boolean"}})
+    s["InterviewAnswerView"] = obj({
+        "answer_id": ident, "text": string(min_length=1, maxLength=4000),
+        "submitted_at": date})
+    s["InterviewTurnView"] = obj({
+        "turn_id": ident, "question_id": ident,
+        "position": {"type": "integer", "minimum": 1, "maximum": 6},
+        "kind": enum("main", "follow_up"), "prompt": string(),
+        "status": enum("pending", "answered", "skipped", "unanswered"),
+        "answer": nullable(ref("InterviewAnswerView"))})
+    s["InterviewJobSummary"] = obj({
+        "id": ident,
+        "state": enum("queued", "running", "succeeded", "failed", "interrupted", "superseded"),
+        "attempt": {"type": "integer", "minimum": 1, "maximum": 2},
+        "retryable": {"type": "boolean"}, "error_code": nullable(string())})
+    actions = enum("answer", "skip", "pause", "resume", "finish",
+                   "continue_without_follow_up", "retry_follow_up",
+                   "retry_report", "create_basic_report")
+    detail_required = [
+        "session_id", "plan_id", "preparation_id", "role_id", "level", "mode",
+        "status", "phase", "revision", "started_at", "ended_at", "end_reason",
+        "plan_summary", "opening_text", "closing_text", "current_main_position",
+        "answered_main_count", "skipped_main_count", "current_turn",
+        "allowed_actions", "transcript", "follow_up_job", "report_job", "report_state"]
+    s["InterviewDetail"] = obj({
+        "session_id": ident, "plan_id": ident, "preparation_id": ident,
+        "role_id": string(), "level": level, "mode": {"const": "text"},
+        "status": enum("active", "paused", "ended"),
+        "phase": enum("awaiting_answer", "deciding_follow_up", "closed"),
+        "revision": revision, "started_at": date, "ended_at": nullable(date),
+        "end_reason": nullable(enum("completed", "early_finish")),
+        "plan_summary": ref("InterviewPlanSummary"), "opening_text": string(),
+        "closing_text": nullable(string()),
+        "current_main_position": nullable({"type": "integer", "minimum": 1, "maximum": 6}),
+        "answered_main_count": {"type": "integer", "minimum": 0, "maximum": 6},
+        "skipped_main_count": {"type": "integer", "minimum": 0, "maximum": 6},
+        "current_turn": nullable(ref("InterviewTurnView")),
+        "allowed_actions": array(actions),
+        "transcript": array(ref("InterviewTurnView")),
+        "follow_up_job": nullable(ref("InterviewJobSummary")),
+        "report_job": nullable(ref("InterviewJobSummary")),
+        "report_state": enum("not_requested", "pending", "failed", "ready"),
+    }, detail_required)
+    s["InterviewHistoryItem"] = obj({
+        "session_id": ident, "plan_id": ident, "preparation_id": ident,
+        "role_id": string(), "level": level,
+        "status": enum("active", "paused", "ended"),
+        "started_at": date, "ended_at": nullable(date),
+        "end_reason": nullable(enum("completed", "early_finish")),
+        "main_question_count": {"type": "integer", "minimum": 2, "maximum": 6},
+        "answered_main_count": {"type": "integer", "minimum": 0, "maximum": 6},
+        "report_state": enum("not_requested", "pending", "failed", "ready")})
+    s["InterviewHistory"] = obj({"items": array(ref("InterviewHistoryItem")),
+                                 "next_cursor": nullable(string())})
+    s["InterviewEvidence"] = obj({"answer_id": ident,
+                                  "quote": string(maxLength=240)})
+    s["InterviewDimensionResult"] = obj({
+        "dimension_id": string(), "name": string(),
+        "weight": {"type": "number", "exclusiveMinimum": 0, "maximum": 1},
+        "verdict": enum("scored", "insufficient_evidence", "uncertain"),
+        "score": nullable({"type": "integer", "minimum": 0, "maximum": 4}),
+        "evidence": array(ref("InterviewEvidence")),
+        "explanation": {"type": "string"}, "improvement": {"type": "string"}})
+    s["InterviewReportQuestion"] = obj({
+        "question_id": ident,
+        "position": {"type": "integer", "minimum": 1, "maximum": 6},
+        "source": enum("bank", "generated"),
+        "outcome": enum("answered", "skipped", "unanswered", "not_reached"),
+        "prompt": nullable(string()), "bank_version": nullable(revision),
+        "turns": array(ref("InterviewTurnView")),
+        "assessment_trust": enum("reviewed", "provisional"),
+        "rubric_version": string(),
+        "question_score": nullable({"type": "integer", "minimum": 0, "maximum": 100}),
+        "dimensions": array(ref("InterviewDimensionResult")),
+        "follow_up_outcome": nullable(enum("not_needed", "asked", "unavailable", "cancelled"))})
+    s["InterviewCoverage"] = obj({
+        "planned": {"type": "integer", "minimum": 0, "maximum": 6},
+        "presented": {"type": "integer", "minimum": 0, "maximum": 6},
+        "answered": {"type": "integer", "minimum": 0, "maximum": 6},
+        "skipped": {"type": "integer", "minimum": 0, "maximum": 6},
+        "unanswered": {"type": "integer", "minimum": 0, "maximum": 6},
+        "not_reached": {"type": "integer", "minimum": 0, "maximum": 6},
+        "scored": {"type": "integer", "minimum": 0, "maximum": 6},
+        "bank_planned": {"type": "integer", "minimum": 0, "maximum": 3},
+        "bank_answered": {"type": "integer", "minimum": 0, "maximum": 3},
+        "generated_planned": {"type": "integer", "minimum": 0, "maximum": 3},
+        "generated_answered": {"type": "integer", "minimum": 0, "maximum": 3},
+        "follow_up_presented": {"type": "integer", "minimum": 0, "maximum": 6},
+        "follow_up_answered": {"type": "integer", "minimum": 0, "maximum": 6}})
+    s["InterviewFinding"] = obj({
+        "question_id": ident,
+        "position": {"type": "integer", "minimum": 1, "maximum": 6},
+        "dimension_id": string(), "text": string(),
+        "evidence": array(ref("InterviewEvidence"))})
+    s["InterviewReport"] = obj({
+        "report_id": ident, "session_id": ident, "role_id": string(), "level": level,
+        "material_versions": array(ref("InterviewMaterialVersion"), 2),
+        "quality": enum("full", "partial", "no_answers", "unscored"),
+        "rubric_policy_version": string(), "created_at": date,
+        "end_reason": enum("completed", "early_finish"),
+        "coverage": ref("InterviewCoverage"),
+        "strengths": array(ref("InterviewFinding")),
+        "improvements": array(ref("InterviewFinding")),
+        "questions": array(ref("InterviewReportQuestion"))})
+
     s["User"] = obj({"id": ident, "username": string(pattern="^[a-z0-9_]{3,32}$")})
     s["Credentials"] = obj({"username": string(pattern="^[a-zA-Z0-9_]{3,32}$"),
                             "password": string(min_length=10, maxLength=128)})
@@ -221,7 +350,7 @@ def build_schema():
                        ("Snapshots", "Snapshot")]:
         s[name] = obj({"items": array(ref(item))})
     return {"$schema": "https://json-schema.org/draft/2020-12/schema",
-            "$id": "https://mockmate.example/contracts/m1/schema", "title": "MockMate M1",
+            "$id": "https://mockmate.example/contracts/m1/schema", "title": "MockMate M1 + M2",
             "$comment": "生成源 tools/m1/build_contracts.py；结构契约不取代业务校验。", "$defs": s}
 
 
@@ -235,30 +364,34 @@ def openapi_refs(value):
 
 
 def build_openapi(schema):
-    api = {"openapi": "3.1.0", "info": {"title": "MockMate M1 target contract", "version": "0.1.0",
+    api = {"openapi": "3.1.0", "info": {"title": "MockMate /v1 contract (M1 + M2)", "version": "0.2.0",
             "description": "开发目标，尚未实现。维护源 tools/m1/build_contracts.py。所有私人对象由会话确定owner。"},
            "servers": [{"url": "/v1"}], "security": [{"BearerAuth": []}], "paths": {},
            "components": {"securitySchemes": {"BearerAuth": {"type": "http", "scheme": "bearer"}},
                           "schemas": openapi_refs(schema["$defs"])}}
 
     def endpoint(path, method, operation, summary, response=None, body=None, status=200,
-                 anonymous=False, multipart=False, idempotent=True):
+                 anonymous=False, multipart=False, idempotent=True, query=None,
+                 extra_success=None, errors=(400, 401, 404, 409, 413, 415, 422, 429, 502, 503)):
         params = []
         for segment in path.split("/"):
             if segment.startswith("{"):
                 name = segment[1:-1]
                 field = {"type": "string"} if name == "template_id" else {"type": "string", "format": "uuid"}
                 params.append({"name": name, "in": "path", "required": True, "schema": field})
+        for item in query or []:
+            params.append(item)
         if method in ("post", "put", "delete") and idempotent:
             params.append({"name": "Idempotency-Key", "in": "header", "required": True,
                            "description": "逻辑操作UUID；相同key与body回放，不同body冲突；重试不得换key。",
                            "schema": {"type": "string", "format": "uuid"}})
-        success = {"description": "成功；异步接口返回持久化Job，GET轮询结果" if status == 202 else "成功"}
-        if response:
-            success["content"] = {"application/json": {"schema": {"$ref": f"#/components/schemas/{response}"}}}
-        op = {"operationId": operation, "summary": summary, "parameters": params,
-              "responses": {str(status): success}}
-        for code in (400, 401, 404, 409, 413, 415, 422, 429, 502, 503):
+        op = {"operationId": operation, "summary": summary, "parameters": params, "responses": {}}
+        for code in [status, *(extra_success or [])]:
+            success = {"description": "成功；异步接口返回持久化Job，GET轮询结果" if code == 202 else "成功"}
+            if response:
+                success["content"] = {"application/json": {"schema": {"$ref": f"#/components/schemas/{response}"}}}
+            op["responses"][str(code)] = success
+        for code in errors:
             op["responses"][str(code)] = {"description": "统一错误；具体code与语义见M1架构说明",
                 "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
         if body:
@@ -299,6 +432,44 @@ def build_openapi(schema):
     endpoint("/plans/{plan_id}/confirm", "post", "confirmPlan", "确认当前有效计划", "PublicPlan", "RevisionInput")
     endpoint("/jobs/{job_id}", "get", "getJob", "查询持久任务", "Job")
     endpoint("/jobs/{job_id}/retry", "post", "retryJob", "明确重试可恢复失败/未知任务", "Job", "RetryInput", 202)
+
+    # ------------------------------------------------------------------ M2 文字面试
+    M2_ERRORS = (400, 401, 404, 409, 422)
+    endpoint("/plans/{plan_id}/interviews", "post", "startInterview",
+             "开始文字面试；同计划重复进入打开原场", "InterviewStartReceipt",
+             "StartInterviewInput", 201, extra_success=[200], errors=M2_ERRORS)
+    endpoint("/interviews", "get", "listInterviews", "本人面试记录，按开场时间倒序", "InterviewHistory",
+             query=[
+                 {"name": "limit", "in": "query", "required": False,
+                  "schema": {"type": "integer", "minimum": 1, "maximum": 50}},
+                 {"name": "cursor", "in": "query", "required": False,
+                  "schema": {"type": "string"}},
+                 {"name": "plan_id", "in": "query", "required": False,
+                  "schema": {"type": "string", "format": "uuid"}},
+             ], errors=M2_ERRORS)
+    endpoint("/interviews/{session_id}", "get", "getInterview",
+             "面试间／恢复／问答查看", "InterviewDetail", errors=M2_ERRORS)
+    endpoint("/interviews/{session_id}/answers", "post", "submitInterviewAnswer",
+             "提交主回答或追问回答", "InterviewReceipt", "InterviewAnswerInput", 202,
+             extra_success=[200], errors=M2_ERRORS)
+    endpoint("/interviews/{session_id}/skip", "post", "skipInterviewTurn",
+             "跳过当前主问题或追问", "InterviewReceipt", "InterviewSkipInput",
+             errors=M2_ERRORS)
+    endpoint("/interviews/{session_id}/pause", "post", "pauseInterview",
+             "暂停面试", "InterviewReceipt", "RevisionInput", errors=M2_ERRORS)
+    endpoint("/interviews/{session_id}/resume", "post", "resumeInterview",
+             "继续面试", "InterviewReceipt", "RevisionInput", errors=M2_ERRORS)
+    endpoint("/interviews/{session_id}/continue-without-follow-up", "post",
+             "continueWithoutFollowUp", "追问判定失败后保留主回答继续",
+             "InterviewReceipt", "InterviewContinueInput", errors=M2_ERRORS)
+    endpoint("/interviews/{session_id}/finish", "post", "finishInterview",
+             "提前结束并锁定问答", "InterviewReceipt", "RevisionInput", errors=M2_ERRORS)
+    endpoint("/interviews/{session_id}/report", "get", "getInterviewReport",
+             "读取已发布报告；未结束/生成中/失败返回409", "InterviewReport",
+             errors=M2_ERRORS)
+    endpoint("/interviews/{session_id}/report/basic", "post", "createBasicInterviewReport",
+             "报告任务失败后发布基础报告", "InterviewReceipt",
+             "InterviewBasicReportInput", errors=M2_ERRORS)
     return api
 
 
@@ -541,6 +712,215 @@ def build_cases(plan):
     return {"test_only": True, "cases": cases}
 
 
+def build_m2_examples():
+    """M2 请求／回包合成样例；用于两端编解码与契约校验，不含真实用户数据。"""
+    sid = uid(900)
+    pid = uid(901)
+    prep = uid(902)
+    session_turn_main = uid(910)
+    session_turn_follow = uid(911)
+    question_main = uid(912)
+    question_follow = uid(913)
+    answer_main = uid(920)
+    answer_follow = uid(921)
+    follow_job = uid(930)
+    report_job = uid(931)
+    report_id = uid(940)
+    materials = [
+        {"kind": "resume", "snapshot_id": uid(1), "material_id": uid(101),
+         "title": "虚构学生简历（无工作经历）", "source_revision": 1},
+        {"kind": "jd", "snapshot_id": uid(2), "material_id": uid(102),
+         "title": "内置JD开发样例", "source_revision": 1},
+    ]
+    plan_summary = {
+        "plan_id": pid, "main_question_count": 6,
+        "source_counts": {"bank": 3, "generated": 3},
+        "material_versions": materials, "sample_only": True,
+    }
+    main_answer = {"answer_id": answer_main, "text": "我先检查相同键是否存在，再决定更新还是插入。",
+                   "submitted_at": STAMP}
+    follow_answer = {"answer_id": answer_follow, "text": "这个判断依赖单线程访问；共享读写时需要外部同步。",
+                     "submitted_at": STAMP}
+    turn_main = {"turn_id": session_turn_main, "question_id": question_main, "position": 1,
+                 "kind": "main", "prompt": "图书查询接口使用 HashMap 时，怎样区分不存在的键与键对应空值？",
+                 "status": "answered", "answer": main_answer}
+    turn_follow_pending = {"turn_id": session_turn_follow, "question_id": question_main,
+                           "position": 1, "kind": "follow_up",
+                           "prompt": "你提到先检查相同键是否存在，能进一步说明判断依据和适用边界吗？",
+                           "status": "pending", "answer": None}
+    turn_follow_answered = {**turn_follow_pending, "status": "answered", "answer": follow_answer}
+    job_queued = {"id": follow_job, "state": "queued", "attempt": 1, "retryable": False,
+                  "error_code": None}
+    job_failed = {"id": report_job, "state": "failed", "attempt": 2, "retryable": False,
+                  "error_code": "AI_INVALID_OUTPUT"}
+    detail_base = {
+        "session_id": sid, "plan_id": pid, "preparation_id": prep,
+        "role_id": "java-backend", "level": "intern", "mode": "text",
+        "started_at": STAMP, "plan_summary": plan_summary,
+        "opening_text": "本次文字模拟面试共 6 道主问题，题库与现场生成各 3 道。",
+    }
+    detail_active = {
+        **detail_base, "status": "active", "phase": "awaiting_answer", "revision": 4,
+        "ended_at": None, "end_reason": None, "closing_text": None,
+        "current_main_position": 1, "answered_main_count": 1, "skipped_main_count": 0,
+        "current_turn": turn_follow_pending,
+        "allowed_actions": ["pause", "finish", "answer", "skip"],
+        "transcript": [turn_main, turn_follow_pending],
+        "follow_up_job": {**job_queued, "state": "succeeded", "retryable": False},
+        "report_job": None, "report_state": "not_requested",
+    }
+    detail_deciding = {
+        **detail_base, "status": "active", "phase": "deciding_follow_up", "revision": 3,
+        "ended_at": None, "end_reason": None, "closing_text": None,
+        "current_main_position": 1, "answered_main_count": 0, "skipped_main_count": 0,
+        "current_turn": None,
+        "allowed_actions": ["pause", "finish"],
+        "transcript": [turn_main], "follow_up_job": job_queued,
+        "report_job": None, "report_state": "not_requested",
+    }
+    detail_ended = {
+        **detail_base, "status": "ended", "phase": "closed", "revision": 12,
+        "ended_at": STAMP, "end_reason": "completed",
+        "closing_text": "本次文字面试已结束，问答已锁定。",
+        "current_main_position": None, "answered_main_count": 6, "skipped_main_count": 0,
+        "current_turn": None,
+        "allowed_actions": ["create_basic_report"],
+        "transcript": [turn_main, turn_follow_answered],
+        "follow_up_job": {**job_queued, "state": "succeeded", "retryable": False},
+        "report_job": job_failed, "report_state": "failed",
+    }
+    coverage_full = {
+        "planned": 2, "presented": 2, "answered": 2, "skipped": 0,
+        "unanswered": 0, "not_reached": 0, "scored": 2,
+        "bank_planned": 1, "bank_answered": 1,
+        "generated_planned": 1, "generated_answered": 1,
+        "follow_up_presented": 1, "follow_up_answered": 1,
+    }
+    dimensions = [
+        {"dimension_id": "accuracy", "name": "准确性", "weight": 0.4,
+         "verdict": "scored", "score": 3,
+         "evidence": [{"answer_id": answer_main, "quote": "我先检查相同键是否存在"}],
+         "explanation": "原话说明了先查后写的顺序。", "improvement": "补充空值契约的具体例子。"},
+        {"dimension_id": "reasoning", "name": "推理与边界", "weight": 0.35,
+         "verdict": "scored", "score": 3,
+         "evidence": [{"answer_id": answer_follow, "quote": "共享读写时需要外部同步"}],
+         "explanation": "追问回答补充了共享访问边界。", "improvement": "说明同步方案的选择依据。"},
+        {"dimension_id": "verification", "name": "验证思路", "weight": 0.25,
+         "verdict": "scored", "score": 2,
+         "evidence": [{"answer_id": answer_main, "quote": "再决定更新还是插入"}],
+         "explanation": "提到检查但缺少可执行样例。", "improvement": "给出缺失键与空值两组输入。"},
+        {"dimension_id": "expression_structure", "name": "表达结构", "weight": 0.0001,
+         "verdict": "scored", "score": 3,
+         "evidence": [{"answer_id": answer_main, "quote": "我先检查相同键是否存在"}],
+         "explanation": "按步骤组织。", "improvement": "每个结论后补一句边界。"},
+    ]
+    uncertain_dimensions = copy.deepcopy(dimensions)
+    uncertain_dimensions[0] = {
+        "dimension_id": "accuracy", "name": "准确性", "weight": 0.4,
+        "verdict": "uncertain", "score": None, "evidence": [],
+        "explanation": "评分引文无法在本场本题原回答中逐字定位，已降为受限结果。",
+        "improvement": "用原话中的具体事实重新说明。",
+    }
+    report_question_full = {
+        "question_id": question_main, "position": 1, "source": "bank",
+        "outcome": "answered", "prompt": turn_main["prompt"], "bank_version": 1,
+        "turns": [turn_main, turn_follow_answered],
+        "assessment_trust": "reviewed", "rubric_version": "m1-explanation@1",
+        "question_score": 70, "dimensions": dimensions,
+        "follow_up_outcome": "asked",
+    }
+    report_question_uncertain = {
+        **report_question_full, "question_score": None, "dimensions": uncertain_dimensions,
+    }
+    report_base = {
+        "report_id": report_id, "session_id": sid, "role_id": "java-backend",
+        "level": "intern", "material_versions": materials,
+        "rubric_policy_version": "m2-rubric-policy-v1", "created_at": STAMP,
+        "end_reason": "completed", "coverage": coverage_full,
+    }
+    finding = {
+        "question_id": question_main, "position": 1, "dimension_id": "accuracy",
+        "text": "1. 准确性：原话说明了先查后写的顺序。",
+        "evidence": [{"answer_id": answer_main, "quote": "我先检查相同键是否存在"}],
+    }
+    report_full = {
+        **report_base, "quality": "full",
+        "strengths": [finding], "improvements": [finding],
+        "questions": [report_question_full],
+    }
+    report_partial = {
+        **report_base, "quality": "partial",
+        "strengths": [], "improvements": [finding],
+        "questions": [report_question_uncertain],
+    }
+    report_basic = {
+        **report_base, "quality": "unscored", "strengths": [], "improvements": [],
+        "questions": [{**report_question_full, "question_score": None,
+                       "dimensions": []}],
+    }
+    report_no_answers = {
+        **report_base, "quality": "no_answers",
+        "coverage": {**coverage_full, "answered": 0, "scored": 0,
+                     "skipped": 1, "not_reached": 1, "presented": 1,
+                     "bank_answered": 0, "generated_answered": 0,
+                     "follow_up_presented": 0, "follow_up_answered": 0},
+        "strengths": [], "improvements": [],
+        "questions": [
+            {**report_question_full, "outcome": "skipped", "turns": [],
+             "question_score": None, "dimensions": [], "follow_up_outcome": None},
+            {**report_question_full, "position": 2, "outcome": "not_reached",
+             "prompt": None, "turns": [], "question_score": None,
+             "dimensions": [], "follow_up_outcome": None},
+        ],
+    }
+    error = {"error": {"code": "REPORT_PENDING", "message": "报告仍在生成中，请稍后再试",
+                       "retryable": False, "details": [], "request_id": uid(999)}}
+    job_follow_failed = {
+        "id": follow_job, "kind": "follow_up", "target_id": sid, "input_revision": 3,
+        "state": "failed", "attempt": 1, "retryable": True, "result_ref": None,
+        "error": {"code": "AI_TIMEOUT", "message": "AI 服务超时，结果未知",
+                  "retryable": True, "details": [], "request_id": uid(998)},
+        "created_at": STAMP, "updated_at": STAMP,
+    }
+    job_report_failed = {
+        "id": report_job, "kind": "interview_report", "target_id": sid, "input_revision": 12,
+        "state": "failed", "attempt": 2, "retryable": False, "result_ref": None,
+        "error": {"code": "AI_INVALID_OUTPUT", "message": "AI 输出不符合契约",
+                  "retryable": False, "details": [], "request_id": uid(997)},
+        "created_at": STAMP, "updated_at": STAMP,
+    }
+    return {
+        "test_only": True,
+        "start_request": {"plan_revision": 2, "external_processing_consent": True},
+        "start_created": {"session_id": sid, "revision": 1},
+        "start_reopened": {"session_id": sid, "revision": 1},
+        "answer_request": {"revision": 1, "turn_id": session_turn_main,
+                           "text": "我先检查相同键是否存在，再决定更新还是插入。"},
+        "answer_receipt_main": {"session_id": sid, "revision": 2,
+                                "answer_id": answer_main, "job_id": follow_job},
+        "answer_receipt_follow_up": {"session_id": sid, "revision": 4,
+                                     "answer_id": answer_follow, "job_id": None},
+        "detail_active": detail_active,
+        "detail_deciding": detail_deciding,
+        "detail_ended": detail_ended,
+        "history": {
+            "items": [{"session_id": sid, "plan_id": pid, "preparation_id": prep,
+                       "role_id": "java-backend", "level": "intern",
+                       "status": "ended", "started_at": STAMP, "ended_at": STAMP,
+                       "end_reason": "completed", "main_question_count": 6,
+                       "answered_main_count": 6, "report_state": "ready"}],
+            "next_cursor": "eyJzdGFydGVkX2F0IjoiMjAyNi0xMS0xNlQwMDowMDowMCswMDowMCIsImlkIjoiMDAwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwOTAwIn0",
+        },
+        "report_full": report_full,
+        "report_partial": report_partial,
+        "report_basic": report_basic,
+        "report_no_answers": report_no_answers,
+        "error_report_pending": error,
+        "job_follow_failed": job_follow_failed,
+        "job_report_failed": job_report_failed,
+    }
+
+
 def outputs():
     schema = build_schema()
     materials = build_materials()
@@ -551,11 +931,12 @@ def outputs():
             "fixtures/m1/bank-candidates.json": bank, "fixtures/m1/fact-cards.json": facts,
             "fixtures/m1/content-reviews.json": reviews,
             "fixtures/m1/internal-plan.example.json": internal,
-            "fixtures/m1/public-plan.example.json": public, "fixtures/m1/rule-cases.json": build_cases(internal)}
+            "fixtures/m1/public-plan.example.json": public, "fixtures/m1/rule-cases.json": build_cases(internal),
+            "fixtures/m1/m2-examples.json": build_m2_examples()}
 
 
 def main():
-    parser = argparse.ArgumentParser(description="生成或检查M1契约与合成样例，不启动业务或调用AI")
+    parser = argparse.ArgumentParser(description="生成或检查M1/M2契约与合成样例，不启动业务或调用AI")
     parser.add_argument("--check", action="store_true", help="只比较生成物，不写文件")
     args = parser.parse_args()
     stale = []
@@ -570,7 +951,7 @@ def main():
             target.write_text(expected, encoding="utf-8", newline="\n")
     if stale:
         raise SystemExit("生成物不同步，请运行 build_contracts.py：" + ", ".join(stale))
-    print("M1 generated artifacts are current" if args.check else "M1 artifacts generated (10 files)")
+    print("M1/M2 generated artifacts are current" if args.check else "M1/M2 artifacts generated (11 files)")
 
 
 if __name__ == "__main__":

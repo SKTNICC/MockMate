@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://mockmate.example/contracts/m1/schema",
-  "title": "MockMate M1",
+  "title": "MockMate M1 + M2",
   "$comment": "生成源 tools/m1/build_contracts.py；结构契约不取代业务校验。",
   "$defs": {
     "Evidence": {
@@ -2151,7 +2151,9 @@
           "enum": [
             "material",
             "match_report",
-            "plan"
+            "plan",
+            "interview_session",
+            "interview_report"
           ]
         },
         "id": {
@@ -2178,7 +2180,9 @@
             "extract",
             "parse",
             "match",
-            "plan"
+            "plan",
+            "follow_up",
+            "interview_report"
           ]
         },
         "target_id": {
@@ -2249,6 +2253,1139 @@
         "error",
         "created_at",
         "updated_at"
+      ]
+    },
+    "StartInterviewInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "plan_revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "external_processing_consent": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "plan_revision",
+        "external_processing_consent"
+      ]
+    },
+    "InterviewStartReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "session_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "session_id",
+        "revision"
+      ]
+    },
+    "InterviewAnswerInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "turn_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4000
+        }
+      },
+      "required": [
+        "revision",
+        "turn_id",
+        "text"
+      ]
+    },
+    "InterviewSkipInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "turn_id": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "required": [
+        "revision",
+        "turn_id"
+      ]
+    },
+    "InterviewContinueInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "job_id": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "required": [
+        "revision",
+        "job_id"
+      ]
+    },
+    "InterviewBasicReportInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "job_id": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "required": [
+        "revision",
+        "job_id"
+      ]
+    },
+    "InterviewReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "session_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "answer_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "job_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "session_id",
+        "revision",
+        "answer_id",
+        "job_id"
+      ]
+    },
+    "InterviewMaterialVersion": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "resume",
+            "jd"
+          ]
+        },
+        "snapshot_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "material_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "source_revision": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "kind",
+        "snapshot_id",
+        "material_id",
+        "title",
+        "source_revision"
+      ]
+    },
+    "InterviewPlanSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "plan_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "main_question_count": {
+          "type": "integer",
+          "enum": [
+            2,
+            4,
+            6
+          ]
+        },
+        "source_counts": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "bank": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 3
+            },
+            "generated": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 3
+            }
+          },
+          "required": [
+            "bank",
+            "generated"
+          ]
+        },
+        "material_versions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/InterviewMaterialVersion"
+          },
+          "minItems": 2
+        },
+        "sample_only": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "plan_id",
+        "main_question_count",
+        "source_counts",
+        "material_versions",
+        "sample_only"
+      ]
+    },
+    "InterviewAnswerView": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "answer_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4000
+        },
+        "submitted_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "answer_id",
+        "text",
+        "submitted_at"
+      ]
+    },
+    "InterviewTurnView": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "turn_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "question_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "position": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 6
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "main",
+            "follow_up"
+          ]
+        },
+        "prompt": {
+          "type": "string",
+          "minLength": 1
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "pending",
+            "answered",
+            "skipped",
+            "unanswered"
+          ]
+        },
+        "answer": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/InterviewAnswerView"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "turn_id",
+        "question_id",
+        "position",
+        "kind",
+        "prompt",
+        "status",
+        "answer"
+      ]
+    },
+    "InterviewJobSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "queued",
+            "running",
+            "succeeded",
+            "failed",
+            "interrupted",
+            "superseded"
+          ]
+        },
+        "attempt": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2
+        },
+        "retryable": {
+          "type": "boolean"
+        },
+        "error_code": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "state",
+        "attempt",
+        "retryable",
+        "error_code"
+      ]
+    },
+    "InterviewDetail": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "session_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "plan_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "preparation_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "role_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "level": {
+          "type": "string",
+          "enum": [
+            "intern",
+            "junior"
+          ]
+        },
+        "mode": {
+          "const": "text"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "active",
+            "paused",
+            "ended"
+          ]
+        },
+        "phase": {
+          "type": "string",
+          "enum": [
+            "awaiting_answer",
+            "deciding_follow_up",
+            "closed"
+          ]
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "started_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "ended_at": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "end_reason": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "completed",
+                "early_finish"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "plan_summary": {
+          "$ref": "#/$defs/InterviewPlanSummary"
+        },
+        "opening_text": {
+          "type": "string",
+          "minLength": 1
+        },
+        "closing_text": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "current_main_position": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 6
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "answered_main_count": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 6
+        },
+        "skipped_main_count": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 6
+        },
+        "current_turn": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/InterviewTurnView"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "allowed_actions": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "answer",
+              "skip",
+              "pause",
+              "resume",
+              "finish",
+              "continue_without_follow_up",
+              "retry_follow_up",
+              "retry_report",
+              "create_basic_report"
+            ]
+          },
+          "minItems": 0
+        },
+        "transcript": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/InterviewTurnView"
+          },
+          "minItems": 0
+        },
+        "follow_up_job": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/InterviewJobSummary"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "report_job": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/InterviewJobSummary"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "report_state": {
+          "type": "string",
+          "enum": [
+            "not_requested",
+            "pending",
+            "failed",
+            "ready"
+          ]
+        }
+      },
+      "required": [
+        "session_id",
+        "plan_id",
+        "preparation_id",
+        "role_id",
+        "level",
+        "mode",
+        "status",
+        "phase",
+        "revision",
+        "started_at",
+        "ended_at",
+        "end_reason",
+        "plan_summary",
+        "opening_text",
+        "closing_text",
+        "current_main_position",
+        "answered_main_count",
+        "skipped_main_count",
+        "current_turn",
+        "allowed_actions",
+        "transcript",
+        "follow_up_job",
+        "report_job",
+        "report_state"
+      ]
+    },
+    "InterviewHistoryItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "session_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "plan_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "preparation_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "role_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "level": {
+          "type": "string",
+          "enum": [
+            "intern",
+            "junior"
+          ]
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "active",
+            "paused",
+            "ended"
+          ]
+        },
+        "started_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "ended_at": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "end_reason": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "completed",
+                "early_finish"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "main_question_count": {
+          "type": "integer",
+          "minimum": 2,
+          "maximum": 6
+        },
+        "answered_main_count": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 6
+        },
+        "report_state": {
+          "type": "string",
+          "enum": [
+            "not_requested",
+            "pending",
+            "failed",
+            "ready"
+          ]
+        }
+      },
+      "required": [
+        "session_id",
+        "plan_id",
+        "preparation_id",
+        "role_id",
+        "level",
+        "status",
+        "started_at",
+        "ended_at",
+        "end_reason",
+        "main_question_count",
+        "answered_main_count",
+        "report_state"
+      ]
+    },
+    "InterviewHistory": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/InterviewHistoryItem"
+          },
+          "minItems": 0
+        },
+        "next_cursor": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "items",
+        "next_cursor"
+      ]
+    },
+    "InterviewEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "answer_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "quote": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240
+        }
+      },
+      "required": [
+        "answer_id",
+        "quote"
+      ]
+    },
+    "InterviewDimensionResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "dimension_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "weight": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 1
+        },
+        "verdict": {
+          "type": "string",
+          "enum": [
+            "scored",
+            "insufficient_evidence",
+            "uncertain"
+          ]
+        },
+        "score": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 4
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/InterviewEvidence"
+          },
+          "minItems": 0
+        },
+        "explanation": {
+          "type": "string"
+        },
+        "improvement": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "dimension_id",
+        "name",
+        "weight",
+        "verdict",
+        "score",
+        "evidence",
+        "explanation",
+        "improvement"
+      ]
+    },
+    "InterviewReportQuestion": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "question_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "position": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 6
+        },
+        "source": {
+          "type": "string",
+          "enum": [
+            "bank",
+            "generated"
+          ]
+        },
+        "outcome": {
+          "type": "string",
+          "enum": [
+            "answered",
+            "skipped",
+            "unanswered",
+            "not_reached"
+          ]
+        },
+        "prompt": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "bank_version": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "turns": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/InterviewTurnView"
+          },
+          "minItems": 0
+        },
+        "assessment_trust": {
+          "type": "string",
+          "enum": [
+            "reviewed",
+            "provisional"
+          ]
+        },
+        "rubric_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "question_score": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 100
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "dimensions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/InterviewDimensionResult"
+          },
+          "minItems": 0
+        },
+        "follow_up_outcome": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "not_needed",
+                "asked",
+                "unavailable",
+                "cancelled"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "question_id",
+        "position",
+        "source",
+        "outcome",
+        "prompt",
+        "bank_version",
+        "turns",
+        "assessment_trust",
+        "rubric_version",
+        "question_score",
+        "dimensions",
+        "follow_up_outcome"
+      ]
+    },
+    "InterviewCoverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "planned": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 6
+        },
+        "presented": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 6
+        },
+        "answered": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 6
+        },
+        "skipped": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 6
+        },
+        "unanswered": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 6
+        },
+        "not_reached": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 6
+        },
+        "scored": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 6
+        },
+        "bank_planned": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3
+        },
+        "bank_answered": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3
+        },
+        "generated_planned": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3
+        },
+        "generated_answered": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3
+        },
+        "follow_up_presented": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 6
+        },
+        "follow_up_answered": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 6
+        }
+      },
+      "required": [
+        "planned",
+        "presented",
+        "answered",
+        "skipped",
+        "unanswered",
+        "not_reached",
+        "scored",
+        "bank_planned",
+        "bank_answered",
+        "generated_planned",
+        "generated_answered",
+        "follow_up_presented",
+        "follow_up_answered"
+      ]
+    },
+    "InterviewFinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "question_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "position": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 6
+        },
+        "dimension_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/InterviewEvidence"
+          },
+          "minItems": 0
+        }
+      },
+      "required": [
+        "question_id",
+        "position",
+        "dimension_id",
+        "text",
+        "evidence"
+      ]
+    },
+    "InterviewReport": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "report_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "session_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "role_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "level": {
+          "type": "string",
+          "enum": [
+            "intern",
+            "junior"
+          ]
+        },
+        "material_versions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/InterviewMaterialVersion"
+          },
+          "minItems": 2
+        },
+        "quality": {
+          "type": "string",
+          "enum": [
+            "full",
+            "partial",
+            "no_answers",
+            "unscored"
+          ]
+        },
+        "rubric_policy_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "end_reason": {
+          "type": "string",
+          "enum": [
+            "completed",
+            "early_finish"
+          ]
+        },
+        "coverage": {
+          "$ref": "#/$defs/InterviewCoverage"
+        },
+        "strengths": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/InterviewFinding"
+          },
+          "minItems": 0
+        },
+        "improvements": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/InterviewFinding"
+          },
+          "minItems": 0
+        },
+        "questions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/InterviewReportQuestion"
+          },
+          "minItems": 0
+        }
+      },
+      "required": [
+        "report_id",
+        "session_id",
+        "role_id",
+        "level",
+        "material_versions",
+        "quality",
+        "rubric_policy_version",
+        "created_at",
+        "end_reason",
+        "coverage",
+        "strengths",
+        "improvements",
+        "questions"
       ]
     },
     "User": {

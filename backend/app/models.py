@@ -248,7 +248,10 @@ class Job(Base):
 
     __table_args__ = (
         UniqueConstraint("target_id", "kind", "input_revision", name="uq_job_target_kind_revision"),
-        CheckConstraint("kind in ('extract','parse','match','plan')", name="ck_job_kind"),
+        CheckConstraint(
+            "kind in ('extract','parse','match','plan','follow_up','interview_report')",
+            name="ck_job_kind",
+        ),
         CheckConstraint(
             "state in ('queued','running','succeeded','failed','interrupted','superseded')",
             name="ck_job_state",
@@ -389,4 +392,176 @@ class IdempotencyRecord(Base):
 
     __table_args__ = (
         UniqueConstraint("user_id", "method", "path", "key", name="uq_idem_user_method_path_key"),
+    )
+
+
+# --------------------------------------------------------------------------- M2 文字面试
+
+
+class InterviewSession(Base):
+    __tablename__ = "interview_sessions"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    owner_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    # 历史关联值：M1 删除准备会删除 Plan，旧场次仍凭冻结快照保留。
+    plan_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    preparation_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    plan_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    role_id: Mapped[str] = mapped_column(String(120), nullable=False)
+    level: Mapped[str] = mapped_column(String(16), nullable=False)
+    mode: Mapped[str] = mapped_column(String(8), nullable=False, default="text")
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="active")
+    phase: Mapped[str] = mapped_column(String(24), nullable=False, default="awaiting_answer")
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    opening_text: Mapped[str] = mapped_column(Text, nullable=False)
+    closing_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    plan_snapshot: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    external_processing_consented_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    consent_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    # 循环指针不加外键，由服务层事务内校验属于本场且符合阶段。
+    current_turn_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(as_uuid=True), nullable=True)
+    follow_up_job_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(as_uuid=True), nullable=True)
+    follow_up_input_revision: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    report_job_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(as_uuid=True), nullable=True)
+    ended_revision: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    started_at: Mapped[datetime] = _created_at()
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    end_reason: Mapped[str | None] = mapped_column(String(24), nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("owner_id", "plan_id", name="uq_interview_owner_plan"),
+        Index(
+            "ix_interview_owner_started",
+            "owner_id",
+            "started_at",
+            "id",
+        ),
+        CheckConstraint("mode = 'text'", name="ck_interview_mode"),
+        CheckConstraint("level in ('intern','junior')", name="ck_interview_level"),
+        CheckConstraint("status in ('active','paused','ended')", name="ck_interview_status"),
+        CheckConstraint(
+            "phase in ('awaiting_answer','deciding_follow_up','closed')",
+            name="ck_interview_phase",
+        ),
+        CheckConstraint("revision >= 1", name="ck_interview_revision"),
+        CheckConstraint(
+            "end_reason is null or end_reason in ('completed','early_finish')",
+            name="ck_interview_end_reason",
+        ),
+        CheckConstraint(
+            "(status = 'ended') = (ended_at is not null) "
+            "and (status = 'ended') = (ended_revision is not null) "
+            "and (status = 'ended') = (end_reason is not null) "
+            "and (status = 'ended') = (phase = 'closed')",
+            name="ck_interview_ended_group",
+        ),
+    )
+
+
+class InterviewQuestion(Base):
+    __tablename__ = "interview_questions"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    session_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("interview_sessions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    position: Mapped[int] = mapped_column(Integer, nullable=False)
+    plan_question_id: Mapped[str] = mapped_column(String(120), nullable=False)
+    source: Mapped[str] = mapped_column(String(16), nullable=False)
+    stem: Mapped[str] = mapped_column(Text, nullable=False)
+    bank_ref: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    anchors: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    evaluation: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="planned")
+    follow_up_outcome: Mapped[str | None] = mapped_column(String(16), nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("session_id", "position", name="uq_interview_question_position"),
+        CheckConstraint("position between 1 and 6", name="ck_interview_question_position"),
+        CheckConstraint("source in ('bank','generated')", name="ck_interview_question_source"),
+        CheckConstraint(
+            "status in ('planned','current','answered','skipped','unanswered','not_reached')",
+            name="ck_interview_question_status",
+        ),
+        CheckConstraint(
+            "follow_up_outcome is null or follow_up_outcome in "
+            "('not_needed','asked','unavailable','cancelled')",
+            name="ck_interview_question_follow_up",
+        ),
+    )
+
+
+class InterviewTurn(Base):
+    __tablename__ = "interview_turns"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    question_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("interview_questions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    prompt: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
+    presented_at: Mapped[datetime] = _created_at()
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("question_id", "kind", name="uq_interview_turn_kind"),
+        CheckConstraint("kind in ('main','follow_up')", name="ck_interview_turn_kind"),
+        CheckConstraint(
+            "status in ('pending','answered','skipped','unanswered')",
+            name="ck_interview_turn_status",
+        ),
+    )
+
+
+class InterviewAnswer(Base):
+    __tablename__ = "interview_answers"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    turn_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("interview_turns.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+    )
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    submitted_at: Mapped[datetime] = _created_at()
+
+    __table_args__ = (
+        CheckConstraint("char_length(text) between 1 and 4000", name="ck_interview_answer_len"),
+    )
+
+
+class InterviewReport(Base):
+    __tablename__ = "interview_reports"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    session_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("interview_sessions.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+    )
+    rubric_policy_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    prompt_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    model_id: Mapped[str] = mapped_column(String(120), nullable=False)
+    quality: Mapped[str] = mapped_column(String(24), nullable=False)
+    payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = _created_at()
+
+    __table_args__ = (
+        CheckConstraint(
+            "quality in ('full','partial','no_answers','unscored')",
+            name="ck_interview_report_quality",
+        ),
     )

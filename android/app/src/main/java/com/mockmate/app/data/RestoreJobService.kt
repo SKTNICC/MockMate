@@ -6,6 +6,8 @@ import com.mockmate.app.core.network.MatchReportDto
 import com.mockmate.app.core.network.PreparationDto
 import com.mockmate.app.core.network.PublicPlanDto
 import com.mockmate.app.core.network.SnapshotDto
+import com.mockmate.app.core.network.InterviewDetailDto
+import com.mockmate.app.core.network.InterviewReportDto
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -19,6 +21,7 @@ data class RestoreScope(
     val screen: String,
     val preparationId: String? = null,
     val materialId: String? = null,
+    val interviewSessionId: String? = null,
     /** 发起恢复查询的任务 ID；只用于取任务，不参与当前页面匹配。 */
     val jobId: String = "",
 )
@@ -30,6 +33,10 @@ interface RestorePorts {
     suspend fun matchReport(id: String): ApiResult<MatchReportDto>
     suspend fun material(id: String): ApiResult<MaterialDraftDto>
     suspend fun snapshots(materialId: String): ApiResult<List<SnapshotDto>>
+    suspend fun interview(sessionId: String): ApiResult<InterviewDetailDto> =
+        ApiResult.Err("NOT_IMPLEMENTED", "面试恢复端口未实现", false)
+    suspend fun interviewReport(sessionId: String): ApiResult<InterviewReportDto> =
+        ApiResult.Err("NOT_IMPLEMENTED", "报告恢复端口未实现", false)
 }
 
 sealed interface RestoreOutcome {
@@ -41,6 +48,8 @@ sealed interface RestoreOutcome {
         val matchReport: MatchReportDto? = null,
         val material: MaterialDraftDto? = null,
         val snapshots: List<SnapshotDto>? = null,
+        val interview: InterviewDetailDto? = null,
+        val interviewReport: InterviewReportDto? = null,
         val message: String,
     ) : RestoreOutcome
 
@@ -110,6 +119,8 @@ class RestoreJobService(private val ports: RestorePorts) {
                     current.screen == SCREEN_MATCH &&
                     current.preparationId == preparationId
             }
+            "follow_up", "interview_report" -> current.screen == SCREEN_INTERVIEW &&
+                current.interviewSessionId == job.target_id
             else -> current.screen == SCREEN_REVIEW &&
                 current.materialId == job.target_id &&
                 (entry.materialId == null || entry.materialId == job.target_id)
@@ -128,6 +139,7 @@ class RestoreJobService(private val ports: RestorePorts) {
         if (current.screen != entry.screen) return false
         if (entry.preparationId != null && current.preparationId != entry.preparationId) return false
         if (entry.materialId != null && current.materialId != entry.materialId) return false
+        if (entry.interviewSessionId != null && current.interviewSessionId != entry.interviewSessionId) return false
         return true
     }
 
@@ -198,6 +210,7 @@ class RestoreJobService(private val ports: RestorePorts) {
             "succeeded" -> when (job.kind) {
                 "plan" -> projectPlan(entry, job, current)
                 "match" -> projectMatch(entry, job, current)
+                "follow_up", "interview_report" -> projectInterview(entry, job, current)
                 else -> projectMaterial(entry, job, current)
             }
             else -> RestoreResult(
@@ -313,12 +326,57 @@ class RestoreJobService(private val ports: RestorePorts) {
         )
     }
 
-    private suspend fun projectMaterial(
+    private suspend fun projectInterview(
         entry: RestoreScope,
         job: JobDto,
         current: () -> RestoreScope?,
     ): RestoreResult {
-        val materialId = job.target_id
+        val sessionId = job.target_id
+        val detail = when (val result = ports.interview(sessionId)) {
+            is ApiResult.Ok -> result.value
+            is ApiResult.Err -> return staleOrFailed(entry, job, result.code.orEmpty(), result.message, current)
+        }
+        if (detail.session_id != sessionId) {
+            return staleOrFailed(entry, job, "INTERVIEW_MISMATCH", "面试与任务引用不一致", current)
+        }
+        var report: InterviewReportDto? = null
+        if (job.kind == "interview_report" && detail.report_state == "ready") {
+            when (val result = ports.interviewReport(sessionId)) {
+                is ApiResult.Ok -> report = result.value
+                is ApiResult.Err -> {
+                    val code = result.code.orEmpty()
+                    if (code !in setOf(
+                            "REPORT_PENDING",
+                            "REPORT_FAILED",
+                            "REPORT_NOT_AVAILABLE",
+                        )
+                    ) {
+                        return staleOrFailed(
+                            entry, job, result.code.orEmpty(), result.message, current
+                        )
+                    }
+                }
+            }
+        }
+        if (!isCurrentScope(entry, job, current())) {
+            return RestoreResult(entry, RestoreOutcome.Stale(job))
+        }
+        return RestoreResult(
+            entry,
+            RestoreOutcome.Project(
+                job = job,
+                interview = detail,
+                interviewReport = report,
+                message = if (job.kind == "interview_report") "报告已生成" else "已恢复面试状态",
+            ),
+        )
+    }
+
+    private suspend fun projectMaterial(
+        entry: RestoreScope,
+        job: JobDto,
+        current: () -> RestoreScope?,
+    ): RestoreResult {        val materialId = job.target_id
         val material = when (val result = ports.material(materialId)) {
             is ApiResult.Ok -> result.value
             is ApiResult.Err -> return staleOrFailed(entry, job, result.code.orEmpty(), result.message, current)
@@ -356,5 +414,6 @@ class RestoreJobService(private val ports: RestorePorts) {
         const val SCREEN_LIBRARY = "library"
         const val SCREEN_EDITOR = "editor"
         const val SCREEN_TEMPLATES = "templates"
+        const val SCREEN_INTERVIEW = "interview"
     }
 }

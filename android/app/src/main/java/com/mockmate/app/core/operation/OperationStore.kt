@@ -120,6 +120,57 @@ data class UploadFilePayload(
     val fileSha256: String,
 ) : OperationPayload
 
+// ------------------------------------------------------------------ M2 文字面试
+
+@Serializable
+@SerialName("startInterview")
+data class StartInterviewPayload(val planRevision: Int) : OperationPayload
+
+@Serializable
+@SerialName("interviewAnswer")
+data class InterviewAnswerPayload(
+    val sessionId: String,
+    val revision: Int,
+    val turnId: String,
+    val text: String,
+) : OperationPayload
+
+@Serializable
+@SerialName("interviewSkip")
+data class InterviewSkipPayload(
+    val sessionId: String,
+    val revision: Int,
+    val turnId: String,
+) : OperationPayload
+
+@Serializable
+@SerialName("interviewPause")
+data class InterviewPausePayload(val sessionId: String, val revision: Int) : OperationPayload
+
+@Serializable
+@SerialName("interviewResume")
+data class InterviewResumePayload(val sessionId: String, val revision: Int) : OperationPayload
+
+@Serializable
+@SerialName("interviewContinueWithoutFollowUp")
+data class InterviewContinuePayload(
+    val sessionId: String,
+    val revision: Int,
+    val jobId: String,
+) : OperationPayload
+
+@Serializable
+@SerialName("interviewFinish")
+data class InterviewFinishPayload(val sessionId: String, val revision: Int) : OperationPayload
+
+@Serializable
+@SerialName("interviewBasicReport")
+data class InterviewBasicReportPayload(
+    val sessionId: String,
+    val revision: Int,
+    val jobId: String,
+) : OperationPayload
+
 @Serializable
 data class PendingOperation(
     val operationKey: String,

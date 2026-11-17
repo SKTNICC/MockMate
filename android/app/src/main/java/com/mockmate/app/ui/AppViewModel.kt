@@ -15,6 +15,10 @@ import com.mockmate.app.core.network.PublicPlanDto
 import com.mockmate.app.core.network.RoleDto
 import com.mockmate.app.core.network.SnapshotDto
 import com.mockmate.app.core.network.UserDto
+import com.mockmate.app.core.network.InterviewDetailDto
+import com.mockmate.app.core.network.InterviewHistoryItemDto
+import com.mockmate.app.core.network.InterviewReceiptDto
+import com.mockmate.app.core.network.InterviewReportDto
 import com.mockmate.app.core.operation.ActiveJob
 import com.mockmate.app.core.operation.ConfirmMaterialPayload
 import com.mockmate.app.core.operation.ConfirmPlanPayload
@@ -26,6 +30,13 @@ import com.mockmate.app.core.operation.EditMaterialPayload
 import com.mockmate.app.core.operation.EditPreparationPayload
 import com.mockmate.app.core.operation.ExtractMaterialPayload
 import com.mockmate.app.core.operation.GeneratePlanPayload
+import com.mockmate.app.core.operation.InterviewAnswerPayload
+import com.mockmate.app.core.operation.InterviewBasicReportPayload
+import com.mockmate.app.core.operation.InterviewContinuePayload
+import com.mockmate.app.core.operation.InterviewFinishPayload
+import com.mockmate.app.core.operation.InterviewPausePayload
+import com.mockmate.app.core.operation.InterviewResumePayload
+import com.mockmate.app.core.operation.InterviewSkipPayload
 import com.mockmate.app.core.operation.MatchPayload
 import com.mockmate.app.core.operation.OperationCoordinator
 import com.mockmate.app.core.operation.OperationLoad
@@ -35,12 +46,16 @@ import com.mockmate.app.core.operation.ParseMaterialPayload
 import com.mockmate.app.core.operation.PendingOperationReplayer
 import com.mockmate.app.core.operation.RetryJobPayload
 import com.mockmate.app.core.operation.SecureOperationStore
+import com.mockmate.app.core.operation.StartInterviewPayload
 import com.mockmate.app.core.operation.UploadFilePayload
 import com.mockmate.app.core.operation.WritePipeline
 import com.mockmate.app.core.session.ContextGeneration
 import com.mockmate.app.core.session.DraftStore
+import com.mockmate.app.core.session.InterviewDraftStore
 import com.mockmate.app.core.session.RequestContext
+import com.mockmate.app.core.session.SecureRead
 import com.mockmate.app.core.session.SecureSessionStore
+import com.mockmate.app.core.session.SecureWrite
 import com.mockmate.app.core.session.SessionManager
 import com.mockmate.app.data.ApiResult
 import com.mockmate.app.data.JobWatch
@@ -77,6 +92,9 @@ sealed interface Screen {
     data class Templates(val preparationId: String) : Screen
     data class Match(val preparationId: String) : Screen
     data class PlanHub(val preparationId: String) : Screen
+    data object InterviewHistory : Screen
+    data class InterviewRoom(val sessionId: String) : Screen
+    data class InterviewReport(val sessionId: String) : Screen
 }
 
 data class AppState(
@@ -99,11 +117,20 @@ data class AppState(
     val plan: PublicPlanDto? = null,
     val job: JobDto? = null,
     val lastGeneratedPlanId: String? = null,
+    val interviewDetail: InterviewDetailDto? = null,
+    val interviewReport: InterviewReportDto? = null,
+    val interviewReportError: String? = null,
+    val interviewHistory: List<InterviewHistoryItemDto> = emptyList(),
+    val interviewHistoryCursor: String? = null,
+    val interviewHistoryLoading: Boolean = false,
+    val interviewForPlan: InterviewHistoryItemDto? = null,
+    val pendingInterviewTurnId: String? = null,
 )
 
 class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val sessionStore = SecureSessionStore(application)
     private val drafts = DraftStore(application)
+    private val interviewDrafts = InterviewDraftStore(application)
     private val operations = OperationCoordinator(SecureOperationStore(application))
     private val session = SessionManager(sessionStore)
     private val api = MockMateApi(session, BuildConfig.API_BASE_URL)
@@ -120,6 +147,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         override suspend fun matchReport(id: String) = repository.matchReport(id)
         override suspend fun material(id: String) = repository.material(id)
         override suspend fun snapshots(materialId: String) = repository.snapshots(materialId)
+        override suspend fun interview(sessionId: String) = repository.interview(sessionId)
+        override suspend fun interviewReport(sessionId: String) = repository.interviewReport(sessionId)
     })
     private val restoreGate = RestoreUiGate(
         currentScope = { currentScope() },
@@ -236,6 +265,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         fileName: String? = null,
         fileSha256: String? = null,
         fileMime: String? = null,
+        onResult: suspend (T) -> OperationSave = { OperationSave.Ok },
         call: suspend (String) -> ApiResult<T>,
     ): ApiResult<T> = writePipeline.perform(
         accountId = ctx.accountId,
@@ -249,6 +279,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         fileMime = fileMime,
         isContextCurrent = { isAccountCurrent(ctx) },
         onJob = { job -> recordJobResult(ctx.accountId, job, preparationId) },
+        onResult = onResult,
         call = call,
     )
 
@@ -478,6 +509,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                             job = null,
                             resumeSnapshot = null,
                             jdSnapshot = null,
+                            interviewForPlan = null,
                         )
                     }
                     loadSnapshotLabels(result.value, ctx)
@@ -488,7 +520,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun startNewPreparation() {
-        update { it.copy(preparation = null, plan = null, matchReport = null, job = null) }
+        update {
+            it.copy(
+                preparation = null,
+                plan = null,
+                matchReport = null,
+                job = null,
+                interviewForPlan = null,
+            )
+        }
         push(Screen.Setup(null))
     }
 
@@ -1146,7 +1186,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val planId = prep.current_plan_id ?: return
         viewModelScope.launch {
             when (val result = repository.plan(planId)) {
-                is ApiResult.Ok -> if (isCurrent(ctx)) update { it.copy(plan = result.value) }
+                is ApiResult.Ok -> if (isCurrent(ctx)) {
+                    update { it.copy(plan = result.value) }
+                    loadInterviewForPlan(planId)
+                }
                 is ApiResult.Err -> showError(result, ctx)
             }
         }
@@ -1179,6 +1222,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     )
                 }
             }
+            loadInterviewForPlan(planId)
         }
     }
 
@@ -1313,6 +1357,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         )
                     }
                     refreshPreparations()
+                    loadInterviewForPlan(planId)
                 }
             }
         }
@@ -1359,6 +1404,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                             matchReport = null,
                             loading = false,
                             busyLabel = null,
+                            interviewForPlan = null,
                             stack = listOf(Screen.PreparationList, Screen.Setup(result.value.id)),
                             message = UiMessage("已新建准备，旧计划保留只读", isError = false),
                         )
@@ -1367,6 +1413,523 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
         }
+    }
+
+    // ------------------------------------------------------------ M2 文字面试
+
+    fun openInterviewHistory() {
+        update {
+            it.copy(
+                interviewHistory = emptyList(),
+                interviewHistoryCursor = null,
+                interviewHistoryLoading = false,
+            )
+        }
+        push(Screen.InterviewHistory)
+        loadInterviewHistory(append = false)
+    }
+
+    fun loadInterviewHistory(append: Boolean) {
+        val ctx = currentRequestContext() ?: return
+        val cursor = if (append) state.value.interviewHistoryCursor else null
+        if (append && cursor == null) return
+        update { it.copy(interviewHistoryLoading = true) }
+        viewModelScope.launch {
+            when (val result = repository.interviews(limit = 20, cursor = cursor)) {
+                is ApiResult.Ok -> if (isAccountCurrent(ctx)) {
+                    update {
+                        it.copy(
+                            interviewHistory = if (append) {
+                                it.interviewHistory + result.value.items
+                            } else {
+                                result.value.items
+                            },
+                            interviewHistoryCursor = result.value.next_cursor,
+                            interviewHistoryLoading = false,
+                        )
+                    }
+                }
+                is ApiResult.Err -> {
+                    if (isAccountCurrent(ctx)) {
+                        update { it.copy(interviewHistoryLoading = false) }
+                        showError(result, ctx)
+                    }
+                }
+            }
+        }
+    }
+
+    fun openInterview(sessionId: String) {
+        update {
+            it.copy(
+                interviewDetail = null,
+                interviewReport = null,
+                interviewReportError = null,
+                pendingInterviewTurnId = null,
+            )
+        }
+        push(Screen.InterviewRoom(sessionId))
+        loadInterview(sessionId)
+    }
+
+    fun loadInterview(sessionId: String) {
+        val ctx = currentRequestContext() ?: return
+        val token = ++loadToken
+        update { it.copy(loading = true, busyLabel = "加载面试…") }
+        viewModelScope.launch {
+            when (val result = repository.interview(sessionId)) {
+                is ApiResult.Ok -> {
+                    if (loadToken != token || !isCurrent(ctx)) return@launch
+                    val pending = operations.pendingFor(
+                        ctx.accountId, "interviewAnswer", sessionId
+                    )
+                    val pendingTurn = (pending?.payload as? InterviewAnswerPayload)?.turnId
+                    update {
+                        it.copy(
+                            interviewDetail = result.value,
+                            loading = false,
+                            busyLabel = null,
+                            pendingInterviewTurnId = if (
+                                result.value.current_turn?.turn_id == pendingTurn
+                            ) {
+                                pendingTurn
+                            } else {
+                                null
+                            },
+                        )
+                    }
+                    restoreInterviewJobs(sessionId)
+                }
+                is ApiResult.Err -> if (loadToken == token) showError(result, ctx)
+            }
+        }
+    }
+
+    fun startInterviewForPlan(preparationId: String, plan: PublicPlanDto) {
+        val ctx = currentRequestContext() ?: return
+        update { it.copy(loading = true, busyLabel = "开始文字面试…") }
+        viewModelScope.launch {
+            val result = performWrite(
+                ctx,
+                "startInterview",
+                StartInterviewPayload(plan.revision),
+                targetId = plan.id,
+                revision = plan.revision,
+                preparationId = preparationId,
+            ) { key -> repository.startInterview(plan.id, plan.revision, key) }
+            if (!isAccountCurrent(ctx)) return@launch
+            when (result) {
+                is ApiResult.Err -> showError(result, ctx)
+                is ApiResult.Ok -> {
+                    update { it.copy(loading = false, busyLabel = null) }
+                    openInterview(result.value.session_id)
+                }
+            }
+        }
+    }
+
+    fun submitInterviewAnswer(sessionId: String, text: String) {
+        val detail = state.value.interviewDetail
+        val turn = detail?.current_turn
+        if (detail == null || detail.session_id != sessionId || turn == null) {
+            notify("当前没有可作答的回合，请刷新")
+            return
+        }
+        if (state.value.pendingInterviewTurnId == turn.turn_id) {
+            notify("正在确认提交结果；可离页，恢复后会按原 key 重放，不会新建重复操作", isError = false)
+            return
+        }
+        if (text.isBlank()) {
+            notify("回答不能为空白")
+            return
+        }
+        if (text.codePointCount(0, text.length) > 4000) {
+            notify("回答不能超过 4000 个字符")
+            return
+        }
+        val ctx = currentRequestContext() ?: return
+        val jobKind = if (turn.kind == "main") "follow_up" else "interview_report"
+        update { it.copy(loading = true, busyLabel = "提交回答…") }
+        viewModelScope.launch {
+            val result = performWrite(
+                ctx,
+                "interviewAnswer",
+                InterviewAnswerPayload(sessionId, detail.revision, turn.turn_id, text),
+                targetId = sessionId,
+                revision = detail.revision,
+                onResult = { receipt ->
+                    recordInterviewJob(ctx.accountId, receipt, sessionId, jobKind)
+                },
+            ) { key ->
+                repository.submitInterviewAnswer(
+                    sessionId,
+                    detail.revision,
+                    turn.turn_id,
+                    text,
+                    key,
+                )
+            }
+            if (!isAccountCurrent(ctx)) return@launch
+            when (result) {
+                is ApiResult.Err -> {
+                    showError(result, ctx)
+                    if (OperationCoordinator.isUncertain(
+                            result.code,
+                            result.httpStatus,
+                            result.requestSent,
+                        )
+                    ) {
+                        update {
+                            it.copy(
+                                pendingInterviewTurnId = turn.turn_id,
+                                message = UiMessage(
+                                    "正在确认提交结果；可离页，恢复后会按原 key 重放，不会新建重复操作",
+                                    isError = false,
+                                    code = "INTERVIEW_RECEIPT_UNKNOWN",
+                                ),
+                            )
+                        }
+                    } else {
+                        update { it.copy(pendingInterviewTurnId = null) }
+                    }
+                }
+                is ApiResult.Ok -> {
+                    clearInterviewDraft(sessionId, turn.turn_id)
+                    update {
+                        it.copy(
+                            loading = false,
+                            busyLabel = null,
+                            pendingInterviewTurnId = null,
+                        )
+                    }
+                    loadInterview(sessionId)
+                    result.value.job_id?.let { watchInterviewJob(sessionId, it) }
+                }
+            }
+        }
+    }
+
+    fun skipInterviewTurn(sessionId: String) {
+        val detail = state.value.interviewDetail
+        val turn = detail?.current_turn
+        if (detail == null || detail.session_id != sessionId || turn == null) {
+            notify("当前没有可跳过的回合，请刷新")
+            return
+        }
+        val ctx = currentRequestContext() ?: return
+        update { it.copy(loading = true, busyLabel = "跳过当前题…") }
+        viewModelScope.launch {
+            val result = performWrite(
+                ctx,
+                "interviewSkip",
+                InterviewSkipPayload(sessionId, detail.revision, turn.turn_id),
+                targetId = sessionId,
+                revision = detail.revision,
+                onResult = { receipt ->
+                    recordInterviewJob(ctx.accountId, receipt, sessionId, "interview_report")
+                },
+            ) { key ->
+                repository.skipInterviewTurn(sessionId, detail.revision, turn.turn_id, key)
+            }
+            if (!isAccountCurrent(ctx)) return@launch
+            when (result) {
+                is ApiResult.Err -> showError(result, ctx)
+                is ApiResult.Ok -> {
+                    clearInterviewDraft(sessionId, turn.turn_id)
+                    update { it.copy(loading = false, busyLabel = null) }
+                    loadInterview(sessionId)
+                    result.value.job_id?.let { watchInterviewJob(sessionId, it) }
+                }
+            }
+        }
+    }
+
+    fun pauseInterview(sessionId: String) {
+        val ctx = currentRequestContext() ?: return
+        val detail = state.value.interviewDetail ?: return
+        update { it.copy(loading = true, busyLabel = "暂停面试…") }
+        viewModelScope.launch {
+            val result = performWrite(
+                ctx,
+                "interviewPause",
+                InterviewPausePayload(sessionId, detail.revision),
+                targetId = sessionId,
+                revision = detail.revision,
+            ) { key -> repository.pauseInterview(sessionId, detail.revision, key) }
+            if (!isAccountCurrent(ctx)) return@launch
+            when (result) {
+                is ApiResult.Err -> showError(result, ctx)
+                is ApiResult.Ok -> {
+                    update { it.copy(loading = false, busyLabel = null) }
+                    loadInterview(sessionId)
+                }
+            }
+        }
+    }
+
+    fun resumeInterview(sessionId: String) {
+        val ctx = currentRequestContext() ?: return
+        val detail = state.value.interviewDetail ?: return
+        update { it.copy(loading = true, busyLabel = "继续面试…") }
+        viewModelScope.launch {
+            val result = performWrite(
+                ctx,
+                "interviewResume",
+                InterviewResumePayload(sessionId, detail.revision),
+                targetId = sessionId,
+                revision = detail.revision,
+            ) { key -> repository.resumeInterview(sessionId, detail.revision, key) }
+            if (!isAccountCurrent(ctx)) return@launch
+            when (result) {
+                is ApiResult.Err -> showError(result, ctx)
+                is ApiResult.Ok -> {
+                    update { it.copy(loading = false, busyLabel = null) }
+                    loadInterview(sessionId)
+                }
+            }
+        }
+    }
+
+    fun finishInterview(sessionId: String) {
+        val ctx = currentRequestContext() ?: return
+        val detail = state.value.interviewDetail ?: return
+        update { it.copy(loading = true, busyLabel = "结束面试…") }
+        viewModelScope.launch {
+            val result = performWrite(
+                ctx,
+                "interviewFinish",
+                InterviewFinishPayload(sessionId, detail.revision),
+                targetId = sessionId,
+                revision = detail.revision,
+                onResult = { receipt ->
+                    recordInterviewJob(ctx.accountId, receipt, sessionId, "interview_report")
+                },
+            ) { key -> repository.finishInterview(sessionId, detail.revision, key) }
+            if (!isAccountCurrent(ctx)) return@launch
+            when (result) {
+                is ApiResult.Err -> showError(result, ctx)
+                is ApiResult.Ok -> {
+                    update { it.copy(loading = false, busyLabel = null) }
+                    loadInterview(sessionId)
+                    result.value.job_id?.let { watchInterviewJob(sessionId, it) }
+                }
+            }
+        }
+    }
+
+    fun continueWithoutFollowUp(sessionId: String) {
+        val ctx = currentRequestContext() ?: return
+        val detail = state.value.interviewDetail ?: return
+        val job = detail.follow_up_job ?: return
+        update { it.copy(loading = true, busyLabel = "保留主回答并继续…") }
+        viewModelScope.launch {
+            val result = performWrite(
+                ctx,
+                "interviewContinueWithoutFollowUp",
+                InterviewContinuePayload(sessionId, detail.revision, job.id),
+                targetId = sessionId,
+                revision = detail.revision,
+                onResult = { receipt ->
+                    recordInterviewJob(ctx.accountId, receipt, sessionId, "interview_report")
+                },
+            ) { key ->
+                repository.continueWithoutFollowUp(sessionId, detail.revision, job.id, key)
+            }
+            if (!isAccountCurrent(ctx)) return@launch
+            when (result) {
+                is ApiResult.Err -> showError(result, ctx)
+                is ApiResult.Ok -> {
+                    update { it.copy(loading = false, busyLabel = null) }
+                    loadInterview(sessionId)
+                    result.value.job_id?.let { watchInterviewJob(sessionId, it) }
+                }
+            }
+        }
+    }
+
+    fun retryInterviewJob(sessionId: String, jobId: String, attempt: Int) {
+        val ctx = currentRequestContext() ?: return
+        update { it.copy(loading = true, busyLabel = "重试任务…") }
+        viewModelScope.launch {
+            val result = performWrite(
+                ctx,
+                "retryJob",
+                RetryJobPayload(attempt),
+                targetId = jobId,
+                revision = attempt,
+            ) { key -> repository.retryJob(jobId, attempt, key) }
+            if (!isAccountCurrent(ctx)) return@launch
+            when (result) {
+                is ApiResult.Err -> showError(result, ctx)
+                is ApiResult.Ok -> {
+                    update { it.copy(loading = false, busyLabel = null) }
+                    loadInterview(sessionId)
+                    watchInterviewJob(sessionId, jobId)
+                }
+            }
+        }
+    }
+
+    fun createBasicInterviewReport(sessionId: String) {
+        val ctx = currentRequestContext() ?: return
+        val detail = state.value.interviewDetail ?: return
+        val job = detail.report_job ?: return
+        update { it.copy(loading = true, busyLabel = "生成基础报告…") }
+        viewModelScope.launch {
+            val result = performWrite(
+                ctx,
+                "interviewBasicReport",
+                InterviewBasicReportPayload(sessionId, detail.revision, job.id),
+                targetId = sessionId,
+                revision = detail.revision,
+            ) { key ->
+                repository.createBasicInterviewReport(sessionId, detail.revision, job.id, key)
+            }
+            if (!isAccountCurrent(ctx)) return@launch
+            when (result) {
+                is ApiResult.Err -> showError(result, ctx)
+                is ApiResult.Ok -> {
+                    update { it.copy(loading = false, busyLabel = null) }
+                    loadInterview(sessionId)
+                    loadInterviewReport(sessionId)
+                    if (state.value.stack.lastOrNull() !is Screen.InterviewReport) {
+                        push(Screen.InterviewReport(sessionId))
+                    }
+                }
+            }
+        }
+    }
+
+    fun openInterviewReport(sessionId: String) {
+        update { it.copy(interviewReport = null, interviewReportError = null) }
+        push(Screen.InterviewReport(sessionId))
+        loadInterview(sessionId)
+        loadInterviewReport(sessionId)
+    }
+
+    fun loadInterviewReport(sessionId: String) {
+        val ctx = currentRequestContext() ?: return
+        viewModelScope.launch {
+            when (val result = repository.interviewReport(sessionId)) {
+                is ApiResult.Ok -> if (isCurrent(ctx)) {
+                    update {
+                        it.copy(interviewReport = result.value, interviewReportError = null)
+                    }
+                }
+                is ApiResult.Err -> if (isCurrent(ctx)) {
+                    update {
+                        it.copy(
+                            interviewReportError = result.message,
+                            message = UiMessage(result.message, isError = true, code = result.code),
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    fun loadInterviewForPlan(planId: String) {
+        val ctx = currentRequestContext() ?: return
+        viewModelScope.launch {
+            when (val result = repository.interviews(limit = 1, planId = planId)) {
+                is ApiResult.Ok -> if (isCurrent(ctx)) {
+                    update { it.copy(interviewForPlan = result.value.items.firstOrNull()) }
+                }
+                is ApiResult.Err -> if (isCurrent(ctx)) {
+                    update { it.copy(interviewForPlan = null) }
+                }
+            }
+        }
+    }
+
+    private fun restoreInterviewJobs(sessionId: String) {
+        val detail = state.value.interviewDetail ?: return
+        val base = currentScope() ?: return
+        val ctx = currentRequestContext() ?: return
+        viewModelScope.launch {
+            for (kind in listOf("follow_up", "interview_report")) {
+                val active = operations.activeJob(ctx.accountId, kind, sessionId) ?: continue
+                if (!isAccountCurrent(ctx)) return@launch
+                applyEffect(restoreCoordinator.restore(scopeForActiveJob(base, active)))
+            }
+            val report = detail.report_job
+            if (report != null && (report.state == "queued" || report.state == "running")) {
+                watchReportJob(base, sessionId, report.id)
+            }
+            val followUp = detail.follow_up_job
+            if (followUp != null && (followUp.state == "queued" || followUp.state == "running")) {
+                watchInterviewJob(sessionId, followUp.id)
+            }
+        }
+    }
+
+    private fun watchInterviewJob(sessionId: String, jobId: String) {
+        val base = currentScope() ?: return
+        if (jobWatch.isWatching(base.accountId, jobId)) return
+        viewModelScope.launch {
+            applyEffect(
+                restoreCoordinator.restore(
+                    base.copy(
+                        jobId = jobId,
+                        screen = RestoreJobService.SCREEN_INTERVIEW,
+                        preparationId = null,
+                        materialId = null,
+                        interviewSessionId = sessionId,
+                    ),
+                ),
+            )
+        }
+    }
+
+    private suspend fun recordInterviewJob(
+        accountId: String,
+        receipt: InterviewReceiptDto,
+        sessionId: String,
+        kind: String,
+    ): OperationSave {
+        val jobId = receipt.job_id ?: return OperationSave.Ok
+        return operations.recordActiveJob(
+            accountId,
+            ActiveJob(
+                jobId = jobId,
+                kind = kind,
+                targetId = sessionId,
+                revision = receipt.revision,
+            ),
+        )
+    }
+
+    // ------------------------------------------------------------ 面试草稿（加密）
+
+    fun interviewDraft(sessionId: String, turnId: String): String? {
+        val account = accountId ?: return null
+        return when (val read = interviewDrafts.get(account, sessionId, turnId)) {
+            is SecureRead.Present -> read.value
+            SecureRead.Absent -> null
+            is SecureRead.Corrupt -> {
+                notify("本机面试草稿无法解密，已保留原始数据；可继续输入后重新提交", isError = true)
+                null
+            }
+            is SecureRead.Failed -> {
+                notify("读取本机面试草稿失败：${read.message}", isError = true)
+                null
+            }
+        }
+    }
+
+    fun saveInterviewDraft(sessionId: String, turnId: String, text: String): Boolean {
+        val account = accountId ?: return false
+        return when (val write = interviewDrafts.put(account, sessionId, turnId, text)) {
+            SecureWrite.Ok -> true
+            is SecureWrite.Failed -> {
+                notify("草稿未保存：${write.message}", isError = true)
+                false
+            }
+        }
+    }
+
+    fun clearInterviewDraft(sessionId: String, turnId: String) {
+        accountId?.let { interviewDrafts.clear(it, sessionId, turnId) }
     }
 
     // ------------------------------------------------------------ 冷启恢复：只读查询 / 原 key 回放
@@ -1461,6 +2024,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             is Screen.Templates -> RestoreJobService.SCREEN_TEMPLATES
             is Screen.Match -> RestoreJobService.SCREEN_MATCH
             is Screen.PlanHub -> RestoreJobService.SCREEN_PLAN
+            Screen.InterviewHistory -> "interview_history"
+            is Screen.InterviewRoom -> RestoreJobService.SCREEN_INTERVIEW
+            is Screen.InterviewReport -> RestoreJobService.SCREEN_INTERVIEW
         }
         val preparationId = when (screen) {
             is Screen.Setup -> screen.preparationId
@@ -1470,11 +2036,19 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             is Screen.Templates -> screen.preparationId
             is Screen.Match -> screen.preparationId
             is Screen.PlanHub -> screen.preparationId
+            Screen.InterviewHistory -> null
+            is Screen.InterviewRoom -> null
+            is Screen.InterviewReport -> null
             else -> state.value.preparation?.id
         }
         val materialId = when (screen) {
             is Screen.Review -> screen.materialId
             is Screen.Editor -> screen.materialId
+            else -> null
+        }
+        val interviewSessionId = when (screen) {
+            is Screen.InterviewRoom -> screen.sessionId
+            is Screen.InterviewReport -> screen.sessionId
             else -> null
         }
         return RestoreScope(
@@ -1484,6 +2058,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             screen = screenName,
             preparationId = preparationId,
             materialId = materialId,
+            interviewSessionId = interviewSessionId,
         )
     }
 
@@ -1500,6 +2075,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 preparationId = preparationId ?: base.preparationId,
                 materialId = null,
             )
+            "follow_up", "interview_report" -> base.copy(
+                jobId = jobId,
+                preparationId = null,
+                materialId = null,
+                interviewSessionId = targetId,
+            )
             else -> base.copy(
                 jobId = jobId,
                 preparationId = preparationId ?: base.preparationId,
@@ -1514,6 +2095,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 (active.preparationId == null || base.preparationId == active.preparationId)
             "match" -> base.screen == RestoreJobService.SCREEN_MATCH &&
                 (active.preparationId == null || base.preparationId == active.preparationId)
+            "follow_up", "interview_report" ->
+                base.screen == RestoreJobService.SCREEN_INTERVIEW &&
+                    base.interviewSessionId == active.targetId
             else -> base.screen == RestoreJobService.SCREEN_REVIEW && base.materialId == active.targetId
         }
 
@@ -1523,6 +2107,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 jobId = active.jobId,
                 preparationId = active.preparationId ?: base.preparationId,
                 materialId = null,
+            )
+            "follow_up", "interview_report" -> base.copy(
+                jobId = active.jobId,
+                preparationId = null,
+                materialId = null,
+                interviewSessionId = active.targetId,
             )
             else -> base.copy(
                 jobId = active.jobId,
@@ -1538,6 +2128,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             is RestoreUiEffect.Project -> {
                 val outcome = effect.result.outcome as RestoreOutcome.Project
                 val message = when {
+                    outcome.interviewReport != null -> "报告已生成"
+                    outcome.interview != null && outcome.job.kind == "interview_report" -> "报告状态已更新"
+                    outcome.interview != null -> "面试状态已更新"
                     outcome.plan != null -> "计划已生成，请确认保存"
                     outcome.matchReport != null -> "匹配分析完成"
                     outcome.job.kind == "parse" -> "解析完成，请核对并确认结构；解析结果本身不是已确认事实"
@@ -1552,15 +2145,47 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         matchReport = outcome.matchReport ?: it.matchReport,
                         material = outcome.material ?: it.material,
                         snapshots = outcome.snapshots ?: it.snapshots,
+                        interviewDetail = outcome.interview ?: it.interviewDetail,
+                        interviewReport = outcome.interviewReport ?: it.interviewReport,
+                        interviewReportError = null,
                         job = outcome.job,
                         loading = false,
                         busyLabel = null,
                         message = UiMessage(message, isError = false),
                     )
                 }
+                outcome.interview?.report_job?.let { summary ->
+                    if (summary.state == "queued" || summary.state == "running") {
+                        watchReportJob(
+                            effect.result.scope,
+                            outcome.interview.session_id,
+                            summary.id,
+                        )
+                    }
+                }
             }
             is RestoreUiEffect.Inform -> {
                 val outcome = effect.result.outcome as RestoreOutcome.Inform
+                if (outcome.job.kind in setOf("follow_up", "interview_report")) {
+                    val isError = outcome.job.state != "queued" && outcome.job.state != "running"
+                    update {
+                        it.copy(
+                            loading = false,
+                            busyLabel = null,
+                            message = UiMessage(
+                                outcome.message,
+                                isError = isError,
+                                code = outcome.job.error?.code,
+                            ),
+                        )
+                    }
+                    if (outcome.job.state == "queued" || outcome.job.state == "running") {
+                        jobWatch.ensure(effect.result.scope, outcome.job)
+                    } else if (outcome.job.state == "failed" || outcome.job.state == "interrupted") {
+                        refreshInterviewInBackground(effect.result.scope.interviewSessionId)
+                    }
+                    return
+                }
                 val isError = outcome.job.state != "queued" && outcome.job.state != "running"
                 update {
                     it.copy(
@@ -1588,6 +2213,37 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     effect.scope.navigationEpoch,
                 ),
             )
+        }
+    }
+
+    /** 报告任务由 worker 在追问结清后创建；从详情里拿到 job_id 后再建立唯一订阅。 */
+    private fun watchReportJob(scope: RestoreScope, sessionId: String, jobId: String) {
+        if (jobWatch.isWatching(scope.accountId, jobId)) return
+        viewModelScope.launch {
+            when (val job = repository.job(jobId)) {
+                is ApiResult.Ok -> {
+                    val entry = scope.copy(
+                        jobId = jobId,
+                        screen = RestoreJobService.SCREEN_INTERVIEW,
+                        interviewSessionId = sessionId,
+                    )
+                    applyEffect(restoreCoordinator.project(entry, job.value))
+                }
+                is ApiResult.Err -> Unit
+            }
+        }
+    }
+
+    private fun refreshInterviewInBackground(sessionId: String?) {
+        if (sessionId == null) return
+        val ctx = currentRequestContext() ?: return
+        viewModelScope.launch {
+            when (val result = repository.interview(sessionId)) {
+                is ApiResult.Ok -> if (isCurrent(ctx)) {
+                    update { it.copy(interviewDetail = result.value) }
+                }
+                is ApiResult.Err -> Unit
+            }
         }
     }
 

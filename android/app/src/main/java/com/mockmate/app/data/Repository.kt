@@ -18,6 +18,16 @@ import com.mockmate.app.core.network.RoleDto
 import com.mockmate.app.core.network.SnapshotDto
 import com.mockmate.app.core.network.TextMaterialRequest
 import com.mockmate.app.core.network.UserDto
+import com.mockmate.app.core.network.InterviewAnswerRequest
+import com.mockmate.app.core.network.InterviewBasicReportRequest
+import com.mockmate.app.core.network.InterviewContinueRequest
+import com.mockmate.app.core.network.InterviewDetailDto
+import com.mockmate.app.core.network.InterviewHistoryDto
+import com.mockmate.app.core.network.InterviewReceiptDto
+import com.mockmate.app.core.network.InterviewReportDto
+import com.mockmate.app.core.network.InterviewSkipRequest
+import com.mockmate.app.core.network.InterviewStartReceiptDto
+import com.mockmate.app.core.network.StartInterviewRequest
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
@@ -196,6 +206,105 @@ class M1Repository(private val api: MockMateApi) {
 
     suspend fun confirmPlan(id: String, revision: Int, operationKey: String): ApiResult<PublicPlanDto> =
         call { api.confirmPlan(id, revision, operationKey) }
+
+    // ---------------------------------------------------------------- M2 文字面试
+
+    suspend fun startInterview(
+        planId: String,
+        planRevision: Int,
+        operationKey: String,
+    ): ApiResult<InterviewStartReceiptDto> = call {
+        api.startInterview(
+            planId,
+            StartInterviewRequest(planRevision, true),
+            operationKey,
+        )
+    }
+
+    suspend fun interviews(
+        limit: Int = 20,
+        cursor: String? = null,
+        planId: String? = null,
+    ): ApiResult<InterviewHistoryDto> = call { api.interviews(limit, cursor, planId) }
+
+    suspend fun interview(sessionId: String): ApiResult<InterviewDetailDto> =
+        call { api.interview(sessionId) }
+
+    suspend fun submitInterviewAnswer(
+        sessionId: String,
+        revision: Int,
+        turnId: String,
+        text: String,
+        operationKey: String,
+    ): ApiResult<InterviewReceiptDto> = call {
+        api.submitInterviewAnswer(
+            sessionId,
+            InterviewAnswerRequest(revision, turnId, text),
+            operationKey,
+        )
+    }
+
+    suspend fun skipInterviewTurn(
+        sessionId: String,
+        revision: Int,
+        turnId: String,
+        operationKey: String,
+    ): ApiResult<InterviewReceiptDto> = call {
+        api.skipInterviewTurn(sessionId, InterviewSkipRequest(revision, turnId), operationKey)
+    }
+
+    suspend fun pauseInterview(
+        sessionId: String,
+        revision: Int,
+        operationKey: String,
+    ): ApiResult<InterviewReceiptDto> = call {
+        api.pauseInterview(sessionId, revision, operationKey)
+    }
+
+    suspend fun resumeInterview(
+        sessionId: String,
+        revision: Int,
+        operationKey: String,
+    ): ApiResult<InterviewReceiptDto> = call {
+        api.resumeInterview(sessionId, revision, operationKey)
+    }
+
+    suspend fun continueWithoutFollowUp(
+        sessionId: String,
+        revision: Int,
+        jobId: String,
+        operationKey: String,
+    ): ApiResult<InterviewReceiptDto> = call {
+        api.continueWithoutFollowUp(
+            sessionId,
+            InterviewContinueRequest(revision, jobId),
+            operationKey,
+        )
+    }
+
+    suspend fun finishInterview(
+        sessionId: String,
+        revision: Int,
+        operationKey: String,
+    ): ApiResult<InterviewReceiptDto> = call {
+        api.finishInterview(sessionId, revision, operationKey)
+    }
+
+    suspend fun interviewReport(sessionId: String): ApiResult<InterviewReportDto> =
+        call { api.interviewReport(sessionId) }
+
+    suspend fun createBasicInterviewReport(
+        sessionId: String,
+        revision: Int,
+        jobId: String,
+        operationKey: String,
+    ): ApiResult<InterviewReceiptDto> = call {
+        api.createBasicInterviewReport(
+            sessionId,
+            InterviewBasicReportRequest(revision, jobId),
+            operationKey,
+        )
+    }
 
     suspend fun job(id: String): ApiResult<JobDto> = call { api.job(id) }
 

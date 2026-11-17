@@ -123,6 +123,8 @@ fun PreparationListScreen(vm: AppViewModel, state: AppState) {
                 Spacer(Modifier.height(8.dp))
                 PrimaryAction("新建面试准备", onClick = { vm.startNewPreparation() })
                 Spacer(Modifier.height(8.dp))
+                SecondaryAction("面试记录", onClick = { vm.openInterviewHistory() })
+                Spacer(Modifier.height(8.dp))
             }
             if (state.preparations.isEmpty()) {
                 item { EmptyHint("还没有准备。点击上方按钮创建第一份准备。") }

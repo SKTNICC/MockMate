@@ -1,22 +1,24 @@
-# MockMate 后端（M1）
+# MockMate 后端（M1 + M2）
 
-真实FastAPI + PostgreSQL后端，覆盖账户、材料/快照、准备、匹配、持久任务和计划。当前仍为开发基线，M1未整体验收通过。
+真实FastAPI + PostgreSQL后端，覆盖账户、材料/快照、准备、匹配、持久任务、计划和 M2 文字模拟面试（问答、追问、暂停/跳过/早退、面后评分报告、历史重开）。当前仍为开发基线，M1/M2 均未整体验收通过。
 
-启动见[本地开发](../docs/本地开发.md)，状态与限制见[工程进度](../docs/工程进度.md)。
+启动见[本地开发](../docs/本地开发.md)，状态与限制见[工程进度](../docs/工程进度.md)，M2 契约与验收口径见[M2 交接](../docs/M2文字模拟面试开发交接.md)。
 
 ## 结构与版本
 
 | 路径 | 作用 |
 |---|---|
-| `app/api/` | `/v1`路由、鉴权与对象归属 |
-| `app/services/` | 材料、准备、题库、计划、任务、幂等和内容导入 |
-| `app/ai/` | provider协议、DeepSeek adapter、测试provider和提示词 |
-| `app/workers/` | 独立worker、租约、fencing、显式重试和槽位复用 |
-| `alembic/` | 迁移，当前head `9b2c3d4e5f6a` |
-| `tests/` | 真实PostgreSQL集成测试、模拟外部HTTP及规则回归 |
-| `scripts/e2e_smoke.py` | 针对已运行测试API的HTTP冒烟 |
+| `app/api/` | `/v1`路由、鉴权与对象归属；M2 面试路由在 `interviews_routes.py` |
+| `app/services/` | 材料、准备、题库、计划、任务、幂等、内容导入和 `interviews.py` 状态机 |
+| `app/ai/` | provider协议、DeepSeek adapter、测试provider、追问/评分提示词 |
+| `app/workers/` | 独立worker、租约、fencing、显式重试、槽位复用、`follow_up`/`interview_report` |
+| `alembic/` | 迁移，当前单一 head `a1b2c3d4e5f7` |
+| `tests/` | 真实PostgreSQL集成测试、模拟外部HTTP、并发和契约回归 |
+| `scripts/e2e_smoke.py` | M1 HTTP 冒烟 |
+| `scripts/e2e_m2_smoke.py` | M2 六题闭环、追问、报告、历史与零回答早退冒烟 |
+| `scripts/verify_m2_migration.py` | 临时库：旧 M1 计划 → 升级 head → 原 plan 开场 |
 
-已验证Python3.12.7、PostgreSQL16.4；精确Python依赖在`requirements.txt`。SQLAlchemy2.0.36、Alembic1.14.0、FastAPI0.115.6、Pydantic2.10.4。
+已验证Python3.12.10、PostgreSQL17.11；精确Python依赖在`requirements.txt`。SQLAlchemy2.0.36、Alembic1.14.0、FastAPI0.115.6、Pydantic2.10.4。
 
 ## 配置与入口
 
@@ -41,7 +43,9 @@ python -m app.workers.runner
 
 ## 测试与内容
 
-`python -m pytest tests -q`当前覆盖169项。测试使用`127.0.0.1:55432`、用户`mockmate`、数据库`mockmate_test`，每次会话重建该测试库schema；只连接独立本地测试实例，详见开发说明。
+`python -m pytest tests -q`当前覆盖192项。默认仍使用`127.0.0.1:55432`、用户`mockmate`、数据库`mockmate_test`；也可显式设置`MOCKMATE_TEST_DATABASE_URL`指向回环主机上以`_test`结尾的独立库（例如`mockmate_m2_test`）。conftest 会拒绝与开发库同名、非回环主机或非测试库名，并在重建 schema 前用 `current_database()` 复核目标；每次会话重建该测试库schema。只连接独立本地测试实例，详见开发说明。
+
+M2 面试报告只发布公开 DTO：覆盖度、逐题维度、逐字引文与有限优势/改进项；内部评分快照、未曝光题干和模型只读输出不进入接口。报告任务失败可显式重试，或发布 `quality=unscored` 的基础报告；零回答收尾直接发布 `quality=no_answers`，不调用模型。
 
 `python -m app.cli seed --mode test`用于显式合成环境；`--mode production`不派生真实审核批准。CLI的`review-packet`和`import-content`接受外部离线内容与ledger路径。许可待确认的正式内容没有纳入此次公开源码。
 

@@ -349,6 +349,90 @@ class MockMateApi(
     suspend fun confirmPlan(id: String, revision: Int, operationKey: String): PublicPlanDto =
         writeJson("/plans/$id/confirm", "POST", RevisionRequest(revision), operationKey)
 
+    // ---------------------------------------------------------------- M2 文字面试
+
+    suspend fun startInterview(
+        planId: String,
+        request: StartInterviewRequest,
+        operationKey: String,
+    ): InterviewStartReceiptDto =
+        writeJson("/plans/$planId/interviews", "POST", request, operationKey)
+
+    suspend fun interviews(
+        limit: Int = 20,
+        cursor: String? = null,
+        planId: String? = null,
+    ): InterviewHistoryDto {
+        val params = mutableListOf("limit=$limit")
+        cursor?.let {
+            params += "cursor=${java.net.URLEncoder.encode(it, "UTF-8")}"
+        }
+        planId?.let {
+            params += "plan_id=${java.net.URLEncoder.encode(it, "UTF-8")}"
+        }
+        return getJson("/interviews?" + params.joinToString("&"))
+    }
+
+    suspend fun interview(sessionId: String): InterviewDetailDto =
+        getJson("/interviews/$sessionId")
+
+    suspend fun submitInterviewAnswer(
+        sessionId: String,
+        request: InterviewAnswerRequest,
+        operationKey: String,
+    ): InterviewReceiptDto =
+        writeJson("/interviews/$sessionId/answers", "POST", request, operationKey)
+
+    suspend fun skipInterviewTurn(
+        sessionId: String,
+        request: InterviewSkipRequest,
+        operationKey: String,
+    ): InterviewReceiptDto =
+        writeJson("/interviews/$sessionId/skip", "POST", request, operationKey)
+
+    suspend fun pauseInterview(
+        sessionId: String,
+        revision: Int,
+        operationKey: String,
+    ): InterviewReceiptDto =
+        writeJson("/interviews/$sessionId/pause", "POST", RevisionRequest(revision), operationKey)
+
+    suspend fun resumeInterview(
+        sessionId: String,
+        revision: Int,
+        operationKey: String,
+    ): InterviewReceiptDto =
+        writeJson("/interviews/$sessionId/resume", "POST", RevisionRequest(revision), operationKey)
+
+    suspend fun continueWithoutFollowUp(
+        sessionId: String,
+        request: InterviewContinueRequest,
+        operationKey: String,
+    ): InterviewReceiptDto =
+        writeJson(
+            "/interviews/$sessionId/continue-without-follow-up",
+            "POST",
+            request,
+            operationKey,
+        )
+
+    suspend fun finishInterview(
+        sessionId: String,
+        revision: Int,
+        operationKey: String,
+    ): InterviewReceiptDto =
+        writeJson("/interviews/$sessionId/finish", "POST", RevisionRequest(revision), operationKey)
+
+    suspend fun interviewReport(sessionId: String): InterviewReportDto =
+        getJson("/interviews/$sessionId/report")
+
+    suspend fun createBasicInterviewReport(
+        sessionId: String,
+        request: InterviewBasicReportRequest,
+        operationKey: String,
+    ): InterviewReceiptDto =
+        writeJson("/interviews/$sessionId/report/basic", "POST", request, operationKey)
+
     // ---------------------------------------------------------------- 任务
 
     suspend fun job(id: String): JobDto = getJson("/jobs/$id")

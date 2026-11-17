@@ -15,8 +15,8 @@ android {
         applicationId = "com.mockmate.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0-m1"
+        versionCode = 2
+        versionName = "0.2.0-m2"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         // 业务联调端点占位；真实联调由后续任务卡按环境覆盖，不在 APK 内保存任何密钥。

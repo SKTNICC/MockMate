@@ -160,6 +160,7 @@ private fun MatchRowCard(row: MatchRowDto) {
 @Composable
 fun PlanHubScreen(vm: AppViewModel, state: AppState, preparationId: String) {
     var showConsent by rememberSaveable { mutableStateOf(false) }
+    var showInterviewConsent by rememberSaveable { mutableStateOf(false) }
     val prep = state.preparation
     val plan = state.plan
     val ready = prep != null && prep.resume_snapshot_id != null && prep.jd_snapshot_id != null && prep.match_report_id != null
@@ -219,10 +220,44 @@ fun PlanHubScreen(vm: AppViewModel, state: AppState, preparationId: String) {
                         onClick = { vm.confirmPlan(plan.id) },
                     )
                 } else {
-                    InfoCard(title = "已保存", subtitle = "计划已准备好，面试功能后续阶段开放") {
+                    InfoCard(title = "已保存", subtitle = "该计划已确认，可开始一场正式文字面试") {
+                        val existing = state.interviewForPlan
                         Text(
-                            "该计划已确认保存。退出、杀进程或重新登录后，可从准备列表重新打开同一计划。",
+                            if (existing == null) {
+                                "本场会把你的回答及必要上下文发送给配置的 AI，用于追问判定与面后评分；需要在本场单独确认。"
+                            } else {
+                                "本计划已有一场面试：${existing.status} · 已答 ${existing.answered_main_count}/${existing.main_question_count}。"
+                            },
                             style = MaterialTheme.typography.bodySmall,
+                        )
+                        if (state.plan?.limitations?.any { it.startsWith("测试数据流程") } == true) {
+                            Spacer(Modifier.height(6.dp))
+                            Text(
+                                "合成环境：本场使用测试样板岗位与测试 provider，不代表真实 AI 或人工审核结果。",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                        }
+                        Spacer(Modifier.height(8.dp))
+                        when {
+                            existing == null -> PrimaryAction(
+                                text = "开始文字面试",
+                                enabled = !state.loading,
+                                onClick = { showInterviewConsent = true },
+                            )
+                            existing.status == "ended" -> PrimaryAction(
+                                text = "查看本场报告与问答",
+                                onClick = { vm.openInterviewReport(existing.session_id) },
+                            )
+                            else -> PrimaryAction(
+                                text = "继续文字面试",
+                                onClick = { vm.openInterview(existing.session_id) },
+                            )
+                        }
+                        Spacer(Modifier.height(6.dp))
+                        SecondaryAction(
+                            text = "查看面试记录",
+                            onClick = { vm.openInterviewHistory() },
                         )
                     }
                     Spacer(Modifier.height(8.dp))
@@ -247,6 +282,20 @@ fun PlanHubScreen(vm: AppViewModel, state: AppState, preparationId: String) {
                 vm.generatePlan(preparationId)
             },
             onDismiss = { showConsent = false },
+        )
+    }
+
+    if (showInterviewConsent && plan != null) {
+        ConsentDialog(
+            title = "确认开始本场文字面试？",
+            body = "你的回答及必要上下文会由配置的 AI 处理，用于追问判定与面后评分。" +
+                "本场独立确认；开始后可暂停、跳过或提前结束，结束后可查看带原话证据的报告。",
+            confirmLabel = "同意并开始",
+            onConfirm = {
+                showInterviewConsent = false
+                vm.startInterviewForPlan(preparationId, plan)
+            },
+            onDismiss = { showInterviewConsent = false },
         )
     }
 }

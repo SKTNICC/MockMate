@@ -1,8 +1,8 @@
 {
   "openapi": "3.1.0",
   "info": {
-    "title": "MockMate M1 target contract",
-    "version": "0.1.0",
+    "title": "MockMate /v1 contract (M1 + M2)",
+    "version": "0.2.0",
     "description": "开发目标，尚未实现。维护源 tools/m1/build_contracts.py。所有私人对象由会话确定owner。"
   },
   "servers": [
@@ -4028,6 +4028,1073 @@
           }
         }
       }
+    },
+    "/plans/{plan_id}/interviews": {
+      "post": {
+        "operationId": "startInterview",
+        "summary": "开始文字面试；同计划重复进入打开原场",
+        "parameters": [
+          {
+            "name": "plan_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "description": "逻辑操作UUID；相同key与body回放，不同body冲突；重试不得换key。",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InterviewStartReceipt"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InterviewStartReceipt"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "统一错误；具体code与语义见M1架构说明",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "统一错误；具体code与语义见M1架构说明",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "统一错误；具体code与语义见M1架构说明",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "统一错误；具体code与语义见M1架构说明",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "统一错误；具体code与语义见M1架构说明",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StartInterviewInput"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/interviews": {
+      "get": {
+        "operationId": "listInterviews",
+        "summary": "本人面试记录，按开场时间倒序",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 50
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "plan_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InterviewHistory"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "统一错误；具体code与语义见M1架构说明",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "统一错误；具体code与语义见M1架构说明",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "统一错误；具体code与语义见M1架构说明",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "统一错误；具体code与语义见M1架构说明",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "统一错误；具体code与语义见M1架构说明",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/interviews/{session_id}": {
+      "get": {
+        "operationId": "getInterview",
+        "summary": "面试间／恢复／问答查看",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InterviewDetail"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "统一错误；具体code与语义见M1架构说明",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "统一错误；具体code与语义见M1架构说明",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "统一错误；具体code与语义见M1架构说明",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "统一错误；具体code与语义见M1架构说明",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "统一错误；具体code与语义见M1架构说明",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/interviews/{session_id}/answers": {
+      "post": {
+        "operationId": "submitInterviewAnswer",
+        "summary": "提交主回答或追问回答",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "description": "逻辑操作UUID；相同key与body回放，不同body冲突；重试不得换key。",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "成功；异步接口返回持久化Job，GET轮询结果",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InterviewReceipt"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InterviewReceipt"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "统一错误；具体code与语义见M1架构说明",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "统一错误；具体code与语义见M1架构说明",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "统一错误；具体code与语义见M1架构说明",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "统一错误；具体code与语义见M1架构说明",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "统一错误；具体code与语义见M1架构说明",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InterviewAnswerInput"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/interviews/{session_id}/skip": {
+      "post": {
+        "operationId": "skipInterviewTurn",
+        "summary": "跳过当前主问题或追问",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "description": "逻辑操作UUID；相同key与body回放，不同body冲突；重试不得换key。",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InterviewReceipt"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "统一错误；具体code与语义见M1架构说明",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "统一错误；具体code与语义见M1架构说明",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "统一错误；具体code与语义见M1架构说明",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "统一错误；具体code与语义见M1架构说明",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "统一错误；具体code与语义见M1架构说明",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InterviewSkipInput"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/interviews/{session_id}/pause": {
+      "post": {
+        "operationId": "pauseInterview",
+        "summary": "暂停面试",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "description": "逻辑操作UUID；相同key与body回放，不同body冲突；重试不得换key。",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InterviewReceipt"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "统一错误；具体code与语义见M1架构说明",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "统一错误；具体code与语义见M1架构说明",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "统一错误；具体code与语义见M1架构说明",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "统一错误；具体code与语义见M1架构说明",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "统一错误；具体code与语义见M1架构说明",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RevisionInput"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/interviews/{session_id}/resume": {
+      "post": {
+        "operationId": "resumeInterview",
+        "summary": "继续面试",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "description": "逻辑操作UUID；相同key与body回放，不同body冲突；重试不得换key。",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InterviewReceipt"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "统一错误；具体code与语义见M1架构说明",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "统一错误；具体code与语义见M1架构说明",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "统一错误；具体code与语义见M1架构说明",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "统一错误；具体code与语义见M1架构说明",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "统一错误；具体code与语义见M1架构说明",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RevisionInput"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/interviews/{session_id}/continue-without-follow-up": {
+      "post": {
+        "operationId": "continueWithoutFollowUp",
+        "summary": "追问判定失败后保留主回答继续",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "description": "逻辑操作UUID；相同key与body回放，不同body冲突；重试不得换key。",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InterviewReceipt"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "统一错误；具体code与语义见M1架构说明",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "统一错误；具体code与语义见M1架构说明",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "统一错误；具体code与语义见M1架构说明",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "统一错误；具体code与语义见M1架构说明",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "统一错误；具体code与语义见M1架构说明",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InterviewContinueInput"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/interviews/{session_id}/finish": {
+      "post": {
+        "operationId": "finishInterview",
+        "summary": "提前结束并锁定问答",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "description": "逻辑操作UUID；相同key与body回放，不同body冲突；重试不得换key。",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InterviewReceipt"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "统一错误；具体code与语义见M1架构说明",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "统一错误；具体code与语义见M1架构说明",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "统一错误；具体code与语义见M1架构说明",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "统一错误；具体code与语义见M1架构说明",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "统一错误；具体code与语义见M1架构说明",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RevisionInput"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/interviews/{session_id}/report": {
+      "get": {
+        "operationId": "getInterviewReport",
+        "summary": "读取已发布报告；未结束/生成中/失败返回409",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InterviewReport"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "统一错误；具体code与语义见M1架构说明",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "统一错误；具体code与语义见M1架构说明",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "统一错误；具体code与语义见M1架构说明",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "统一错误；具体code与语义见M1架构说明",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "统一错误；具体code与语义见M1架构说明",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/interviews/{session_id}/report/basic": {
+      "post": {
+        "operationId": "createBasicInterviewReport",
+        "summary": "报告任务失败后发布基础报告",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "description": "逻辑操作UUID；相同key与body回放，不同body冲突；重试不得换key。",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InterviewReceipt"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "统一错误；具体code与语义见M1架构说明",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "统一错误；具体code与语义见M1架构说明",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "统一错误；具体code与语义见M1架构说明",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "统一错误；具体code与语义见M1架构说明",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "统一错误；具体code与语义见M1架构说明",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InterviewBasicReportInput"
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -6185,7 +7252,9 @@
             "enum": [
               "material",
               "match_report",
-              "plan"
+              "plan",
+              "interview_session",
+              "interview_report"
             ]
           },
           "id": {
@@ -6212,7 +7281,9 @@
               "extract",
               "parse",
               "match",
-              "plan"
+              "plan",
+              "follow_up",
+              "interview_report"
             ]
           },
           "target_id": {
@@ -6283,6 +7354,1139 @@
           "error",
           "created_at",
           "updated_at"
+        ]
+      },
+      "StartInterviewInput": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "plan_revision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "external_processing_consent": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "plan_revision",
+          "external_processing_consent"
+        ]
+      },
+      "InterviewStartReceipt": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "required": [
+          "session_id",
+          "revision"
+        ]
+      },
+      "InterviewAnswerInput": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "revision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "turn_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4000
+          }
+        },
+        "required": [
+          "revision",
+          "turn_id",
+          "text"
+        ]
+      },
+      "InterviewSkipInput": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "revision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "turn_id": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        "required": [
+          "revision",
+          "turn_id"
+        ]
+      },
+      "InterviewContinueInput": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "revision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "job_id": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        "required": [
+          "revision",
+          "job_id"
+        ]
+      },
+      "InterviewBasicReportInput": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "revision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "job_id": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        "required": [
+          "revision",
+          "job_id"
+        ]
+      },
+      "InterviewReceipt": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "answer_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "job_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "session_id",
+          "revision",
+          "answer_id",
+          "job_id"
+        ]
+      },
+      "InterviewMaterialVersion": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "resume",
+              "jd"
+            ]
+          },
+          "snapshot_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "material_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "source_revision": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "required": [
+          "kind",
+          "snapshot_id",
+          "material_id",
+          "title",
+          "source_revision"
+        ]
+      },
+      "InterviewPlanSummary": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "plan_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "main_question_count": {
+            "type": "integer",
+            "enum": [
+              2,
+              4,
+              6
+            ]
+          },
+          "source_counts": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "bank": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 3
+              },
+              "generated": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 3
+              }
+            },
+            "required": [
+              "bank",
+              "generated"
+            ]
+          },
+          "material_versions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/InterviewMaterialVersion"
+            },
+            "minItems": 2
+          },
+          "sample_only": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "plan_id",
+          "main_question_count",
+          "source_counts",
+          "material_versions",
+          "sample_only"
+        ]
+      },
+      "InterviewAnswerView": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "answer_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4000
+          },
+          "submitted_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "answer_id",
+          "text",
+          "submitted_at"
+        ]
+      },
+      "InterviewTurnView": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "turn_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "question_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "position": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 6
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "main",
+              "follow_up"
+            ]
+          },
+          "prompt": {
+            "type": "string",
+            "minLength": 1
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "answered",
+              "skipped",
+              "unanswered"
+            ]
+          },
+          "answer": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/InterviewAnswerView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "turn_id",
+          "question_id",
+          "position",
+          "kind",
+          "prompt",
+          "status",
+          "answer"
+        ]
+      },
+      "InterviewJobSummary": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "queued",
+              "running",
+              "succeeded",
+              "failed",
+              "interrupted",
+              "superseded"
+            ]
+          },
+          "attempt": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2
+          },
+          "retryable": {
+            "type": "boolean"
+          },
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "state",
+          "attempt",
+          "retryable",
+          "error_code"
+        ]
+      },
+      "InterviewDetail": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "plan_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "preparation_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "role_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "level": {
+            "type": "string",
+            "enum": [
+              "intern",
+              "junior"
+            ]
+          },
+          "mode": {
+            "const": "text"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "paused",
+              "ended"
+            ]
+          },
+          "phase": {
+            "type": "string",
+            "enum": [
+              "awaiting_answer",
+              "deciding_follow_up",
+              "closed"
+            ]
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "started_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "ended_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "end_reason": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "completed",
+                  "early_finish"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "plan_summary": {
+            "$ref": "#/components/schemas/InterviewPlanSummary"
+          },
+          "opening_text": {
+            "type": "string",
+            "minLength": 1
+          },
+          "closing_text": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "current_main_position": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 6
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "answered_main_count": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 6
+          },
+          "skipped_main_count": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 6
+          },
+          "current_turn": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/InterviewTurnView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "allowed_actions": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "answer",
+                "skip",
+                "pause",
+                "resume",
+                "finish",
+                "continue_without_follow_up",
+                "retry_follow_up",
+                "retry_report",
+                "create_basic_report"
+              ]
+            },
+            "minItems": 0
+          },
+          "transcript": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/InterviewTurnView"
+            },
+            "minItems": 0
+          },
+          "follow_up_job": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/InterviewJobSummary"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "report_job": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/InterviewJobSummary"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "report_state": {
+            "type": "string",
+            "enum": [
+              "not_requested",
+              "pending",
+              "failed",
+              "ready"
+            ]
+          }
+        },
+        "required": [
+          "session_id",
+          "plan_id",
+          "preparation_id",
+          "role_id",
+          "level",
+          "mode",
+          "status",
+          "phase",
+          "revision",
+          "started_at",
+          "ended_at",
+          "end_reason",
+          "plan_summary",
+          "opening_text",
+          "closing_text",
+          "current_main_position",
+          "answered_main_count",
+          "skipped_main_count",
+          "current_turn",
+          "allowed_actions",
+          "transcript",
+          "follow_up_job",
+          "report_job",
+          "report_state"
+        ]
+      },
+      "InterviewHistoryItem": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "plan_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "preparation_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "role_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "level": {
+            "type": "string",
+            "enum": [
+              "intern",
+              "junior"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "paused",
+              "ended"
+            ]
+          },
+          "started_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "ended_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "end_reason": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "completed",
+                  "early_finish"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "main_question_count": {
+            "type": "integer",
+            "minimum": 2,
+            "maximum": 6
+          },
+          "answered_main_count": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 6
+          },
+          "report_state": {
+            "type": "string",
+            "enum": [
+              "not_requested",
+              "pending",
+              "failed",
+              "ready"
+            ]
+          }
+        },
+        "required": [
+          "session_id",
+          "plan_id",
+          "preparation_id",
+          "role_id",
+          "level",
+          "status",
+          "started_at",
+          "ended_at",
+          "end_reason",
+          "main_question_count",
+          "answered_main_count",
+          "report_state"
+        ]
+      },
+      "InterviewHistory": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/InterviewHistoryItem"
+            },
+            "minItems": 0
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor"
+        ]
+      },
+      "InterviewEvidence": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "answer_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "quote": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 240
+          }
+        },
+        "required": [
+          "answer_id",
+          "quote"
+        ]
+      },
+      "InterviewDimensionResult": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "dimension_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "weight": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "maximum": 1
+          },
+          "verdict": {
+            "type": "string",
+            "enum": [
+              "scored",
+              "insufficient_evidence",
+              "uncertain"
+            ]
+          },
+          "score": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 4
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "evidence": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/InterviewEvidence"
+            },
+            "minItems": 0
+          },
+          "explanation": {
+            "type": "string"
+          },
+          "improvement": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "dimension_id",
+          "name",
+          "weight",
+          "verdict",
+          "score",
+          "evidence",
+          "explanation",
+          "improvement"
+        ]
+      },
+      "InterviewReportQuestion": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "question_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "position": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 6
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "bank",
+              "generated"
+            ]
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "answered",
+              "skipped",
+              "unanswered",
+              "not_reached"
+            ]
+          },
+          "prompt": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "bank_version": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "turns": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/InterviewTurnView"
+            },
+            "minItems": 0
+          },
+          "assessment_trust": {
+            "type": "string",
+            "enum": [
+              "reviewed",
+              "provisional"
+            ]
+          },
+          "rubric_version": {
+            "type": "string",
+            "minLength": 1
+          },
+          "question_score": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 100
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "dimensions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/InterviewDimensionResult"
+            },
+            "minItems": 0
+          },
+          "follow_up_outcome": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "not_needed",
+                  "asked",
+                  "unavailable",
+                  "cancelled"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "question_id",
+          "position",
+          "source",
+          "outcome",
+          "prompt",
+          "bank_version",
+          "turns",
+          "assessment_trust",
+          "rubric_version",
+          "question_score",
+          "dimensions",
+          "follow_up_outcome"
+        ]
+      },
+      "InterviewCoverage": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "planned": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 6
+          },
+          "presented": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 6
+          },
+          "answered": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 6
+          },
+          "skipped": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 6
+          },
+          "unanswered": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 6
+          },
+          "not_reached": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 6
+          },
+          "scored": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 6
+          },
+          "bank_planned": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 3
+          },
+          "bank_answered": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 3
+          },
+          "generated_planned": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 3
+          },
+          "generated_answered": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 3
+          },
+          "follow_up_presented": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 6
+          },
+          "follow_up_answered": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 6
+          }
+        },
+        "required": [
+          "planned",
+          "presented",
+          "answered",
+          "skipped",
+          "unanswered",
+          "not_reached",
+          "scored",
+          "bank_planned",
+          "bank_answered",
+          "generated_planned",
+          "generated_answered",
+          "follow_up_presented",
+          "follow_up_answered"
+        ]
+      },
+      "InterviewFinding": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "question_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "position": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 6
+          },
+          "dimension_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1
+          },
+          "evidence": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/InterviewEvidence"
+            },
+            "minItems": 0
+          }
+        },
+        "required": [
+          "question_id",
+          "position",
+          "dimension_id",
+          "text",
+          "evidence"
+        ]
+      },
+      "InterviewReport": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "report_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "session_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "role_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "level": {
+            "type": "string",
+            "enum": [
+              "intern",
+              "junior"
+            ]
+          },
+          "material_versions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/InterviewMaterialVersion"
+            },
+            "minItems": 2
+          },
+          "quality": {
+            "type": "string",
+            "enum": [
+              "full",
+              "partial",
+              "no_answers",
+              "unscored"
+            ]
+          },
+          "rubric_policy_version": {
+            "type": "string",
+            "minLength": 1
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "end_reason": {
+            "type": "string",
+            "enum": [
+              "completed",
+              "early_finish"
+            ]
+          },
+          "coverage": {
+            "$ref": "#/components/schemas/InterviewCoverage"
+          },
+          "strengths": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/InterviewFinding"
+            },
+            "minItems": 0
+          },
+          "improvements": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/InterviewFinding"
+            },
+            "minItems": 0
+          },
+          "questions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/InterviewReportQuestion"
+            },
+            "minItems": 0
+          }
+        },
+        "required": [
+          "report_id",
+          "session_id",
+          "role_id",
+          "level",
+          "material_versions",
+          "quality",
+          "rubric_policy_version",
+          "created_at",
+          "end_reason",
+          "coverage",
+          "strengths",
+          "improvements",
+          "questions"
         ]
       },
       "User": {

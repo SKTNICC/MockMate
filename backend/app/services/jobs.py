@@ -103,6 +103,30 @@ def lock_job_target(
                 details=[f"current_revision={row.revision}"],
             )
         return row
+    if kind in ("follow_up", "interview_report"):
+        from app.models import InterviewSession
+
+        row = db.scalars(
+            select(InterviewSession)
+            .where(InterviewSession.id == target_id)
+            .execution_options(populate_existing=True)
+            .with_for_update()
+        ).one_or_none()
+        if row is None or row.owner_id != owner_id:
+            raise AppError("NOT_FOUND", "面试不存在", status_code=404)
+        if input_revision is not None:
+            current = (
+                row.follow_up_input_revision
+                if kind == "follow_up"
+                else row.ended_revision
+            )
+            if current != input_revision:
+                raise AppError(
+                    "REVISION_CONFLICT",
+                    "面试任务输入已变化，请刷新后重试",
+                    details=[f"current_revision={current}"],
+                )
+        return row
     raise AppError("INVALID_INPUT", "未知任务类型")
 
 
@@ -164,6 +188,10 @@ def create_or_get_job(
         )
     if kind in ("extract", "parse"):
         target.latest_job_id = job.id
+    elif kind == "follow_up":
+        target.follow_up_job_id = job.id
+    elif kind == "interview_report":
+        target.report_job_id = job.id
     return job, created
 
 
@@ -177,6 +205,24 @@ def inputs_current(db: Session, job: Job) -> bool:
         if job.kind == "extract" and draft.state == "parsed":
             return False
         return True
+    if job.kind in ("follow_up", "interview_report"):
+        from app.models import InterviewSession
+
+        session = db.get(InterviewSession, job.target_id)
+        if session is None or session.owner_id != job.owner_id:
+            return False
+        if job.kind == "follow_up":
+            return (
+                session.follow_up_job_id == job.id
+                and session.follow_up_input_revision == job.input_revision
+                and session.phase == "deciding_follow_up"
+                and session.status in ("active", "paused")
+            )
+        return (
+            session.report_job_id == job.id
+            and session.ended_revision == job.input_revision
+            and session.status == "ended"
+        )
     preparation = db.get(Preparation, job.target_id)
     if preparation is None or preparation.owner_id != job.owner_id:
         return False
@@ -189,7 +235,11 @@ def is_retryable(db: Session, job: Job, max_attempts: int = 2) -> bool:
     if job.attempt >= max_attempts:
         return False
     code = job.error_code or (job.error or {}).get("code")
-    if code not in RETRYABLE_JOB_ERRORS:
+    retryable_codes = RETRYABLE_JOB_ERRORS
+    if job.kind in ("follow_up", "interview_report"):
+        # 追问与报告允许在模型输出结构非法后显式重试；M1 任务行为保持不变。
+        retryable_codes = RETRYABLE_JOB_ERRORS | {"AI_INVALID_OUTPUT"}
+    if code not in retryable_codes:
         return False
     return inputs_current(db, job)
 

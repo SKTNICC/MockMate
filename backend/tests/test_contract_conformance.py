@@ -39,18 +39,29 @@ def test_contract_paths_are_implemented() -> None:
     from app.main import app
 
     implemented = {
-        (method.upper(), path.removeprefix("/v1"))
+        (method.upper(), path.removeprefix("/v1")): operation
         for path, operations in app.openapi()["paths"].items()
         if path.startswith("/v1")
-        for method in operations
+        for method, operation in operations.items()
     }
     contract = {
-        (method.upper(), path)
+        (method.upper(), path): operation
         for path, operations in OPENAPI["paths"].items()
-        for method in operations
+        for method, operation in operations.items()
     }
-    missing = contract - implemented
+    missing = set(contract) - set(implemented)
     assert not missing, f"契约中缺少实现: {sorted(missing)}"
+    for key, operation in contract.items():
+        if not key[1].startswith("/interviews") and not key[1].endswith("/interviews"):
+            continue
+        actual = implemented[key]
+        assert actual["operationId"] == operation["operationId"], key
+        expected_codes = set(operation["responses"])
+        actual_codes = set(actual["responses"])
+        assert expected_codes.issubset(actual_codes), (
+            key,
+            expected_codes - actual_codes,
+        )
 
 
 def test_error_envelope_matches_contract(client: TestClient) -> None:
@@ -146,3 +157,69 @@ def test_preparation_match_plan_job_shapes(client: TestClient, worker) -> None:
         headers={**auth(token), "Idempotency-Key": new_key()},
     )
     validate("PublicPlan", confirmed.json())
+
+
+def test_interview_shapes_match_contract(client: TestClient, worker) -> None:
+    from tests.m2_helpers import (
+        LONG_ANSWER,
+        answer,
+        create_confirmed_plan,
+        detail,
+        finish,
+        start_interview,
+    )
+
+    _, token = issue_token(client)
+    _prep, plan = create_confirmed_plan(client, token, worker, count=2)
+
+    started = client.post(
+        f"/v1/plans/{plan['id']}/interviews",
+        json={"plan_revision": plan["revision"], "external_processing_consent": True},
+        headers={**auth(token), "Idempotency-Key": new_key()},
+    )
+    assert started.status_code == 201, started.text
+    validate("InterviewStartReceipt", started.json())
+    session_id = started.json()["session_id"]
+
+    current = detail(client, token, session_id)
+    validate("InterviewDetail", current)
+    assert current["allowed_actions"]
+    assert current["report_state"] == "not_requested"
+
+    accepted = answer(
+        client,
+        token,
+        session_id,
+        revision=current["revision"],
+        turn_id=current["current_turn"]["turn_id"],
+        text=LONG_ANSWER,
+    )
+    assert accepted.status_code == 202, accepted.text
+    validate("InterviewReceipt", accepted.json())
+    assert accepted.json()["answer_id"] and accepted.json()["job_id"]
+
+    deciding = detail(client, token, session_id)
+    validate("InterviewDetail", deciding)
+    assert deciding["phase"] == "deciding_follow_up"
+    assert deciding["current_turn"] is None
+
+    finished = finish(client, token, session_id, deciding["revision"])
+    assert finished.status_code == 200, finished.text
+    validate("InterviewReceipt", finished.json())
+    ended = detail(client, token, session_id)
+    validate("InterviewDetail", ended)
+    assert ended["status"] == "ended"
+
+    pending = client.get(f"/v1/interviews/{session_id}/report", headers=auth(token))
+    assert pending.status_code == 409
+    validate("ErrorResponse", pending.json())
+
+    report_job = wait_job(client, token, ended["report_job"]["id"], worker, attempts=8)
+    validate("Job", report_job)
+    report = client.get(f"/v1/interviews/{session_id}/report", headers=auth(token))
+    assert report.status_code == 200, report.text
+    validate("InterviewReport", report.json())
+    assert report.json()["end_reason"] == "early_finish"
+
+    history = client.get("/v1/interviews?limit=10", headers=auth(token))
+    validate("InterviewHistory", history.json())

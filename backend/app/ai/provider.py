@@ -59,6 +59,26 @@ class AiProvider(ABC):
     ) -> dict:
         ...
 
+    @abstractmethod
+    def decide_follow_up(
+        self,
+        *,
+        question: dict,
+        answer_text: str,
+        context: dict | None = None,
+    ) -> dict:
+        ...
+
+    @abstractmethod
+    def score_interview_question(
+        self,
+        *,
+        question: dict,
+        answers: list[dict],
+        dimensions: list[dict],
+    ) -> dict:
+        ...
+
 
 def _validate(model: type[BaseModel], data: object):
     try:
@@ -540,6 +560,106 @@ class TestProvider(AiProvider):
             uncertain=False,
         ).model_dump(mode="json")
 
+    # -- M2 追问与评分：确定性样例，仅用于流程验证
+
+    @staticmethod
+    def _short_quote(text: str) -> str:
+        for line in text.splitlines():
+            stripped = line.strip()
+            if stripped:
+                return stripped[:20]
+        return text.strip()[:20]
+
+    def decide_follow_up(
+        self,
+        *,
+        question: dict,
+        answer_text: str,
+        context: dict | None = None,
+    ) -> dict:
+        self._begin_call()
+        context = context or {}
+        quote = self._short_quote(answer_text)
+        # 每类来源的第一道主问题确定性地追问一次，其余无需追问。
+        if context.get("is_first_of_source") and quote:
+            focus = (question.get("focus") or "这个判断")[:24]
+            prompt = (
+                f"围绕「{focus}」，你在回答中提到「{quote}」。"
+                "能进一步说明判断依据，以及这个做法在什么边界条件下会失效吗？"
+            )
+            return {
+                "decision": "ask",
+                "prompt": prompt[:220],
+                "answer_quote": quote,
+                "target": "说明实现依据与适用边界",
+            }
+        return {"decision": "advance", "prompt": None, "answer_quote": None, "target": None}
+
+    def score_interview_question(
+        self,
+        *,
+        question: dict,
+        answers: list[dict],
+        dimensions: list[dict],
+    ) -> dict:
+        self._begin_call()
+        text = "\n".join(item["text"] for item in answers if item.get("text"))
+        first_answer_id = answers[0]["answer_id"] if answers else None
+        if not text or first_answer_id is None or len(text.strip()) < 8:
+            return {
+                "question_id": question["id"],
+                "dimensions": [
+                    {
+                        "dimension_id": dim["id"],
+                        "verdict": "insufficient_evidence",
+                        "score": None,
+                        "evidence": [],
+                        "explanation": "回答过短，无法在本场原话中定位该维度的有效证据。",
+                        "improvement": "用具体事实、原因和验证步骤展开回答。",
+                    }
+                    for dim in dimensions
+                ],
+            }
+        quote = text.strip()[:60]
+        evidence = [{"answer_id": first_answer_id, "quote": quote}]
+        base = 2
+        if len(text) >= 40:
+            base += 1
+        if any(word in text for word in ("因为", "先", "步骤", "验证", "边界", "所以")):
+            base += 1
+        base = max(0, min(4, base))
+        results = []
+        for dim in dimensions:
+            if dim["id"] == "expression_structure":
+                score = 2
+                if "\n" in text or "因为" in text or "先" in text:
+                    score += 1
+                if len(text) >= 80:
+                    score += 1
+                score = max(0, min(4, score))
+                results.append(
+                    {
+                        "dimension_id": dim["id"],
+                        "verdict": "scored",
+                        "score": score,
+                        "evidence": evidence,
+                        "explanation": "文字按因果或步骤组织，能跟随主要结论。",
+                        "improvement": "每个结论后补一句边界或验证方式。",
+                    }
+                )
+                continue
+            results.append(
+                {
+                    "dimension_id": dim["id"],
+                    "verdict": "scored",
+                    "score": base,
+                    "evidence": evidence,
+                    "explanation": "原话给出了基本要点，并部分说明原因或验证思路。",
+                    "improvement": "补充适用前提、反例或可执行验证步骤。",
+                }
+            )
+        return {"question_id": question["id"], "dimensions": results}
+
 
 # --------------------------------------------------------------------------- DeepSeek
 
@@ -712,3 +832,35 @@ class DeepSeekProvider(AiProvider):
         )
         parsed, _ = self._chat_json(system, user)
         return _validate(DuplicateReviewOutput, parsed).model_dump(mode="json")
+
+    def decide_follow_up(
+        self,
+        *,
+        question: dict,
+        answer_text: str,
+        context: dict | None = None,
+    ) -> dict:
+        from app.ai.prompts import follow_up_prompt
+        from app.schemas import FollowUpDecisionOutput
+
+        system, user = follow_up_prompt(
+            question=question, answer_text=answer_text, context=context
+        )
+        parsed, _ = self._chat_json(system, user)
+        return _validate(FollowUpDecisionOutput, parsed).model_dump(mode="json")
+
+    def score_interview_question(
+        self,
+        *,
+        question: dict,
+        answers: list[dict],
+        dimensions: list[dict],
+    ) -> dict:
+        from app.ai.prompts import score_prompt
+        from app.schemas import ScoreQuestionOutput
+
+        system, user = score_prompt(
+            question=question, answers=answers, dimensions=dimensions
+        )
+        parsed, _ = self._chat_json(system, user)
+        return _validate(ScoreQuestionOutput, parsed).model_dump(mode="json")

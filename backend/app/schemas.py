@@ -456,7 +456,9 @@ class PublicPlan(ContractModel):
 
 
 class ResultRef(ContractModel):
-    entity_type: Literal["material", "match_report", "plan"]
+    entity_type: Literal[
+        "material", "match_report", "plan", "interview_session", "interview_report"
+    ]
     id: uuid.UUID
 
 
@@ -474,7 +476,7 @@ class ErrorResponse(ContractModel):
 
 class Job(ContractModel):
     id: uuid.UUID
-    kind: Literal["extract", "parse", "match", "plan"]
+    kind: Literal["extract", "parse", "match", "plan", "follow_up", "interview_report"]
     target_id: uuid.UUID
     input_revision: int = Field(ge=1)
     state: Literal["queued", "running", "succeeded", "failed", "interrupted", "superseded"]
@@ -508,6 +510,242 @@ class DuplicateReviewOutput(ContractModel):
     duplicate_pairs: list[dict] = Field(default_factory=list)
     grounding_issues: list[dict] = Field(default_factory=list)
     uncertain: bool
+
+
+# --------------------------------------------------------------------------- M2 文字面试
+
+
+class StartInterviewInput(ContractModel):
+    plan_revision: int = Field(ge=1)
+    external_processing_consent: bool
+
+
+class InterviewStartReceipt(ContractModel):
+    session_id: uuid.UUID
+    revision: int = Field(ge=1)
+
+
+class InterviewAnswerInput(ContractModel):
+    revision: int = Field(ge=1)
+    turn_id: uuid.UUID
+    # 4000 是 Unicode 码点上限；空白字符串另由服务端校验。
+    text: str = Field(min_length=1, max_length=4000)
+
+
+class InterviewSkipInput(ContractModel):
+    revision: int = Field(ge=1)
+    turn_id: uuid.UUID
+
+
+class InterviewContinueInput(ContractModel):
+    revision: int = Field(ge=1)
+    job_id: uuid.UUID
+
+
+class InterviewBasicReportInput(ContractModel):
+    revision: int = Field(ge=1)
+    job_id: uuid.UUID
+
+
+class InterviewReceipt(ContractModel):
+    session_id: uuid.UUID
+    revision: int = Field(ge=1)
+    answer_id: uuid.UUID | None = None
+    job_id: uuid.UUID | None = None
+
+
+class InterviewMaterialVersion(ContractModel):
+    kind: Literal["resume", "jd"]
+    snapshot_id: uuid.UUID
+    material_id: uuid.UUID
+    title: str = Field(min_length=1, max_length=120)
+    source_revision: int = Field(ge=1)
+
+
+class InterviewPlanSummary(ContractModel):
+    plan_id: uuid.UUID
+    main_question_count: Literal[2, 4, 6]
+    source_counts: SourceCounts
+    material_versions: list[InterviewMaterialVersion] = Field(min_length=2)
+    sample_only: bool
+
+
+class InterviewAnswerView(ContractModel):
+    answer_id: uuid.UUID
+    text: str = Field(min_length=1, max_length=4000)
+    submitted_at: datetime
+
+
+class InterviewTurnView(ContractModel):
+    turn_id: uuid.UUID
+    question_id: uuid.UUID
+    position: int = Field(ge=1, le=6)
+    kind: Literal["main", "follow_up"]
+    prompt: str = Field(min_length=1)
+    status: Literal["pending", "answered", "skipped", "unanswered"]
+    answer: InterviewAnswerView | None = None
+
+
+class InterviewJobSummary(ContractModel):
+    id: uuid.UUID
+    state: Literal["queued", "running", "succeeded", "failed", "interrupted", "superseded"]
+    attempt: int = Field(ge=1, le=2)
+    retryable: bool
+    error_code: str | None = None
+
+
+class InterviewDetail(ContractModel):
+    session_id: uuid.UUID
+    plan_id: uuid.UUID
+    preparation_id: uuid.UUID
+    role_id: str = Field(min_length=1)
+    level: Literal["intern", "junior"]
+    mode: Literal["text"]
+    status: Literal["active", "paused", "ended"]
+    phase: Literal["awaiting_answer", "deciding_follow_up", "closed"]
+    revision: int = Field(ge=1)
+    started_at: datetime
+    ended_at: datetime | None = None
+    end_reason: Literal["completed", "early_finish"] | None = None
+    plan_summary: InterviewPlanSummary
+    opening_text: str = Field(min_length=1)
+    closing_text: str | None = None
+    current_main_position: int | None = Field(default=None, ge=1, le=6)
+    answered_main_count: int = Field(ge=0, le=6)
+    skipped_main_count: int = Field(ge=0, le=6)
+    current_turn: InterviewTurnView | None = None
+    allowed_actions: list[
+        Literal[
+            "answer",
+            "skip",
+            "pause",
+            "resume",
+            "finish",
+            "continue_without_follow_up",
+            "retry_follow_up",
+            "retry_report",
+            "create_basic_report",
+        ]
+    ] = Field(default_factory=list)
+    transcript: list[InterviewTurnView] = Field(default_factory=list)
+    follow_up_job: InterviewJobSummary | None = None
+    report_job: InterviewJobSummary | None = None
+    report_state: Literal["not_requested", "pending", "failed", "ready"]
+
+
+class InterviewHistoryItem(ContractModel):
+    session_id: uuid.UUID
+    plan_id: uuid.UUID
+    preparation_id: uuid.UUID
+    role_id: str = Field(min_length=1)
+    level: Literal["intern", "junior"]
+    status: Literal["active", "paused", "ended"]
+    started_at: datetime
+    ended_at: datetime | None = None
+    end_reason: Literal["completed", "early_finish"] | None = None
+    main_question_count: int = Field(ge=2, le=6)
+    answered_main_count: int = Field(ge=0, le=6)
+    report_state: Literal["not_requested", "pending", "failed", "ready"]
+
+
+class InterviewHistory(ContractModel):
+    items: list[InterviewHistoryItem] = Field(default_factory=list)
+    next_cursor: str | None = None
+
+
+class InterviewEvidence(ContractModel):
+    answer_id: uuid.UUID
+    quote: str = Field(min_length=1, max_length=240)
+
+
+class InterviewDimensionResult(ContractModel):
+    dimension_id: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+    weight: float = Field(gt=0, le=1)
+    verdict: Literal["scored", "insufficient_evidence", "uncertain"]
+    score: int | None = Field(default=None, ge=0, le=4)
+    evidence: list[InterviewEvidence] = Field(default_factory=list)
+    explanation: str = ""
+    improvement: str = ""
+
+
+class InterviewReportQuestion(ContractModel):
+    question_id: uuid.UUID
+    position: int = Field(ge=1, le=6)
+    source: Literal["bank", "generated"]
+    outcome: Literal["answered", "skipped", "unanswered", "not_reached"]
+    prompt: str | None = None
+    bank_version: int | None = None
+    turns: list[InterviewTurnView] = Field(default_factory=list)
+    assessment_trust: Literal["reviewed", "provisional"]
+    rubric_version: str = Field(min_length=1)
+    question_score: int | None = Field(default=None, ge=0, le=100)
+    dimensions: list[InterviewDimensionResult] = Field(default_factory=list)
+    follow_up_outcome: Literal["not_needed", "asked", "unavailable", "cancelled"] | None = None
+
+
+class InterviewCoverage(ContractModel):
+    planned: int = Field(ge=0, le=6)
+    presented: int = Field(ge=0, le=6)
+    answered: int = Field(ge=0, le=6)
+    skipped: int = Field(ge=0, le=6)
+    unanswered: int = Field(ge=0, le=6)
+    not_reached: int = Field(ge=0, le=6)
+    scored: int = Field(ge=0, le=6)
+    bank_planned: int = Field(ge=0, le=3)
+    bank_answered: int = Field(ge=0, le=3)
+    generated_planned: int = Field(ge=0, le=3)
+    generated_answered: int = Field(ge=0, le=3)
+    follow_up_presented: int = Field(ge=0, le=6)
+    follow_up_answered: int = Field(ge=0, le=6)
+
+
+class InterviewFinding(ContractModel):
+    question_id: uuid.UUID
+    position: int = Field(ge=1, le=6)
+    dimension_id: str = Field(min_length=1)
+    text: str = Field(min_length=1)
+    evidence: list[InterviewEvidence] = Field(default_factory=list)
+
+
+class InterviewReport(ContractModel):
+    report_id: uuid.UUID
+    session_id: uuid.UUID
+    role_id: str = Field(min_length=1)
+    level: Literal["intern", "junior"]
+    material_versions: list[InterviewMaterialVersion] = Field(min_length=2)
+    quality: Literal["full", "partial", "no_answers", "unscored"]
+    rubric_policy_version: str = Field(min_length=1)
+    created_at: datetime
+    end_reason: Literal["completed", "early_finish"]
+    coverage: InterviewCoverage
+    strengths: list[InterviewFinding] = Field(default_factory=list)
+    improvements: list[InterviewFinding] = Field(default_factory=list)
+    questions: list[InterviewReportQuestion] = Field(default_factory=list)
+
+
+# --------------------------------------------------------------------------- 模型内部输出（M2）
+
+
+class FollowUpDecisionOutput(ContractModel):
+    decision: Literal["ask", "advance"]
+    prompt: str | None = None
+    answer_quote: str | None = None
+    target: str | None = None
+
+
+class ScoreDimensionOutput(ContractModel):
+    dimension_id: str = Field(min_length=1)
+    verdict: Literal["scored", "insufficient_evidence", "uncertain"]
+    score: int | None = Field(default=None, ge=0, le=4)
+    evidence: list[InterviewEvidence] = Field(default_factory=list)
+    explanation: str = ""
+    improvement: str = ""
+
+
+class ScoreQuestionOutput(ContractModel):
+    question_id: uuid.UUID
+    dimensions: list[ScoreDimensionOutput] = Field(min_length=1)
 
 
 InternalPlan.model_rebuild()

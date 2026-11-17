@@ -22,6 +22,7 @@ class WritePipeline(private val coordinator: OperationCoordinator) {
         fileMime: String? = null,
         isContextCurrent: () -> Boolean = { true },
         onJob: suspend (JobDto) -> OperationSave = { OperationSave.Ok },
+        onResult: suspend (T) -> OperationSave = { OperationSave.Ok },
         call: suspend (String) -> ApiResult<T>,
     ): ApiResult<T> {
         if (!isContextCurrent()) {
@@ -57,6 +58,11 @@ class WritePipeline(private val coordinator: OperationCoordinator) {
         when (result) {
             is ApiResult.Ok -> {
                 val value = result.value
+                val persisted = onResult(value)
+                if (persisted is OperationSave.Failed) {
+                    // 保留 pending；下次恢复仍可凭原 key 读回同一结果。
+                    return result
+                }
                 if (value is JobDto) {
                     // 先持久化活跃 job，再清除 POST 的 pending，缩小进程被杀时的回执窗口。
                     val saved = onJob(value)

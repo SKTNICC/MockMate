@@ -9,8 +9,45 @@ import pytest
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = BACKEND_ROOT.parent
 
-TEST_DB_NAME = "mockmate_test"
-TEST_DATABASE_URL = f"postgresql+psycopg://mockmate@127.0.0.1:55432/{TEST_DB_NAME}"
+LEGACY_TEST_DB_NAME = "mockmate_test"
+LEGACY_TEST_DATABASE_URL = f"postgresql+psycopg://mockmate@127.0.0.1:55432/{LEGACY_TEST_DB_NAME}"
+
+
+def _psycopg_dsn(url: str) -> str:
+    return url.replace("postgresql+psycopg://", "postgresql://", 1)
+
+
+def _resolve_test_database() -> tuple[str, str, str | None, str | None]:
+    """返回 (app DSN, 测试库名, 维护库 DSN, 开发库名)。
+
+    显式 MOCKMATE_TEST_DATABASE_URL 只接受回环主机与以 _test 结尾的库名；
+    同时拒绝与当前 DATABASE_URL 指向同一个库，避免测试重建开发数据。
+    """
+    from sqlalchemy.engine.url import make_url
+
+    explicit = os.environ.get("MOCKMATE_TEST_DATABASE_URL", "").strip()
+    dev_url = os.environ.get("DATABASE_URL", "").strip()
+    dev_db = make_url(dev_url).database if dev_url else None
+    if not explicit:
+        return LEGACY_TEST_DATABASE_URL, LEGACY_TEST_DB_NAME, None, dev_db
+
+    parsed = make_url(explicit)
+    if parsed.drivername not in ("postgresql", "postgresql+psycopg"):
+        raise RuntimeError("MOCKMATE_TEST_DATABASE_URL 必须是 PostgreSQL URL")
+    if (parsed.host or "") not in ("127.0.0.1", "localhost", "::1"):
+        raise RuntimeError("MOCKMATE_TEST_DATABASE_URL 只接受回环主机")
+    if not parsed.database or not parsed.database.endswith("_test"):
+        raise RuntimeError("MOCKMATE_TEST_DATABASE_URL 的库名必须以 _test 结尾")
+    if dev_db and parsed.database == dev_db:
+        raise RuntimeError("测试库不能与当前 DATABASE_URL 指向同一个数据库")
+    app_url = parsed.set(drivername="postgresql+psycopg").render_as_string(
+        hide_password=False
+    )
+    maintenance = parsed.set(database="postgres").render_as_string(hide_password=False)
+    return app_url, parsed.database, maintenance, dev_db
+
+
+TEST_DATABASE_URL, TEST_DB_NAME, TEST_MAINTENANCE_URL, DEV_DB_NAME = _resolve_test_database()
 
 # 必须在导入 app.* 之前设置：配置在模块导入期读取。
 os.environ.update(
@@ -30,16 +67,31 @@ import psycopg  # noqa: E402
 from alembic import command  # noqa: E402
 from alembic.config import Config  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
-from sqlalchemy import text  # noqa: E402
+from sqlalchemy import text, update  # noqa: E402
 
 from app.core.config import get_settings  # noqa: E402
 from app.core.db import SessionLocal, engine  # noqa: E402
 from app.main import app  # noqa: E402
-from app.models import Base  # noqa: E402
+from app.models import Base, Job  # noqa: E402
 from app.workers.runner import JobWorker  # noqa: E402
 
 
 def _ensure_test_database() -> None:
+    if TEST_MAINTENANCE_URL is not None:
+        with psycopg.connect(_psycopg_dsn(TEST_MAINTENANCE_URL), autocommit=True) as conn:
+            exists = conn.execute(
+                "select 1 from pg_database where datname = %s", (TEST_DB_NAME,)
+            ).fetchone()
+            if not exists:
+                try:
+                    conn.execute(f'CREATE DATABASE "{TEST_DB_NAME}"')
+                except psycopg.Error as exc:
+                    raise RuntimeError(
+                        f"测试库 {TEST_DB_NAME} 不存在且当前角色无权创建；"
+                        "请由本机管理员预创建后重试"
+                    ) from exc
+        return
+
     dsn = "postgresql://mockmate@127.0.0.1:55432/postgres"
     with psycopg.connect(dsn, autocommit=True) as conn:
         exists = conn.execute(
@@ -50,13 +102,18 @@ def _ensure_test_database() -> None:
 
 
 def _reset_schema() -> None:
+    with engine.connect() as conn:
+        current = conn.execute(text("select current_database()")).scalar_one()
+    if current != TEST_DB_NAME:
+        raise RuntimeError(f"测试目标库不一致：期望 {TEST_DB_NAME}，实际 {current}")
+    if DEV_DB_NAME and current == DEV_DB_NAME:
+        raise RuntimeError("拒绝重建与开发库同名的数据库")
     Base.metadata.drop_all(bind=engine)
     for table in ("alembic_version",):
         with engine.begin() as conn:
             conn.execute(text(f"DROP TABLE IF EXISTS {table}"))
     config = Config(str(BACKEND_ROOT / "alembic.ini"))
     config.set_main_option("script_location", str(BACKEND_ROOT / "alembic"))
-    config.set_main_option("sqlalchemy.url", TEST_DATABASE_URL)
     command.upgrade(config, "head")
 
 
@@ -78,6 +135,22 @@ def prepared_database():
     _seed()
     yield
     engine.dispose()
+
+
+@pytest.fixture(autouse=True)
+def _clear_queued_jobs():
+    """测试之间不共享排队任务，避免 worker.run_once 领到上一用例留下的任务。"""
+    db = SessionLocal()
+    try:
+        db.execute(
+            update(Job)
+            .where(Job.state == "queued")
+            .values(state="superseded", lease_token=None, lease_expires_at=None)
+        )
+        db.commit()
+    finally:
+        db.close()
+    yield
 
 
 @pytest.fixture()

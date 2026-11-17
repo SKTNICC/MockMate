@@ -219,7 +219,38 @@ def main():
     for case in cases:
         actual = plan_error(case["plan"], schema)
         assert actual == case["expected_error"], f"{case['id']}: expected={case['expected_error']}, actual={actual}"
-    print(f"PASS: {len(schema['$defs'])} schemas, {operations} API operations, 4 material snapshots, 6 draft candidates, {len(cases)} rule vectors")
+
+    m2 = read("fixtures/m1/m2-examples.json")
+    assert m2["test_only"] is True
+    for name in ("start_request",):
+        validator(schema, "StartInterviewInput").validate(m2[name])
+    for name in ("start_created", "start_reopened"):
+        validator(schema, "InterviewStartReceipt").validate(m2[name])
+    validator(schema, "InterviewAnswerInput").validate(m2["answer_request"])
+    for name in ("answer_receipt_main", "answer_receipt_follow_up"):
+        validator(schema, "InterviewReceipt").validate(m2[name])
+    for name in ("detail_active", "detail_deciding", "detail_ended"):
+        validator(schema, "InterviewDetail").validate(m2[name])
+    validator(schema, "InterviewHistory").validate(m2["history"])
+    for name in ("report_full", "report_partial", "report_basic", "report_no_answers"):
+        validator(schema, "InterviewReport").validate(m2[name])
+    validator(schema, "ErrorResponse").validate(m2["error_report_pending"])
+    validator(schema, "Job").validate(m2["job_follow_failed"])
+    validator(schema, "Job").validate(m2["job_report_failed"])
+    assert m2["job_follow_failed"]["kind"] == "follow_up" and m2["job_follow_failed"]["retryable"]
+    assert m2["job_report_failed"]["kind"] == "interview_report"
+    for name in ("detail_active", "detail_deciding", "detail_ended", "report_full",
+                 "report_partial", "report_basic", "report_no_answers"):
+        serialized = json.dumps(m2[name], ensure_ascii=False)
+        for forbidden in ("reference_approach", "key_points", "plan_snapshot",
+                          "evaluation", "acceptable_alternatives"):
+            assert forbidden not in serialized, f"{name} 泄露内部字段 {forbidden}"
+    assert m2["report_no_answers"]["quality"] == "no_answers"
+    assert m2["report_basic"]["quality"] == "unscored"
+    assert m2["report_partial"]["questions"][0]["question_score"] is None
+    assert any(path.startswith("/interviews") for path in api["paths"])
+    assert api["paths"]["/interviews/{session_id}/answers"]["post"]["responses"].keys() >= {"200", "202"}
+    print(f"PASS: {len(schema['$defs'])} schemas, {operations} API operations, 4 material snapshots, 6 draft candidates, {len(cases)} rule vectors, M2 examples")
     print("Scope: foundation checks only; no backend, PostgreSQL, Android, human approval or real AI verified.")
 
 

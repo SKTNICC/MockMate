@@ -10,6 +10,13 @@ import com.mockmate.app.core.operation.EditMaterialPayload
 import com.mockmate.app.core.operation.EditPreparationPayload
 import com.mockmate.app.core.operation.ExtractMaterialPayload
 import com.mockmate.app.core.operation.GeneratePlanPayload
+import com.mockmate.app.core.operation.InterviewAnswerPayload
+import com.mockmate.app.core.operation.InterviewBasicReportPayload
+import com.mockmate.app.core.operation.InterviewContinuePayload
+import com.mockmate.app.core.operation.InterviewFinishPayload
+import com.mockmate.app.core.operation.InterviewPausePayload
+import com.mockmate.app.core.operation.InterviewResumePayload
+import com.mockmate.app.core.operation.InterviewSkipPayload
 import com.mockmate.app.core.operation.MatchPayload
 import com.mockmate.app.core.operation.OperationCoordinator
 import com.mockmate.app.core.operation.OperationPayload
@@ -18,6 +25,7 @@ import com.mockmate.app.core.operation.ParseMaterialPayload
 import com.mockmate.app.core.operation.PendingOperation
 import com.mockmate.app.core.operation.ReplayExecution
 import com.mockmate.app.core.operation.RetryJobPayload
+import com.mockmate.app.core.operation.StartInterviewPayload
 import com.mockmate.app.core.operation.UploadFilePayload
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
@@ -154,6 +162,58 @@ class RepositoryOperationReplayExecutor(
                 classify(repository.retryJob(target, payload.expectedAttempt, op.operationKey))
             }
             is UploadFilePayload -> needsUser("文件上传需要重新选择同一文件（摘要 ${payload.fileSha256.take(10)}…）")
+            is StartInterviewPayload -> {
+                if (target == null) return needsUser("缺少计划 ID")
+                classify(repository.startInterview(target, payload.planRevision, op.operationKey))
+            }
+            is InterviewAnswerPayload -> classify(
+                repository.submitInterviewAnswer(
+                    payload.sessionId,
+                    payload.revision,
+                    payload.turnId,
+                    payload.text,
+                    op.operationKey,
+                )
+            )
+            is InterviewSkipPayload -> classify(
+                repository.skipInterviewTurn(
+                    payload.sessionId,
+                    payload.revision,
+                    payload.turnId,
+                    op.operationKey,
+                )
+            )
+            is InterviewPausePayload -> classify(
+                repository.pauseInterview(
+                    payload.sessionId, payload.revision, op.operationKey
+                )
+            )
+            is InterviewResumePayload -> classify(
+                repository.resumeInterview(
+                    payload.sessionId, payload.revision, op.operationKey
+                )
+            )
+            is InterviewContinuePayload -> classify(
+                repository.continueWithoutFollowUp(
+                    payload.sessionId,
+                    payload.revision,
+                    payload.jobId,
+                    op.operationKey,
+                )
+            )
+            is InterviewFinishPayload -> classify(
+                repository.finishInterview(
+                    payload.sessionId, payload.revision, op.operationKey
+                )
+            )
+            is InterviewBasicReportPayload -> classify(
+                repository.createBasicInterviewReport(
+                    payload.sessionId,
+                    payload.revision,
+                    payload.jobId,
+                    op.operationKey,
+                )
+            )
         }
     }
 

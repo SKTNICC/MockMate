@@ -1,0 +1,841 @@
+{
+  "test_only": true,
+  "start_request": {
+    "plan_revision": 2,
+    "external_processing_consent": true
+  },
+  "start_created": {
+    "session_id": "00000000-0000-4000-8000-000000000900",
+    "revision": 1
+  },
+  "start_reopened": {
+    "session_id": "00000000-0000-4000-8000-000000000900",
+    "revision": 1
+  },
+  "answer_request": {
+    "revision": 1,
+    "turn_id": "00000000-0000-4000-8000-000000000910",
+    "text": "我先检查相同键是否存在，再决定更新还是插入。"
+  },
+  "answer_receipt_main": {
+    "session_id": "00000000-0000-4000-8000-000000000900",
+    "revision": 2,
+    "answer_id": "00000000-0000-4000-8000-000000000920",
+    "job_id": "00000000-0000-4000-8000-000000000930"
+  },
+  "answer_receipt_follow_up": {
+    "session_id": "00000000-0000-4000-8000-000000000900",
+    "revision": 4,
+    "answer_id": "00000000-0000-4000-8000-000000000921",
+    "job_id": null
+  },
+  "detail_active": {
+    "session_id": "00000000-0000-4000-8000-000000000900",
+    "plan_id": "00000000-0000-4000-8000-000000000901",
+    "preparation_id": "00000000-0000-4000-8000-000000000902",
+    "role_id": "java-backend",
+    "level": "intern",
+    "mode": "text",
+    "started_at": "2026-11-16T00:00:00Z",
+    "plan_summary": {
+      "plan_id": "00000000-0000-4000-8000-000000000901",
+      "main_question_count": 6,
+      "source_counts": {
+        "bank": 3,
+        "generated": 3
+      },
+      "material_versions": [
+        {
+          "kind": "resume",
+          "snapshot_id": "00000000-0000-4000-8000-000000000001",
+          "material_id": "00000000-0000-4000-8000-000000000101",
+          "title": "虚构学生简历（无工作经历）",
+          "source_revision": 1
+        },
+        {
+          "kind": "jd",
+          "snapshot_id": "00000000-0000-4000-8000-000000000002",
+          "material_id": "00000000-0000-4000-8000-000000000102",
+          "title": "内置JD开发样例",
+          "source_revision": 1
+        }
+      ],
+      "sample_only": true
+    },
+    "opening_text": "本次文字模拟面试共 6 道主问题，题库与现场生成各 3 道。",
+    "status": "active",
+    "phase": "awaiting_answer",
+    "revision": 4,
+    "ended_at": null,
+    "end_reason": null,
+    "closing_text": null,
+    "current_main_position": 1,
+    "answered_main_count": 1,
+    "skipped_main_count": 0,
+    "current_turn": {
+      "turn_id": "00000000-0000-4000-8000-000000000911",
+      "question_id": "00000000-0000-4000-8000-000000000912",
+      "position": 1,
+      "kind": "follow_up",
+      "prompt": "你提到先检查相同键是否存在，能进一步说明判断依据和适用边界吗？",
+      "status": "pending",
+      "answer": null
+    },
+    "allowed_actions": [
+      "pause",
+      "finish",
+      "answer",
+      "skip"
+    ],
+    "transcript": [
+      {
+        "turn_id": "00000000-0000-4000-8000-000000000910",
+        "question_id": "00000000-0000-4000-8000-000000000912",
+        "position": 1,
+        "kind": "main",
+        "prompt": "图书查询接口使用 HashMap 时，怎样区分不存在的键与键对应空值？",
+        "status": "answered",
+        "answer": {
+          "answer_id": "00000000-0000-4000-8000-000000000920",
+          "text": "我先检查相同键是否存在，再决定更新还是插入。",
+          "submitted_at": "2026-11-16T00:00:00Z"
+        }
+      },
+      {
+        "turn_id": "00000000-0000-4000-8000-000000000911",
+        "question_id": "00000000-0000-4000-8000-000000000912",
+        "position": 1,
+        "kind": "follow_up",
+        "prompt": "你提到先检查相同键是否存在，能进一步说明判断依据和适用边界吗？",
+        "status": "pending",
+        "answer": null
+      }
+    ],
+    "follow_up_job": {
+      "id": "00000000-0000-4000-8000-000000000930",
+      "state": "succeeded",
+      "attempt": 1,
+      "retryable": false,
+      "error_code": null
+    },
+    "report_job": null,
+    "report_state": "not_requested"
+  },
+  "detail_deciding": {
+    "session_id": "00000000-0000-4000-8000-000000000900",
+    "plan_id": "00000000-0000-4000-8000-000000000901",
+    "preparation_id": "00000000-0000-4000-8000-000000000902",
+    "role_id": "java-backend",
+    "level": "intern",
+    "mode": "text",
+    "started_at": "2026-11-16T00:00:00Z",
+    "plan_summary": {
+      "plan_id": "00000000-0000-4000-8000-000000000901",
+      "main_question_count": 6,
+      "source_counts": {
+        "bank": 3,
+        "generated": 3
+      },
+      "material_versions": [
+        {
+          "kind": "resume",
+          "snapshot_id": "00000000-0000-4000-8000-000000000001",
+          "material_id": "00000000-0000-4000-8000-000000000101",
+          "title": "虚构学生简历（无工作经历）",
+          "source_revision": 1
+        },
+        {
+          "kind": "jd",
+          "snapshot_id": "00000000-0000-4000-8000-000000000002",
+          "material_id": "00000000-0000-4000-8000-000000000102",
+          "title": "内置JD开发样例",
+          "source_revision": 1
+        }
+      ],
+      "sample_only": true
+    },
+    "opening_text": "本次文字模拟面试共 6 道主问题，题库与现场生成各 3 道。",
+    "status": "active",
+    "phase": "deciding_follow_up",
+    "revision": 3,
+    "ended_at": null,
+    "end_reason": null,
+    "closing_text": null,
+    "current_main_position": 1,
+    "answered_main_count": 0,
+    "skipped_main_count": 0,
+    "current_turn": null,
+    "allowed_actions": [
+      "pause",
+      "finish"
+    ],
+    "transcript": [
+      {
+        "turn_id": "00000000-0000-4000-8000-000000000910",
+        "question_id": "00000000-0000-4000-8000-000000000912",
+        "position": 1,
+        "kind": "main",
+        "prompt": "图书查询接口使用 HashMap 时，怎样区分不存在的键与键对应空值？",
+        "status": "answered",
+        "answer": {
+          "answer_id": "00000000-0000-4000-8000-000000000920",
+          "text": "我先检查相同键是否存在，再决定更新还是插入。",
+          "submitted_at": "2026-11-16T00:00:00Z"
+        }
+      }
+    ],
+    "follow_up_job": {
+      "id": "00000000-0000-4000-8000-000000000930",
+      "state": "queued",
+      "attempt": 1,
+      "retryable": false,
+      "error_code": null
+    },
+    "report_job": null,
+    "report_state": "not_requested"
+  },
+  "detail_ended": {
+    "session_id": "00000000-0000-4000-8000-000000000900",
+    "plan_id": "00000000-0000-4000-8000-000000000901",
+    "preparation_id": "00000000-0000-4000-8000-000000000902",
+    "role_id": "java-backend",
+    "level": "intern",
+    "mode": "text",
+    "started_at": "2026-11-16T00:00:00Z",
+    "plan_summary": {
+      "plan_id": "00000000-0000-4000-8000-000000000901",
+      "main_question_count": 6,
+      "source_counts": {
+        "bank": 3,
+        "generated": 3
+      },
+      "material_versions": [
+        {
+          "kind": "resume",
+          "snapshot_id": "00000000-0000-4000-8000-000000000001",
+          "material_id": "00000000-0000-4000-8000-000000000101",
+          "title": "虚构学生简历（无工作经历）",
+          "source_revision": 1
+        },
+        {
+          "kind": "jd",
+          "snapshot_id": "00000000-0000-4000-8000-000000000002",
+          "material_id": "00000000-0000-4000-8000-000000000102",
+          "title": "内置JD开发样例",
+          "source_revision": 1
+        }
+      ],
+      "sample_only": true
+    },
+    "opening_text": "本次文字模拟面试共 6 道主问题，题库与现场生成各 3 道。",
+    "status": "ended",
+    "phase": "closed",
+    "revision": 12,
+    "ended_at": "2026-11-16T00:00:00Z",
+    "end_reason": "completed",
+    "closing_text": "本次文字面试已结束，问答已锁定。",
+    "current_main_position": null,
+    "answered_main_count": 6,
+    "skipped_main_count": 0,
+    "current_turn": null,
+    "allowed_actions": [
+      "create_basic_report"
+    ],
+    "transcript": [
+      {
+        "turn_id": "00000000-0000-4000-8000-000000000910",
+        "question_id": "00000000-0000-4000-8000-000000000912",
+        "position": 1,
+        "kind": "main",
+        "prompt": "图书查询接口使用 HashMap 时，怎样区分不存在的键与键对应空值？",
+        "status": "answered",
+        "answer": {
+          "answer_id": "00000000-0000-4000-8000-000000000920",
+          "text": "我先检查相同键是否存在，再决定更新还是插入。",
+          "submitted_at": "2026-11-16T00:00:00Z"
+        }
+      },
+      {
+        "turn_id": "00000000-0000-4000-8000-000000000911",
+        "question_id": "00000000-0000-4000-8000-000000000912",
+        "position": 1,
+        "kind": "follow_up",
+        "prompt": "你提到先检查相同键是否存在，能进一步说明判断依据和适用边界吗？",
+        "status": "answered",
+        "answer": {
+          "answer_id": "00000000-0000-4000-8000-000000000921",
+          "text": "这个判断依赖单线程访问；共享读写时需要外部同步。",
+          "submitted_at": "2026-11-16T00:00:00Z"
+        }
+      }
+    ],
+    "follow_up_job": {
+      "id": "00000000-0000-4000-8000-000000000930",
+      "state": "succeeded",
+      "attempt": 1,
+      "retryable": false,
+      "error_code": null
+    },
+    "report_job": {
+      "id": "00000000-0000-4000-8000-000000000931",
+      "state": "failed",
+      "attempt": 2,
+      "retryable": false,
+      "error_code": "AI_INVALID_OUTPUT"
+    },
+    "report_state": "failed"
+  },
+  "history": {
+    "items": [
+      {
+        "session_id": "00000000-0000-4000-8000-000000000900",
+        "plan_id": "00000000-0000-4000-8000-000000000901",
+        "preparation_id": "00000000-0000-4000-8000-000000000902",
+        "role_id": "java-backend",
+        "level": "intern",
+        "status": "ended",
+        "started_at": "2026-11-16T00:00:00Z",
+        "ended_at": "2026-11-16T00:00:00Z",
+        "end_reason": "completed",
+        "main_question_count": 6,
+        "answered_main_count": 6,
+        "report_state": "ready"
+      }
+    ],
+    "next_cursor": "eyJzdGFydGVkX2F0IjoiMjAyNi0xMS0xNlQwMDowMDowMCswMDowMCIsImlkIjoiMDAwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwOTAwIn0"
+  },
+  "report_full": {
+    "report_id": "00000000-0000-4000-8000-000000000940",
+    "session_id": "00000000-0000-4000-8000-000000000900",
+    "role_id": "java-backend",
+    "level": "intern",
+    "material_versions": [
+      {
+        "kind": "resume",
+        "snapshot_id": "00000000-0000-4000-8000-000000000001",
+        "material_id": "00000000-0000-4000-8000-000000000101",
+        "title": "虚构学生简历（无工作经历）",
+        "source_revision": 1
+      },
+      {
+        "kind": "jd",
+        "snapshot_id": "00000000-0000-4000-8000-000000000002",
+        "material_id": "00000000-0000-4000-8000-000000000102",
+        "title": "内置JD开发样例",
+        "source_revision": 1
+      }
+    ],
+    "rubric_policy_version": "m2-rubric-policy-v1",
+    "created_at": "2026-11-16T00:00:00Z",
+    "end_reason": "completed",
+    "coverage": {
+      "planned": 2,
+      "presented": 2,
+      "answered": 2,
+      "skipped": 0,
+      "unanswered": 0,
+      "not_reached": 0,
+      "scored": 2,
+      "bank_planned": 1,
+      "bank_answered": 1,
+      "generated_planned": 1,
+      "generated_answered": 1,
+      "follow_up_presented": 1,
+      "follow_up_answered": 1
+    },
+    "quality": "full",
+    "strengths": [
+      {
+        "question_id": "00000000-0000-4000-8000-000000000912",
+        "position": 1,
+        "dimension_id": "accuracy",
+        "text": "1. 准确性：原话说明了先查后写的顺序。",
+        "evidence": [
+          {
+            "answer_id": "00000000-0000-4000-8000-000000000920",
+            "quote": "我先检查相同键是否存在"
+          }
+        ]
+      }
+    ],
+    "improvements": [
+      {
+        "question_id": "00000000-0000-4000-8000-000000000912",
+        "position": 1,
+        "dimension_id": "accuracy",
+        "text": "1. 准确性：原话说明了先查后写的顺序。",
+        "evidence": [
+          {
+            "answer_id": "00000000-0000-4000-8000-000000000920",
+            "quote": "我先检查相同键是否存在"
+          }
+        ]
+      }
+    ],
+    "questions": [
+      {
+        "question_id": "00000000-0000-4000-8000-000000000912",
+        "position": 1,
+        "source": "bank",
+        "outcome": "answered",
+        "prompt": "图书查询接口使用 HashMap 时，怎样区分不存在的键与键对应空值？",
+        "bank_version": 1,
+        "turns": [
+          {
+            "turn_id": "00000000-0000-4000-8000-000000000910",
+            "question_id": "00000000-0000-4000-8000-000000000912",
+            "position": 1,
+            "kind": "main",
+            "prompt": "图书查询接口使用 HashMap 时，怎样区分不存在的键与键对应空值？",
+            "status": "answered",
+            "answer": {
+              "answer_id": "00000000-0000-4000-8000-000000000920",
+              "text": "我先检查相同键是否存在，再决定更新还是插入。",
+              "submitted_at": "2026-11-16T00:00:00Z"
+            }
+          },
+          {
+            "turn_id": "00000000-0000-4000-8000-000000000911",
+            "question_id": "00000000-0000-4000-8000-000000000912",
+            "position": 1,
+            "kind": "follow_up",
+            "prompt": "你提到先检查相同键是否存在，能进一步说明判断依据和适用边界吗？",
+            "status": "answered",
+            "answer": {
+              "answer_id": "00000000-0000-4000-8000-000000000921",
+              "text": "这个判断依赖单线程访问；共享读写时需要外部同步。",
+              "submitted_at": "2026-11-16T00:00:00Z"
+            }
+          }
+        ],
+        "assessment_trust": "reviewed",
+        "rubric_version": "m1-explanation@1",
+        "question_score": 70,
+        "dimensions": [
+          {
+            "dimension_id": "accuracy",
+            "name": "准确性",
+            "weight": 0.4,
+            "verdict": "scored",
+            "score": 3,
+            "evidence": [
+              {
+                "answer_id": "00000000-0000-4000-8000-000000000920",
+                "quote": "我先检查相同键是否存在"
+              }
+            ],
+            "explanation": "原话说明了先查后写的顺序。",
+            "improvement": "补充空值契约的具体例子。"
+          },
+          {
+            "dimension_id": "reasoning",
+            "name": "推理与边界",
+            "weight": 0.35,
+            "verdict": "scored",
+            "score": 3,
+            "evidence": [
+              {
+                "answer_id": "00000000-0000-4000-8000-000000000921",
+                "quote": "共享读写时需要外部同步"
+              }
+            ],
+            "explanation": "追问回答补充了共享访问边界。",
+            "improvement": "说明同步方案的选择依据。"
+          },
+          {
+            "dimension_id": "verification",
+            "name": "验证思路",
+            "weight": 0.25,
+            "verdict": "scored",
+            "score": 2,
+            "evidence": [
+              {
+                "answer_id": "00000000-0000-4000-8000-000000000920",
+                "quote": "再决定更新还是插入"
+              }
+            ],
+            "explanation": "提到检查但缺少可执行样例。",
+            "improvement": "给出缺失键与空值两组输入。"
+          },
+          {
+            "dimension_id": "expression_structure",
+            "name": "表达结构",
+            "weight": 0.0001,
+            "verdict": "scored",
+            "score": 3,
+            "evidence": [
+              {
+                "answer_id": "00000000-0000-4000-8000-000000000920",
+                "quote": "我先检查相同键是否存在"
+              }
+            ],
+            "explanation": "按步骤组织。",
+            "improvement": "每个结论后补一句边界。"
+          }
+        ],
+        "follow_up_outcome": "asked"
+      }
+    ]
+  },
+  "report_partial": {
+    "report_id": "00000000-0000-4000-8000-000000000940",
+    "session_id": "00000000-0000-4000-8000-000000000900",
+    "role_id": "java-backend",
+    "level": "intern",
+    "material_versions": [
+      {
+        "kind": "resume",
+        "snapshot_id": "00000000-0000-4000-8000-000000000001",
+        "material_id": "00000000-0000-4000-8000-000000000101",
+        "title": "虚构学生简历（无工作经历）",
+        "source_revision": 1
+      },
+      {
+        "kind": "jd",
+        "snapshot_id": "00000000-0000-4000-8000-000000000002",
+        "material_id": "00000000-0000-4000-8000-000000000102",
+        "title": "内置JD开发样例",
+        "source_revision": 1
+      }
+    ],
+    "rubric_policy_version": "m2-rubric-policy-v1",
+    "created_at": "2026-11-16T00:00:00Z",
+    "end_reason": "completed",
+    "coverage": {
+      "planned": 2,
+      "presented": 2,
+      "answered": 2,
+      "skipped": 0,
+      "unanswered": 0,
+      "not_reached": 0,
+      "scored": 2,
+      "bank_planned": 1,
+      "bank_answered": 1,
+      "generated_planned": 1,
+      "generated_answered": 1,
+      "follow_up_presented": 1,
+      "follow_up_answered": 1
+    },
+    "quality": "partial",
+    "strengths": [],
+    "improvements": [
+      {
+        "question_id": "00000000-0000-4000-8000-000000000912",
+        "position": 1,
+        "dimension_id": "accuracy",
+        "text": "1. 准确性：原话说明了先查后写的顺序。",
+        "evidence": [
+          {
+            "answer_id": "00000000-0000-4000-8000-000000000920",
+            "quote": "我先检查相同键是否存在"
+          }
+        ]
+      }
+    ],
+    "questions": [
+      {
+        "question_id": "00000000-0000-4000-8000-000000000912",
+        "position": 1,
+        "source": "bank",
+        "outcome": "answered",
+        "prompt": "图书查询接口使用 HashMap 时，怎样区分不存在的键与键对应空值？",
+        "bank_version": 1,
+        "turns": [
+          {
+            "turn_id": "00000000-0000-4000-8000-000000000910",
+            "question_id": "00000000-0000-4000-8000-000000000912",
+            "position": 1,
+            "kind": "main",
+            "prompt": "图书查询接口使用 HashMap 时，怎样区分不存在的键与键对应空值？",
+            "status": "answered",
+            "answer": {
+              "answer_id": "00000000-0000-4000-8000-000000000920",
+              "text": "我先检查相同键是否存在，再决定更新还是插入。",
+              "submitted_at": "2026-11-16T00:00:00Z"
+            }
+          },
+          {
+            "turn_id": "00000000-0000-4000-8000-000000000911",
+            "question_id": "00000000-0000-4000-8000-000000000912",
+            "position": 1,
+            "kind": "follow_up",
+            "prompt": "你提到先检查相同键是否存在，能进一步说明判断依据和适用边界吗？",
+            "status": "answered",
+            "answer": {
+              "answer_id": "00000000-0000-4000-8000-000000000921",
+              "text": "这个判断依赖单线程访问；共享读写时需要外部同步。",
+              "submitted_at": "2026-11-16T00:00:00Z"
+            }
+          }
+        ],
+        "assessment_trust": "reviewed",
+        "rubric_version": "m1-explanation@1",
+        "question_score": null,
+        "dimensions": [
+          {
+            "dimension_id": "accuracy",
+            "name": "准确性",
+            "weight": 0.4,
+            "verdict": "uncertain",
+            "score": null,
+            "evidence": [],
+            "explanation": "评分引文无法在本场本题原回答中逐字定位，已降为受限结果。",
+            "improvement": "用原话中的具体事实重新说明。"
+          },
+          {
+            "dimension_id": "reasoning",
+            "name": "推理与边界",
+            "weight": 0.35,
+            "verdict": "scored",
+            "score": 3,
+            "evidence": [
+              {
+                "answer_id": "00000000-0000-4000-8000-000000000921",
+                "quote": "共享读写时需要外部同步"
+              }
+            ],
+            "explanation": "追问回答补充了共享访问边界。",
+            "improvement": "说明同步方案的选择依据。"
+          },
+          {
+            "dimension_id": "verification",
+            "name": "验证思路",
+            "weight": 0.25,
+            "verdict": "scored",
+            "score": 2,
+            "evidence": [
+              {
+                "answer_id": "00000000-0000-4000-8000-000000000920",
+                "quote": "再决定更新还是插入"
+              }
+            ],
+            "explanation": "提到检查但缺少可执行样例。",
+            "improvement": "给出缺失键与空值两组输入。"
+          },
+          {
+            "dimension_id": "expression_structure",
+            "name": "表达结构",
+            "weight": 0.0001,
+            "verdict": "scored",
+            "score": 3,
+            "evidence": [
+              {
+                "answer_id": "00000000-0000-4000-8000-000000000920",
+                "quote": "我先检查相同键是否存在"
+              }
+            ],
+            "explanation": "按步骤组织。",
+            "improvement": "每个结论后补一句边界。"
+          }
+        ],
+        "follow_up_outcome": "asked"
+      }
+    ]
+  },
+  "report_basic": {
+    "report_id": "00000000-0000-4000-8000-000000000940",
+    "session_id": "00000000-0000-4000-8000-000000000900",
+    "role_id": "java-backend",
+    "level": "intern",
+    "material_versions": [
+      {
+        "kind": "resume",
+        "snapshot_id": "00000000-0000-4000-8000-000000000001",
+        "material_id": "00000000-0000-4000-8000-000000000101",
+        "title": "虚构学生简历（无工作经历）",
+        "source_revision": 1
+      },
+      {
+        "kind": "jd",
+        "snapshot_id": "00000000-0000-4000-8000-000000000002",
+        "material_id": "00000000-0000-4000-8000-000000000102",
+        "title": "内置JD开发样例",
+        "source_revision": 1
+      }
+    ],
+    "rubric_policy_version": "m2-rubric-policy-v1",
+    "created_at": "2026-11-16T00:00:00Z",
+    "end_reason": "completed",
+    "coverage": {
+      "planned": 2,
+      "presented": 2,
+      "answered": 2,
+      "skipped": 0,
+      "unanswered": 0,
+      "not_reached": 0,
+      "scored": 2,
+      "bank_planned": 1,
+      "bank_answered": 1,
+      "generated_planned": 1,
+      "generated_answered": 1,
+      "follow_up_presented": 1,
+      "follow_up_answered": 1
+    },
+    "quality": "unscored",
+    "strengths": [],
+    "improvements": [],
+    "questions": [
+      {
+        "question_id": "00000000-0000-4000-8000-000000000912",
+        "position": 1,
+        "source": "bank",
+        "outcome": "answered",
+        "prompt": "图书查询接口使用 HashMap 时，怎样区分不存在的键与键对应空值？",
+        "bank_version": 1,
+        "turns": [
+          {
+            "turn_id": "00000000-0000-4000-8000-000000000910",
+            "question_id": "00000000-0000-4000-8000-000000000912",
+            "position": 1,
+            "kind": "main",
+            "prompt": "图书查询接口使用 HashMap 时，怎样区分不存在的键与键对应空值？",
+            "status": "answered",
+            "answer": {
+              "answer_id": "00000000-0000-4000-8000-000000000920",
+              "text": "我先检查相同键是否存在，再决定更新还是插入。",
+              "submitted_at": "2026-11-16T00:00:00Z"
+            }
+          },
+          {
+            "turn_id": "00000000-0000-4000-8000-000000000911",
+            "question_id": "00000000-0000-4000-8000-000000000912",
+            "position": 1,
+            "kind": "follow_up",
+            "prompt": "你提到先检查相同键是否存在，能进一步说明判断依据和适用边界吗？",
+            "status": "answered",
+            "answer": {
+              "answer_id": "00000000-0000-4000-8000-000000000921",
+              "text": "这个判断依赖单线程访问；共享读写时需要外部同步。",
+              "submitted_at": "2026-11-16T00:00:00Z"
+            }
+          }
+        ],
+        "assessment_trust": "reviewed",
+        "rubric_version": "m1-explanation@1",
+        "question_score": null,
+        "dimensions": [],
+        "follow_up_outcome": "asked"
+      }
+    ]
+  },
+  "report_no_answers": {
+    "report_id": "00000000-0000-4000-8000-000000000940",
+    "session_id": "00000000-0000-4000-8000-000000000900",
+    "role_id": "java-backend",
+    "level": "intern",
+    "material_versions": [
+      {
+        "kind": "resume",
+        "snapshot_id": "00000000-0000-4000-8000-000000000001",
+        "material_id": "00000000-0000-4000-8000-000000000101",
+        "title": "虚构学生简历（无工作经历）",
+        "source_revision": 1
+      },
+      {
+        "kind": "jd",
+        "snapshot_id": "00000000-0000-4000-8000-000000000002",
+        "material_id": "00000000-0000-4000-8000-000000000102",
+        "title": "内置JD开发样例",
+        "source_revision": 1
+      }
+    ],
+    "rubric_policy_version": "m2-rubric-policy-v1",
+    "created_at": "2026-11-16T00:00:00Z",
+    "end_reason": "completed",
+    "coverage": {
+      "planned": 2,
+      "presented": 1,
+      "answered": 0,
+      "skipped": 1,
+      "unanswered": 0,
+      "not_reached": 1,
+      "scored": 0,
+      "bank_planned": 1,
+      "bank_answered": 0,
+      "generated_planned": 1,
+      "generated_answered": 0,
+      "follow_up_presented": 0,
+      "follow_up_answered": 0
+    },
+    "quality": "no_answers",
+    "strengths": [],
+    "improvements": [],
+    "questions": [
+      {
+        "question_id": "00000000-0000-4000-8000-000000000912",
+        "position": 1,
+        "source": "bank",
+        "outcome": "skipped",
+        "prompt": "图书查询接口使用 HashMap 时，怎样区分不存在的键与键对应空值？",
+        "bank_version": 1,
+        "turns": [],
+        "assessment_trust": "reviewed",
+        "rubric_version": "m1-explanation@1",
+        "question_score": null,
+        "dimensions": [],
+        "follow_up_outcome": null
+      },
+      {
+        "question_id": "00000000-0000-4000-8000-000000000912",
+        "position": 2,
+        "source": "bank",
+        "outcome": "not_reached",
+        "prompt": null,
+        "bank_version": 1,
+        "turns": [],
+        "assessment_trust": "reviewed",
+        "rubric_version": "m1-explanation@1",
+        "question_score": null,
+        "dimensions": [],
+        "follow_up_outcome": null
+      }
+    ]
+  },
+  "error_report_pending": {
+    "error": {
+      "code": "REPORT_PENDING",
+      "message": "报告仍在生成中，请稍后再试",
+      "retryable": false,
+      "details": [],
+      "request_id": "00000000-0000-4000-8000-000000000999"
+    }
+  },
+  "job_follow_failed": {
+    "id": "00000000-0000-4000-8000-000000000930",
+    "kind": "follow_up",
+    "target_id": "00000000-0000-4000-8000-000000000900",
+    "input_revision": 3,
+    "state": "failed",
+    "attempt": 1,
+    "retryable": true,
+    "result_ref": null,
+    "error": {
+      "code": "AI_TIMEOUT",
+      "message": "AI 服务超时，结果未知",
+      "retryable": true,
+      "details": [],
+      "request_id": "00000000-0000-4000-8000-000000000998"
+    },
+    "created_at": "2026-11-16T00:00:00Z",
+    "updated_at": "2026-11-16T00:00:00Z"
+  },
+  "job_report_failed": {
+    "id": "00000000-0000-4000-8000-000000000931",
+    "kind": "interview_report",
+    "target_id": "00000000-0000-4000-8000-000000000900",
+    "input_revision": 12,
+    "state": "failed",
+    "attempt": 2,
+    "retryable": false,
+    "result_ref": null,
+    "error": {
+      "code": "AI_INVALID_OUTPUT",
+      "message": "AI 输出不符合契约",
+      "retryable": false,
+      "details": [],
+      "request_id": "00000000-0000-4000-8000-000000000997"
+    },
+    "created_at": "2026-11-16T00:00:00Z",
+    "updated_at": "2026-11-16T00:00:00Z"
+  }
+}

@@ -55,9 +55,9 @@ fun AuthScreen(vm: AppViewModel, state: AppState) {
         ) {
             item {
                 Spacer(Modifier.height(12.dp))
-                Text("M1：面试准备与个性化计划", style = MaterialTheme.typography.titleLarge)
+                Text("面试准备与文字模拟面试", style = MaterialTheme.typography.titleLarge)
                 Text(
-                    "登录后准备并核对简历与 JD，查看有证据的匹配结果，生成并保存一份 3+3 计划。",
+                    "登录后准备并核对简历与 JD，确认一份 3+3 计划，完成文字面试，并查看带原话证据的报告。",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -98,10 +98,10 @@ fun AuthScreen(vm: AppViewModel, state: AppState) {
                 }
             }
             item {
-                InfoCard(title = "本轮范围", subtitle = "只实现 M1；不含面试问答、评分报告、语音或画像") {
+                InfoCard(title = "当前范围", subtitle = "M1 准备与计划 + M2 文字模拟面试；不含语音、视频或长期画像") {
                     Text(
                         "材料缺失或未确认时服务端会阻止分析与生成；题库与生成题严格各半；" +
-                            "本页不展示题干与答案。计划保存后可在重新登录后读回。",
+                            "正式面试前会单独确认本场 AI 处理说明，结束后报告只引用已曝光问答与逐字证据。",
                         style = MaterialTheme.typography.bodySmall,
                     )
                     Spacer(Modifier.height(8.dp))
@@ -112,8 +112,8 @@ fun AuthScreen(vm: AppViewModel, state: AppState) {
         if (showNote) {
             ConsentDialog(
                 title = "数据与授权说明",
-                body = "简历/JD 与账号资料只保存在本服务端。只有在你确认后，解析、匹配与生成才会把材料文本发送给配置的外部模型；" +
-                    "原文件不会发送。计划页只显示摘要，不显示题干与答案。",
+                body = "简历/JD 与账号资料只保存在本服务端。只有在你确认后，解析、匹配、生成与正式面试才会把材料文本或回答发送给配置的外部模型；" +
+                    "原文件不会发送。面试间只显示已曝光回合，报告只引用本场原话证据。",
                 confirmLabel = "我知道了",
                 onConfirm = { showNote = false },
                 onDismiss = { showNote = false },

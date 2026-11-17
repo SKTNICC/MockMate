@@ -20,6 +20,9 @@ import com.mockmate.app.ui.components.LoadingRow
 import com.mockmate.app.ui.components.MessageBanner
 import com.mockmate.app.ui.screens.AuthScreen
 import com.mockmate.app.ui.screens.EditorScreen
+import com.mockmate.app.ui.screens.InterviewHistoryScreen
+import com.mockmate.app.ui.screens.InterviewReportScreen
+import com.mockmate.app.ui.screens.InterviewRoomScreen
 import com.mockmate.app.ui.screens.LibraryScreen
 import com.mockmate.app.ui.screens.MatchScreen
 import com.mockmate.app.ui.screens.PlanHubScreen
@@ -60,6 +63,9 @@ fun AppRoot(vm: AppViewModel) {
                     is Screen.Templates -> TemplatesScreen(vm, state, top.preparationId)
                     is Screen.Match -> MatchScreen(vm, state, top.preparationId)
                     is Screen.PlanHub -> PlanHubScreen(vm, state, top.preparationId)
+                    is Screen.InterviewHistory -> InterviewHistoryScreen(vm, state)
+                    is Screen.InterviewRoom -> InterviewRoomScreen(vm, state, top.sessionId)
+                    is Screen.InterviewReport -> InterviewReportScreen(vm, state, top.sessionId)
                 }
                 if (state.booting) {
                     Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
