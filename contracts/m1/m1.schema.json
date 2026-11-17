@@ -1,0 +1,2488 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mockmate.example/contracts/m1/schema",
+  "title": "MockMate M1",
+  "$comment": "生成源 tools/m1/build_contracts.py；结构契约不取代业务校验。",
+  "$defs": {
+    "Evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "quote": {
+          "type": "string",
+          "minLength": 1
+        },
+        "origin": {
+          "type": "string",
+          "enum": [
+            "extracted",
+            "user_confirmed"
+          ]
+        }
+      },
+      "required": [
+        "quote",
+        "origin"
+      ]
+    },
+    "Anchor": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "snapshot_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "item_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "quote": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "snapshot_id",
+        "item_id",
+        "quote"
+      ]
+    },
+    "Education": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "item_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "degree": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "major": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "evidence": {
+          "$ref": "#/$defs/Evidence"
+        }
+      },
+      "required": [
+        "item_id",
+        "degree",
+        "major",
+        "evidence"
+      ]
+    },
+    "Experience": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "item_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "organization": {
+          "type": "string",
+          "minLength": 1
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        },
+        "evidence": {
+          "$ref": "#/$defs/Evidence"
+        }
+      },
+      "required": [
+        "item_id",
+        "organization",
+        "title",
+        "description",
+        "evidence"
+      ]
+    },
+    "Project": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "item_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        },
+        "skill_codes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 0
+        },
+        "evidence": {
+          "$ref": "#/$defs/Evidence"
+        }
+      },
+      "required": [
+        "item_id",
+        "name",
+        "description",
+        "skill_codes",
+        "evidence"
+      ]
+    },
+    "Skill": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "item_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "code": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "evidence": {
+          "$ref": "#/$defs/Evidence"
+        }
+      },
+      "required": [
+        "item_id",
+        "name",
+        "code",
+        "evidence"
+      ]
+    },
+    "ResumeProfile": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "resume"
+        },
+        "education": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Education"
+          },
+          "minItems": 0
+        },
+        "work_experience": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Experience"
+          },
+          "minItems": 0
+        },
+        "projects": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Project"
+          },
+          "minItems": 0
+        },
+        "skills": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Skill"
+          },
+          "minItems": 0
+        }
+      },
+      "required": [
+        "kind",
+        "education",
+        "work_experience",
+        "projects",
+        "skills"
+      ]
+    },
+    "Responsibility": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "item_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1
+        },
+        "evidence": {
+          "$ref": "#/$defs/Evidence"
+        }
+      },
+      "required": [
+        "item_id",
+        "text",
+        "evidence"
+      ]
+    },
+    "Requirement": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "item_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1
+        },
+        "skill_codes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 0
+        },
+        "importance": {
+          "type": "string",
+          "enum": [
+            "must",
+            "nice"
+          ]
+        },
+        "evidence": {
+          "$ref": "#/$defs/Evidence"
+        }
+      },
+      "required": [
+        "item_id",
+        "text",
+        "skill_codes",
+        "importance",
+        "evidence"
+      ]
+    },
+    "JdProfile": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "jd"
+        },
+        "role_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "level": {
+          "type": "string",
+          "enum": [
+            "intern",
+            "junior"
+          ]
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "responsibilities": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Responsibility"
+          },
+          "minItems": 1
+        },
+        "requirements": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Requirement"
+          },
+          "minItems": 1
+        }
+      },
+      "required": [
+        "kind",
+        "role_id",
+        "level",
+        "title",
+        "responsibilities",
+        "requirements"
+      ]
+    },
+    "Profile": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/ResumeProfile"
+        },
+        {
+          "$ref": "#/$defs/JdProfile"
+        }
+      ]
+    },
+    "MaterialDraft": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "resume",
+            "jd"
+          ]
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "text": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 20000
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "profile": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Profile"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "uploaded",
+            "text_ready",
+            "parsed"
+          ]
+        },
+        "template_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "template_version": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "latest_job_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updated_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "revision",
+        "kind",
+        "title",
+        "text",
+        "profile",
+        "state",
+        "template_id",
+        "template_version",
+        "latest_job_id",
+        "created_at",
+        "updated_at"
+      ]
+    },
+    "Snapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "material_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "source_revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "resume",
+            "jd"
+          ]
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 20000
+        },
+        "profile": {
+          "$ref": "#/$defs/Profile"
+        },
+        "template_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "template_version": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "confirmed_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "material_id",
+        "source_revision",
+        "kind",
+        "title",
+        "text",
+        "profile",
+        "template_id",
+        "template_version",
+        "confirmed_at"
+      ]
+    },
+    "TextMaterialInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "resume",
+            "jd"
+          ]
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 20000
+        },
+        "template_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "template_version": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "kind",
+        "title",
+        "text",
+        "template_id",
+        "template_version"
+      ]
+    },
+    "FileMaterialInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "resume",
+            "jd"
+          ]
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "file": {
+          "type": "string",
+          "format": "binary"
+        }
+      },
+      "required": [
+        "kind",
+        "title",
+        "file"
+      ]
+    },
+    "EditMaterialInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 20000
+        }
+      },
+      "required": [
+        "revision",
+        "title",
+        "text"
+      ]
+    },
+    "ConfirmMaterialInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "profile": {
+          "$ref": "#/$defs/Profile"
+        }
+      },
+      "required": [
+        "revision",
+        "profile"
+      ]
+    },
+    "RevisionInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "revision": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "revision"
+      ]
+    },
+    "AiJobInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "external_processing_consent": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "revision",
+        "external_processing_consent"
+      ]
+    },
+    "ParseMaterialInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "external_processing_consent": {
+          "type": "boolean"
+        },
+        "role_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "level": {
+          "type": "string",
+          "enum": [
+            "intern",
+            "junior"
+          ]
+        }
+      },
+      "required": [
+        "revision",
+        "external_processing_consent",
+        "role_id",
+        "level"
+      ]
+    },
+    "RetryInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "expected_attempt": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2
+        }
+      },
+      "required": [
+        "expected_attempt"
+      ]
+    },
+    "CreatePreparationInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "role_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "level": {
+          "type": "string",
+          "enum": [
+            "intern",
+            "junior"
+          ]
+        },
+        "main_question_count": {
+          "type": "integer",
+          "enum": [
+            2,
+            4,
+            6
+          ]
+        },
+        "resume_snapshot_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "jd_snapshot_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "role_id",
+        "level",
+        "main_question_count",
+        "resume_snapshot_id",
+        "jd_snapshot_id"
+      ]
+    },
+    "EditPreparationInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "role_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "level": {
+          "type": "string",
+          "enum": [
+            "intern",
+            "junior"
+          ]
+        },
+        "main_question_count": {
+          "type": "integer",
+          "enum": [
+            2,
+            4,
+            6
+          ]
+        },
+        "resume_snapshot_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "jd_snapshot_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "revision",
+        "role_id",
+        "level",
+        "main_question_count",
+        "resume_snapshot_id",
+        "jd_snapshot_id"
+      ]
+    },
+    "Preparation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "role_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "level": {
+          "type": "string",
+          "enum": [
+            "intern",
+            "junior"
+          ]
+        },
+        "main_question_count": {
+          "type": "integer",
+          "enum": [
+            2,
+            4,
+            6
+          ]
+        },
+        "resume_snapshot_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "jd_snapshot_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "match_report_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "current_plan_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updated_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "revision",
+        "role_id",
+        "level",
+        "main_question_count",
+        "resume_snapshot_id",
+        "jd_snapshot_id",
+        "match_report_id",
+        "current_plan_id",
+        "created_at",
+        "updated_at"
+      ]
+    },
+    "MatchRow": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "requirement_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "supported",
+            "to_verify",
+            "not_evidenced"
+          ]
+        },
+        "resume_evidence": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Anchor"
+          },
+          "minItems": 0
+        },
+        "explanation": {
+          "type": "string",
+          "minLength": 1
+        },
+        "suggested_focus": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "requirement_id",
+        "status",
+        "resume_evidence",
+        "explanation",
+        "suggested_focus"
+      ]
+    },
+    "MatchRowsOutput": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "rows": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/MatchRow"
+          },
+          "minItems": 1
+        }
+      },
+      "required": [
+        "rows"
+      ]
+    },
+    "MatchReport": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "preparation_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "input_revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "resume_snapshot_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "jd_snapshot_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "rows": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/MatchRow"
+          },
+          "minItems": 1
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "preparation_id",
+        "input_revision",
+        "resume_snapshot_id",
+        "jd_snapshot_id",
+        "rows",
+        "created_at"
+      ]
+    },
+    "KeyPoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "point": {
+          "type": "string",
+          "minLength": 1
+        },
+        "weight": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 1
+        }
+      },
+      "required": [
+        "point",
+        "weight"
+      ]
+    },
+    "Basis": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "material",
+            "fact_card",
+            "reasoning"
+          ]
+        },
+        "ref_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "note": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "kind",
+        "ref_id",
+        "note"
+      ]
+    },
+    "RubricDimension": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "weight": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 1
+        },
+        "low_anchor": {
+          "type": "string",
+          "minLength": 1
+        },
+        "high_anchor": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "weight",
+        "low_anchor",
+        "high_anchor"
+      ]
+    },
+    "Rubric": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "version": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "dimensions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RubricDimension"
+          },
+          "minItems": 1
+        }
+      },
+      "required": [
+        "id",
+        "version",
+        "dimensions"
+      ]
+    },
+    "Evaluation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "goal": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reference_approach": {
+          "type": "string",
+          "minLength": 1
+        },
+        "key_points": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/KeyPoint"
+          },
+          "minItems": 2
+        },
+        "acceptable_alternatives": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 0
+        },
+        "common_mistakes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 0
+        },
+        "rubric": {
+          "$ref": "#/$defs/Rubric"
+        },
+        "basis": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Basis"
+          },
+          "minItems": 1
+        },
+        "answer_status": {
+          "type": "string",
+          "enum": [
+            "verified",
+            "model_generated"
+          ]
+        },
+        "trust": {
+          "type": "string",
+          "enum": [
+            "reviewed",
+            "provisional"
+          ]
+        },
+        "uncertainties": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 0
+        }
+      },
+      "required": [
+        "goal",
+        "reference_approach",
+        "key_points",
+        "acceptable_alternatives",
+        "common_mistakes",
+        "rubric",
+        "basis",
+        "answer_status",
+        "trust",
+        "uncertainties"
+      ]
+    },
+    "BankCandidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "question_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "version": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "canonical_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "draft",
+            "review",
+            "approved",
+            "deprecated"
+          ]
+        },
+        "answer_status": {
+          "type": "string",
+          "enum": [
+            "model_generated",
+            "verified"
+          ]
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "role_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1
+        },
+        "levels": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "intern",
+              "junior"
+            ]
+          },
+          "minItems": 1
+        },
+        "stem": {
+          "type": "string",
+          "minLength": 1
+        },
+        "focus": {
+          "type": "string",
+          "minLength": 1
+        },
+        "topic_key": {
+          "type": "string",
+          "minLength": 1
+        },
+        "skill_codes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 0
+        },
+        "evaluation": {
+          "$ref": "#/$defs/Evaluation"
+        },
+        "provenance": {
+          "const": "authored"
+        },
+        "source_urls": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "format": "uri"
+          },
+          "minItems": 1
+        },
+        "license_status": {
+          "type": "string",
+          "enum": [
+            "pending_owner_review",
+            "clear"
+          ]
+        },
+        "content_sha256": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      },
+      "required": [
+        "question_id",
+        "version",
+        "canonical_id",
+        "status",
+        "answer_status",
+        "title",
+        "role_ids",
+        "levels",
+        "stem",
+        "focus",
+        "topic_key",
+        "skill_codes",
+        "evaluation",
+        "provenance",
+        "source_urls",
+        "license_status",
+        "content_sha256"
+      ]
+    },
+    "FactCard": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "version": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "draft",
+            "approved"
+          ]
+        },
+        "reviewer_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 0
+        },
+        "url": {
+          "type": "string",
+          "format": "uri"
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1
+        },
+        "license_status": {
+          "type": "string",
+          "enum": [
+            "pending_owner_review",
+            "clear"
+          ]
+        },
+        "content_sha256": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      },
+      "required": [
+        "id",
+        "version",
+        "status",
+        "reviewer_ids",
+        "url",
+        "summary",
+        "license_status",
+        "content_sha256"
+      ]
+    },
+    "ReviewDecision": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "resource_type": {
+          "type": "string",
+          "enum": [
+            "bank_question",
+            "fact_card"
+          ]
+        },
+        "resource_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "version": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "content_sha256": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "reviewer_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "decision": {
+          "type": "string",
+          "enum": [
+            "approve",
+            "reject"
+          ]
+        },
+        "reviewed_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "note": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "resource_type",
+        "resource_id",
+        "version",
+        "content_sha256",
+        "reviewer_id",
+        "decision",
+        "reviewed_at",
+        "note"
+      ]
+    },
+    "BankRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "question_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "version": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "canonical_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "review_status": {
+          "const": "approved"
+        },
+        "answer_status": {
+          "const": "verified"
+        },
+        "reviewer_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 2,
+          "uniqueItems": true
+        },
+        "content_sha256": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "license_status": {
+          "const": "clear"
+        }
+      },
+      "required": [
+        "question_id",
+        "version",
+        "canonical_id",
+        "review_status",
+        "answer_status",
+        "reviewer_ids",
+        "content_sha256",
+        "license_status"
+      ]
+    },
+    "InternalQuestion": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "position": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 6
+        },
+        "source": {
+          "type": "string",
+          "enum": [
+            "bank",
+            "generated"
+          ]
+        },
+        "bank_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BankRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "question_type": {
+          "type": "string",
+          "enum": [
+            "experience",
+            "knowledge"
+          ]
+        },
+        "canonical_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "stem": {
+          "type": "string",
+          "minLength": 8,
+          "maxLength": 500
+        },
+        "focus": {
+          "type": "string",
+          "minLength": 1
+        },
+        "topic_key": {
+          "type": "string",
+          "minLength": 1
+        },
+        "skill_codes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 0
+        },
+        "anchors": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Anchor"
+          },
+          "minItems": 1
+        },
+        "evaluation": {
+          "$ref": "#/$defs/Evaluation"
+        }
+      },
+      "required": [
+        "id",
+        "position",
+        "source",
+        "bank_ref",
+        "question_type",
+        "canonical_id",
+        "stem",
+        "focus",
+        "topic_key",
+        "skill_codes",
+        "anchors",
+        "evaluation"
+      ]
+    },
+    "GeneratedQuestionOutput": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "question_type": {
+          "type": "string",
+          "enum": [
+            "experience",
+            "knowledge"
+          ]
+        },
+        "canonical_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "stem": {
+          "type": "string",
+          "minLength": 8,
+          "maxLength": 500
+        },
+        "focus": {
+          "type": "string",
+          "minLength": 1
+        },
+        "topic_key": {
+          "type": "string",
+          "minLength": 1
+        },
+        "skill_codes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 0
+        },
+        "anchors": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Anchor"
+          },
+          "minItems": 1
+        },
+        "evaluation": {
+          "$ref": "#/$defs/Evaluation"
+        }
+      },
+      "required": [
+        "question_type",
+        "canonical_id",
+        "stem",
+        "focus",
+        "topic_key",
+        "skill_codes",
+        "anchors",
+        "evaluation"
+      ]
+    },
+    "GroundingIssue": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "question_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "claim": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "question_id",
+        "claim",
+        "reason"
+      ]
+    },
+    "DuplicateReviewOutput": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "duplicate_pairs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "left_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "right_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "reason": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "left_id",
+              "right_id",
+              "reason"
+            ]
+          },
+          "minItems": 0
+        },
+        "grounding_issues": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/GroundingIssue"
+          },
+          "minItems": 0
+        },
+        "uncertain": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "duplicate_pairs",
+        "grounding_issues",
+        "uncertain"
+      ]
+    },
+    "PublicPlan": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "preparation_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "input_revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "ready",
+            "confirmed"
+          ]
+        },
+        "role_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "level": {
+          "type": "string",
+          "enum": [
+            "intern",
+            "junior"
+          ]
+        },
+        "main_question_count": {
+          "type": "integer",
+          "enum": [
+            2,
+            4,
+            6
+          ]
+        },
+        "source_counts": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "bank": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 3
+            },
+            "generated": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 3
+            }
+          },
+          "required": [
+            "bank",
+            "generated"
+          ]
+        },
+        "resume_snapshot_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "jd_snapshot_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "focus_areas": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 0
+        },
+        "limitations": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 0
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "confirmed_at": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "preparation_id",
+        "input_revision",
+        "revision",
+        "state",
+        "role_id",
+        "level",
+        "main_question_count",
+        "source_counts",
+        "resume_snapshot_id",
+        "jd_snapshot_id",
+        "focus_areas",
+        "limitations",
+        "created_at",
+        "confirmed_at"
+      ]
+    },
+    "InternalPlan": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "preparation_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "input_revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "ready",
+            "confirmed"
+          ]
+        },
+        "role_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "level": {
+          "type": "string",
+          "enum": [
+            "intern",
+            "junior"
+          ]
+        },
+        "main_question_count": {
+          "type": "integer",
+          "enum": [
+            2,
+            4,
+            6
+          ]
+        },
+        "source_counts": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "bank": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 3
+            },
+            "generated": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 3
+            }
+          },
+          "required": [
+            "bank",
+            "generated"
+          ]
+        },
+        "resume_snapshot_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "jd_snapshot_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "focus_areas": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 0
+        },
+        "limitations": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 0
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "confirmed_at": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "test_only": {
+          "type": "boolean"
+        },
+        "material_snapshots": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Snapshot"
+          },
+          "minItems": 2
+        },
+        "bank_source_snapshots": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/BankCandidate"
+          },
+          "minItems": 1
+        },
+        "fact_cards": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/FactCard"
+          },
+          "minItems": 0
+        },
+        "content_reviews": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ReviewDecision"
+          },
+          "minItems": 0
+        },
+        "questions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/InternalQuestion"
+          },
+          "minItems": 2
+        },
+        "prompt_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "model_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "semantic_review": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "duplicate_pairs": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "left_id": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "right_id": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "reason": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "left_id",
+                  "right_id",
+                  "reason"
+                ]
+              },
+              "minItems": 0
+            },
+            "grounding_issues": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/GroundingIssue"
+              },
+              "minItems": 0
+            },
+            "uncertain": {
+              "type": "boolean"
+            },
+            "reviewed_at": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          "required": [
+            "duplicate_pairs",
+            "grounding_issues",
+            "uncertain",
+            "reviewed_at"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "preparation_id",
+        "input_revision",
+        "revision",
+        "state",
+        "role_id",
+        "level",
+        "main_question_count",
+        "source_counts",
+        "resume_snapshot_id",
+        "jd_snapshot_id",
+        "focus_areas",
+        "limitations",
+        "created_at",
+        "confirmed_at",
+        "test_only",
+        "material_snapshots",
+        "bank_source_snapshots",
+        "fact_cards",
+        "content_reviews",
+        "questions",
+        "prompt_version",
+        "model_id",
+        "semantic_review"
+      ]
+    },
+    "ErrorInfo": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "type": "string",
+          "minLength": 1
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1
+        },
+        "retryable": {
+          "type": "boolean"
+        },
+        "details": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 0
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "required": [
+        "code",
+        "message",
+        "retryable",
+        "details",
+        "request_id"
+      ]
+    },
+    "ErrorResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "error": {
+          "$ref": "#/$defs/ErrorInfo"
+        }
+      },
+      "required": [
+        "error"
+      ]
+    },
+    "ResultRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "entity_type": {
+          "type": "string",
+          "enum": [
+            "material",
+            "match_report",
+            "plan"
+          ]
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "required": [
+        "entity_type",
+        "id"
+      ]
+    },
+    "Job": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "extract",
+            "parse",
+            "match",
+            "plan"
+          ]
+        },
+        "target_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "input_revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "queued",
+            "running",
+            "succeeded",
+            "failed",
+            "interrupted",
+            "superseded"
+          ]
+        },
+        "attempt": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2
+        },
+        "retryable": {
+          "type": "boolean"
+        },
+        "result_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ResultRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ErrorInfo"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updated_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "target_id",
+        "input_revision",
+        "state",
+        "attempt",
+        "retryable",
+        "result_ref",
+        "error",
+        "created_at",
+        "updated_at"
+      ]
+    },
+    "User": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "username": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[a-z0-9_]{3,32}$"
+        }
+      },
+      "required": [
+        "id",
+        "username"
+      ]
+    },
+    "Credentials": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "username": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[a-zA-Z0-9_]{3,32}$"
+        },
+        "password": {
+          "type": "string",
+          "minLength": 10,
+          "maxLength": 128
+        }
+      },
+      "required": [
+        "username",
+        "password"
+      ]
+    },
+    "TokenResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "access_token": {
+          "type": "string",
+          "minLength": 1
+        },
+        "token_type": {
+          "const": "bearer"
+        },
+        "expires_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "user": {
+          "$ref": "#/$defs/User"
+        }
+      },
+      "required": [
+        "access_token",
+        "token_type",
+        "expires_at",
+        "user"
+      ]
+    },
+    "Role": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "levels": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "intern",
+              "junior"
+            ]
+          },
+          "minItems": 1
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "sample_only": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "levels",
+        "enabled",
+        "sample_only"
+      ]
+    },
+    "JdTemplate": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "version": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "role_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "level": {
+          "type": "string",
+          "enum": [
+            "intern",
+            "junior"
+          ]
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "label": {
+          "const": "内置练习岗位"
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 20000
+        },
+        "profile": {
+          "$ref": "#/$defs/JdProfile"
+        }
+      },
+      "required": [
+        "id",
+        "version",
+        "role_id",
+        "level",
+        "title",
+        "label",
+        "text",
+        "profile"
+      ]
+    },
+    "Roles": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Role"
+          },
+          "minItems": 0
+        }
+      },
+      "required": [
+        "items"
+      ]
+    },
+    "JdTemplates": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/JdTemplate"
+          },
+          "minItems": 0
+        }
+      },
+      "required": [
+        "items"
+      ]
+    },
+    "Materials": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/MaterialDraft"
+          },
+          "minItems": 0
+        }
+      },
+      "required": [
+        "items"
+      ]
+    },
+    "Preparations": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Preparation"
+          },
+          "minItems": 0
+        }
+      },
+      "required": [
+        "items"
+      ]
+    },
+    "Snapshots": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Snapshot"
+          },
+          "minItems": 0
+        }
+      },
+      "required": [
+        "items"
+      ]
+    }
+  }
+}

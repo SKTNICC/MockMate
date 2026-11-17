@@ -1,0 +1,577 @@
+import argparse
+import copy
+import hashlib
+import json
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[2]
+STAMP = "2026-11-16T00:00:00Z"
+
+
+def uid(number):
+    return f"00000000-0000-4000-8000-{number:012d}"
+
+
+def obj(properties, required=None):
+    return {
+        "type": "object", "additionalProperties": False,
+        "properties": properties,
+        "required": list(properties) if required is None else required,
+    }
+
+
+def string(min_length=1, **kwargs):
+    return {"type": "string", "minLength": min_length, **kwargs}
+
+
+def enum(*values):
+    return {"type": "string", "enum": list(values)}
+
+
+def array(item, minimum=0):
+    return {"type": "array", "items": item, "minItems": minimum}
+
+
+def ref(name):
+    return {"$ref": f"#/$defs/{name}"}
+
+
+def nullable(schema):
+    return {"anyOf": [schema, {"type": "null"}]}
+
+
+def digest(value):
+    # 审核绑定的规范序列化：UTF-8、键排序、无额外空格。
+    return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True,
+                                     separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def content_digest(value):
+    content = copy.deepcopy(value)
+    for key in ("status", "answer_status", "content_sha256", "reviewer_ids"):
+        content.pop(key, None)
+    if "evaluation" in content:
+        content["evaluation"].pop("answer_status", None)
+        content["evaluation"].pop("trust", None)
+    return digest(content)
+
+
+def build_schema():
+    s = {}
+    ident = {"type": "string", "format": "uuid"}
+    date = {"type": "string", "format": "date-time"}
+    revision = {"type": "integer", "minimum": 1}
+    text = string(maxLength=20000)
+    count = {"type": "integer", "enum": [2, 4, 6]}
+    level = enum("intern", "junior")
+    strings = array(string())
+    s["Evidence"] = obj({"quote": string(), "origin": enum("extracted", "user_confirmed")})
+    s["Anchor"] = obj({"snapshot_id": ident, "item_id": string(), "quote": string()})
+    s["Education"] = obj({"item_id": string(), "degree": nullable(string()),
+                          "major": nullable(string()), "evidence": ref("Evidence")})
+    s["Experience"] = obj({"item_id": string(), "organization": string(),
+                           "title": string(), "description": string(), "evidence": ref("Evidence")})
+    s["Project"] = obj({"item_id": string(), "name": string(), "description": string(),
+                        "skill_codes": strings, "evidence": ref("Evidence")})
+    s["Skill"] = obj({"item_id": string(), "name": string(), "code": nullable(string()),
+                      "evidence": ref("Evidence")})
+    s["ResumeProfile"] = obj({"kind": {"const": "resume"},
+                              "education": array(ref("Education")),
+                              "work_experience": array(ref("Experience")),
+                              "projects": array(ref("Project")), "skills": array(ref("Skill"))})
+    s["Responsibility"] = obj({"item_id": string(), "text": string(), "evidence": ref("Evidence")})
+    s["Requirement"] = obj({"item_id": string(), "text": string(), "skill_codes": strings,
+                            "importance": enum("must", "nice"), "evidence": ref("Evidence")})
+    s["JdProfile"] = obj({"kind": {"const": "jd"}, "role_id": string(), "level": level,
+                          "title": string(), "responsibilities": array(ref("Responsibility"), 1),
+                          "requirements": array(ref("Requirement"), 1)})
+    s["Profile"] = {"oneOf": [ref("ResumeProfile"), ref("JdProfile")]}
+    s["MaterialDraft"] = obj({"id": ident, "revision": revision, "kind": enum("resume", "jd"),
+                              "title": string(maxLength=120), "text": nullable(text),
+                              "profile": nullable(ref("Profile")),
+                              "state": enum("uploaded", "text_ready", "parsed"),
+                              "template_id": nullable(string()), "template_version": nullable(revision),
+                              "latest_job_id": nullable(ident), "created_at": date, "updated_at": date})
+    s["Snapshot"] = obj({"id": ident, "material_id": ident, "source_revision": revision,
+                         "kind": enum("resume", "jd"), "title": string(maxLength=120), "text": text,
+                         "profile": ref("Profile"), "template_id": nullable(string()),
+                         "template_version": nullable(revision), "confirmed_at": date})
+    s["TextMaterialInput"] = obj({"kind": enum("resume", "jd"), "title": string(maxLength=120),
+                                  "text": text, "template_id": nullable(string()),
+                                  "template_version": nullable(revision)})
+    s["FileMaterialInput"] = obj({"kind": enum("resume", "jd"), "title": string(maxLength=120),
+                                  "file": {"type": "string", "format": "binary"}})
+    s["EditMaterialInput"] = obj({"revision": revision, "title": string(maxLength=120), "text": text})
+    s["ConfirmMaterialInput"] = obj({"revision": revision, "profile": ref("Profile")})
+    s["RevisionInput"] = obj({"revision": revision})
+    s["AiJobInput"] = obj({"revision": revision, "external_processing_consent": {"type": "boolean"}})
+    s["ParseMaterialInput"] = obj({"revision": revision, "external_processing_consent": {"type": "boolean"},
+                                   "role_id": string(), "level": level})
+    s["RetryInput"] = obj({"expected_attempt": {"type": "integer", "minimum": 1, "maximum": 2}})
+    prep_config = {"role_id": string(), "level": level, "main_question_count": count,
+                   "resume_snapshot_id": nullable(ident), "jd_snapshot_id": nullable(ident)}
+    s["CreatePreparationInput"] = obj(prep_config)
+    s["EditPreparationInput"] = obj({"revision": revision, **prep_config})
+    s["Preparation"] = obj({"id": ident, "revision": revision, **prep_config,
+                            "match_report_id": nullable(ident), "current_plan_id": nullable(ident),
+                            "created_at": date, "updated_at": date})
+    s["MatchRow"] = obj({"requirement_id": string(),
+                         "status": enum("supported", "to_verify", "not_evidenced"),
+                         "resume_evidence": array(ref("Anchor")), "explanation": string(),
+                         "suggested_focus": string()})
+    s["MatchRowsOutput"] = obj({"rows": array(ref("MatchRow"), 1)})
+    s["MatchReport"] = obj({"id": ident, "preparation_id": ident, "input_revision": revision,
+                            "resume_snapshot_id": ident, "jd_snapshot_id": ident,
+                            "rows": array(ref("MatchRow"), 1), "created_at": date})
+    s["KeyPoint"] = obj({"point": string(), "weight": {"type": "number", "exclusiveMinimum": 0,
+                                                              "maximum": 1}})
+    s["Basis"] = obj({"kind": enum("material", "fact_card", "reasoning"),
+                      "ref_id": string(), "note": string()})
+    s["RubricDimension"] = obj({"id": string(), "name": string(),
+                                "weight": {"type": "number", "exclusiveMinimum": 0, "maximum": 1},
+                                "low_anchor": string(), "high_anchor": string()})
+    s["Rubric"] = obj({"id": string(), "version": revision,
+                       "dimensions": array(ref("RubricDimension"), 1)})
+    s["Evaluation"] = obj({"goal": string(), "reference_approach": string(),
+                           "key_points": array(ref("KeyPoint"), 2),
+                           "acceptable_alternatives": strings, "common_mistakes": strings,
+                           "rubric": ref("Rubric"), "basis": array(ref("Basis"), 1),
+                           "answer_status": enum("verified", "model_generated"),
+                           "trust": enum("reviewed", "provisional"), "uncertainties": strings})
+    sha = string(pattern="^[a-f0-9]{64}$")
+    s["BankCandidate"] = obj({"question_id": string(), "version": revision, "canonical_id": string(),
+                              "status": enum("draft", "review", "approved", "deprecated"),
+                              "answer_status": enum("model_generated", "verified"), "title": string(),
+                              "role_ids": array(string(), 1), "levels": array(level, 1), "stem": string(),
+                              "focus": string(), "topic_key": string(), "skill_codes": strings,
+                              "evaluation": ref("Evaluation"), "provenance": {"const": "authored"},
+                              "source_urls": array({"type": "string", "format": "uri"}, 1),
+                              "license_status": enum("pending_owner_review", "clear"), "content_sha256": sha})
+    s["FactCard"] = obj({"id": string(), "version": revision, "status": enum("draft", "approved"),
+                         "reviewer_ids": strings, "url": {"type": "string", "format": "uri"},
+                         "summary": string(),
+                         "license_status": enum("pending_owner_review", "clear"),
+                         "content_sha256": sha})
+    s["ReviewDecision"] = obj({"resource_type": enum("bank_question", "fact_card"), "resource_id": string(),
+                               "version": revision, "content_sha256": sha, "reviewer_id": string(),
+                               "decision": enum("approve", "reject"), "reviewed_at": date, "note": string()})
+    s["BankRef"] = obj({"question_id": string(), "version": revision, "canonical_id": string(),
+                        "review_status": {"const": "approved"}, "answer_status": {"const": "verified"},
+                        "reviewer_ids": {"type": "array", "items": string(), "minItems": 2,
+                                         "uniqueItems": True},
+                        "content_sha256": string(pattern="^[a-f0-9]{64}$"),
+                        "license_status": {"const": "clear"}})
+    question_props = {"id": ident, "position": {"type": "integer", "minimum": 1, "maximum": 6},
+                      "source": enum("bank", "generated"), "bank_ref": nullable(ref("BankRef")),
+                      "question_type": enum("experience", "knowledge"),
+                      "canonical_id": string(), "stem": string(min_length=8, maxLength=500),
+                      "focus": string(), "topic_key": string(), "skill_codes": strings,
+                      "anchors": array(ref("Anchor"), 1), "evaluation": ref("Evaluation")}
+    s["InternalQuestion"] = obj(question_props)
+    s["GeneratedQuestionOutput"] = obj({k: v for k, v in question_props.items()
+                                         if k not in ("id", "position", "bank_ref", "source")})
+    s["GroundingIssue"] = obj({"question_id": string(), "claim": string(), "reason": string()})
+    s["DuplicateReviewOutput"] = obj({"duplicate_pairs": array(obj({
+        "left_id": string(), "right_id": string(), "reason": string()})),
+        "grounding_issues": array(ref("GroundingIssue")),
+        "uncertain": {"type": "boolean"}})
+    public_props = {"id": ident, "preparation_id": ident, "input_revision": revision,
+                    "revision": revision, "state": enum("ready", "confirmed"),
+                    "role_id": string(), "level": level, "main_question_count": count,
+                    "source_counts": obj({"bank": {"type": "integer", "minimum": 1, "maximum": 3},
+                                          "generated": {"type": "integer", "minimum": 1, "maximum": 3}}),
+                    "resume_snapshot_id": ident, "jd_snapshot_id": ident,
+                    "focus_areas": strings, "limitations": strings,
+                    "created_at": date, "confirmed_at": nullable(date)}
+    s["PublicPlan"] = obj(public_props)
+    s["InternalPlan"] = obj({**public_props, "test_only": {"type": "boolean"},
+                             "material_snapshots": array(ref("Snapshot"), 2),
+                             "bank_source_snapshots": array(ref("BankCandidate"), 1),
+                             "fact_cards": array(ref("FactCard")),
+                             "content_reviews": array(ref("ReviewDecision")),
+                             "questions": array(ref("InternalQuestion"), 2),
+                             "prompt_version": string(), "model_id": string(),
+                             "semantic_review": obj({"duplicate_pairs": array(obj({
+                                 "left_id": string(), "right_id": string(), "reason": string()})),
+                                 "grounding_issues": array(ref("GroundingIssue")),
+                                 "uncertain": {"type": "boolean"}, "reviewed_at": date})})
+    s["ErrorInfo"] = obj({"code": string(), "message": string(), "retryable": {"type": "boolean"},
+                          "details": strings, "request_id": ident})
+    s["ErrorResponse"] = obj({"error": ref("ErrorInfo")})
+    s["ResultRef"] = obj({"entity_type": enum("material", "match_report", "plan"), "id": ident})
+    s["Job"] = obj({"id": ident, "kind": enum("extract", "parse", "match", "plan"),
+                    "target_id": ident, "input_revision": revision,
+                    "state": enum("queued", "running", "succeeded", "failed", "interrupted", "superseded"),
+                    "attempt": {"type": "integer", "minimum": 1, "maximum": 2},
+                    "retryable": {"type": "boolean"}, "result_ref": nullable(ref("ResultRef")),
+                    "error": nullable(ref("ErrorInfo")), "created_at": date, "updated_at": date})
+    s["User"] = obj({"id": ident, "username": string(pattern="^[a-z0-9_]{3,32}$")})
+    s["Credentials"] = obj({"username": string(pattern="^[a-zA-Z0-9_]{3,32}$"),
+                            "password": string(min_length=10, maxLength=128)})
+    s["TokenResponse"] = obj({"access_token": string(), "token_type": {"const": "bearer"},
+                              "expires_at": date, "user": ref("User")})
+    s["Role"] = obj({"id": string(), "name": string(), "levels": array(level, 1),
+                     "enabled": {"type": "boolean"}, "sample_only": {"type": "boolean"}})
+    s["JdTemplate"] = obj({"id": string(), "version": revision, "role_id": string(), "level": level,
+                           "title": string(), "label": {"const": "内置练习岗位"},
+                           "text": text, "profile": ref("JdProfile")})
+    for name, item in [("Roles", "Role"), ("JdTemplates", "JdTemplate"),
+                       ("Materials", "MaterialDraft"), ("Preparations", "Preparation"),
+                       ("Snapshots", "Snapshot")]:
+        s[name] = obj({"items": array(ref(item))})
+    return {"$schema": "https://json-schema.org/draft/2020-12/schema",
+            "$id": "https://mockmate.example/contracts/m1/schema", "title": "MockMate M1",
+            "$comment": "生成源 tools/m1/build_contracts.py；结构契约不取代业务校验。", "$defs": s}
+
+
+def openapi_refs(value):
+    if isinstance(value, dict):
+        return {k: (v.replace("#/$defs/", "#/components/schemas/") if k == "$ref"
+                    else openapi_refs(v)) for k, v in value.items()}
+    if isinstance(value, list):
+        return [openapi_refs(v) for v in value]
+    return value
+
+
+def build_openapi(schema):
+    api = {"openapi": "3.1.0", "info": {"title": "MockMate M1 target contract", "version": "0.1.0",
+            "description": "开发目标，尚未实现。维护源 tools/m1/build_contracts.py。所有私人对象由会话确定owner。"},
+           "servers": [{"url": "/v1"}], "security": [{"BearerAuth": []}], "paths": {},
+           "components": {"securitySchemes": {"BearerAuth": {"type": "http", "scheme": "bearer"}},
+                          "schemas": openapi_refs(schema["$defs"])}}
+
+    def endpoint(path, method, operation, summary, response=None, body=None, status=200,
+                 anonymous=False, multipart=False, idempotent=True):
+        params = []
+        for segment in path.split("/"):
+            if segment.startswith("{"):
+                name = segment[1:-1]
+                field = {"type": "string"} if name == "template_id" else {"type": "string", "format": "uuid"}
+                params.append({"name": name, "in": "path", "required": True, "schema": field})
+        if method in ("post", "put", "delete") and idempotent:
+            params.append({"name": "Idempotency-Key", "in": "header", "required": True,
+                           "description": "逻辑操作UUID；相同key与body回放，不同body冲突；重试不得换key。",
+                           "schema": {"type": "string", "format": "uuid"}})
+        success = {"description": "成功；异步接口返回持久化Job，GET轮询结果" if status == 202 else "成功"}
+        if response:
+            success["content"] = {"application/json": {"schema": {"$ref": f"#/components/schemas/{response}"}}}
+        op = {"operationId": operation, "summary": summary, "parameters": params,
+              "responses": {str(status): success}}
+        for code in (400, 401, 404, 409, 413, 415, 422, 429, 502, 503):
+            op["responses"][str(code)] = {"description": "统一错误；具体code与语义见M1架构说明",
+                "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        if body:
+            op["requestBody"] = {"required": True, "content": {
+                "multipart/form-data" if multipart else "application/json": {
+                    "schema": {"$ref": f"#/components/schemas/{body}"}}}}
+        if anonymous:
+            op["security"] = []
+        api["paths"].setdefault(path, {})[method] = op
+
+    endpoint("/auth/register", "post", "register", "注册", "User", "Credentials", 201, True, idempotent=False)
+    endpoint("/auth/login", "post", "login", "登录", "TokenResponse", "Credentials", anonymous=True, idempotent=False)
+    endpoint("/auth/logout", "post", "logout", "撤销当前会话", status=204, idempotent=False)
+    endpoint("/me", "get", "getMe", "本人", "User")
+    endpoint("/roles", "get", "listRoles", "可用岗位", "Roles")
+    endpoint("/jd-templates", "get", "listJdTemplates", "内置JD模板", "JdTemplates")
+    endpoint("/jd-templates/{template_id}", "get", "getJdTemplate", "读取模板当前版本", "JdTemplate")
+    endpoint("/materials", "get", "listMaterials", "本人材料", "Materials")
+    endpoint("/materials/text", "post", "createTextMaterial", "保存文本材料", "MaterialDraft", "TextMaterialInput", 201)
+    endpoint("/materials/file", "post", "createFileMaterial", "保存文件，尚不调用AI", "MaterialDraft", "FileMaterialInput", 201, multipart=True)
+    endpoint("/materials/{material_id}", "get", "getMaterial", "读取当前材料草稿", "MaterialDraft")
+    endpoint("/materials/{material_id}", "put", "editMaterial", "修改原文并清空旧解析", "MaterialDraft", "EditMaterialInput")
+    endpoint("/materials/{material_id}", "delete", "deleteMaterial", "删除未被引用材料及快照/原件", status=204)
+    endpoint("/materials/{material_id}/extract", "post", "extractMaterial", "本地文件提取任务", "Job", "RevisionInput", 202)
+    endpoint("/materials/{material_id}/parse", "post", "parseMaterial", "AI结构化解析任务", "Job", "ParseMaterialInput", 202)
+    endpoint("/materials/{material_id}/confirm", "post", "confirmMaterial", "保存核对后的不可变快照", "Snapshot", "ConfirmMaterialInput", 201)
+    endpoint("/materials/{material_id}/snapshots", "get", "listMaterialSnapshots", "本人材料的确认版本列表", "Snapshots")
+    endpoint("/snapshots/{snapshot_id}", "get", "getSnapshot", "读取本人材料快照", "Snapshot")
+    endpoint("/preparations", "post", "createPreparation", "新建可缺材料的准备草稿", "Preparation", "CreatePreparationInput", 201)
+    endpoint("/preparations", "get", "listPreparations", "本人准备列表，最多100条", "Preparations")
+    endpoint("/preparations/{preparation_id}", "get", "getPreparation", "读取准备及当前实体ID", "Preparation")
+    endpoint("/preparations/{preparation_id}", "put", "editPreparation", "修改完整准备配置并失效旧产物指针", "Preparation", "EditPreparationInput")
+    endpoint("/preparations/{preparation_id}", "delete", "deletePreparation", "删除准备/计划/匹配并终止相关任务", status=204)
+    endpoint("/preparations/{preparation_id}/match", "post", "matchPreparation", "分析已确认的材料", "Job", "AiJobInput", 202)
+    endpoint("/match-reports/{report_id}", "get", "getMatchReport", "读取匹配报告", "MatchReport")
+    endpoint("/preparations/{preparation_id}/generate-plan", "post", "generatePlan", "生成严格各半的计划", "Job", "AiJobInput", 202)
+    endpoint("/plans/{plan_id}", "get", "getPlan", "只读取安全计划摘要，不重新生成", "PublicPlan")
+    endpoint("/plans/{plan_id}/confirm", "post", "confirmPlan", "确认当前有效计划", "PublicPlan", "RevisionInput")
+    endpoint("/jobs/{job_id}", "get", "getJob", "查询持久任务", "Job")
+    endpoint("/jobs/{job_id}/retry", "post", "retryJob", "明确重试可恢复失败/未知任务", "Job", "RetryInput", 202)
+    return api
+
+
+def evidence(quote, origin="extracted"):
+    return {"quote": quote, "origin": origin}
+
+
+def snapshot(number, kind, title, text, profile, template_id=None):
+    return {"id": uid(number), "material_id": uid(number + 100), "source_revision": 1,
+            "kind": kind, "title": title, "text": text, "profile": profile,
+            "template_id": template_id, "template_version": 1 if template_id else None,
+            "confirmed_at": STAMP}
+
+
+def build_materials():
+    edu = "本科在读，计算机科学与技术专业。"
+    proj = "课程项目：校园图书借阅系统，使用 Java 的 ArrayList 和 HashMap 保存并查询图书信息；我参与了借阅模块与边界测试。"
+    skill = "学习过 Java 集合基础和 JUnit 单元测试。"
+    resume = {"kind": "resume", "education": [{"item_id": "edu-1", "degree": "本科在读",
+        "major": "计算机科学与技术", "evidence": evidence(edu)}], "work_experience": [],
+        "projects": [{"item_id": "project-1", "name": "校园图书借阅系统", "description": proj,
+                      "skill_codes": ["java.core", "test.junit"], "evidence": evidence(proj)}],
+        "skills": [{"item_id": "skill-1", "name": "Java 集合基础和 JUnit", "code": "java.core",
+                    "evidence": evidence(skill)}]}
+    no_project = copy.deepcopy(resume)
+    no_project["projects"] = []
+    jd_parts = ["内置练习岗位：Java 后端开发实习生。", "职责：在指导下完成 Java 功能开发并说明实现思路。",
+                "要求：理解 Java 集合的使用及基本边界。", "要求：能够为简单功能设计边界测试。"]
+    jd = {"kind": "jd", "role_id": "java-backend", "level": "intern", "title": "Java 后端开发实习生",
+          "responsibilities": [{"item_id": "responsibility-1", "text": jd_parts[1], "evidence": evidence(jd_parts[1])}],
+          "requirements": [{"item_id": "req-1", "text": "理解 Java 集合的使用及基本边界",
+                            "skill_codes": ["java.core"], "importance": "must", "evidence": evidence(jd_parts[2])},
+                           {"item_id": "req-2", "text": "能够为简单功能设计边界测试",
+                            "skill_codes": ["test.junit"], "importance": "must", "evidence": evidence(jd_parts[3])}]}
+    own_text = "自备练习JD：Java 后端实习。\n职责：在指导下编写 Java 基础功能。\n要求：了解线程安全，能区分共享读写和单线程使用。"
+    own_jd = {"kind": "jd", "role_id": "java-backend", "level": "intern", "title": "Java 后端实习",
+        "responsibilities": [{"item_id": "responsibility-1", "text": "在指导下编写 Java 基础功能",
+                              "evidence": evidence("职责：在指导下编写 Java 基础功能。") }],
+        "requirements": [{"item_id": "req-1", "text": "了解线程安全，能区分共享读写和单线程使用",
+                          "skill_codes": ["java.concurrency"], "importance": "must",
+                          "evidence": evidence("要求：了解线程安全，能区分共享读写和单线程使用。")}]}
+    return {"test_only": True, "snapshots": [
+        snapshot(1, "resume", "虚构学生简历（无工作经历）", "\n".join([edu, proj, skill, "没有工作经历。"]), resume),
+        snapshot(2, "jd", "内置JD开发样例", "\n".join(jd_parts), jd, "java-backend-intern-v1"),
+        snapshot(3, "resume", "虚构学生简历（无项目无工作）", "\n".join([edu, skill]), no_project),
+        snapshot(4, "jd", "自备JD开发样例", own_text, own_jd)]}
+
+
+def build_content(materials):
+    rubric = {"id": "m1-explanation", "version": 1, "dimensions": [
+        {"id": "accuracy", "name": "准确性", "weight": 0.4,
+         "low_anchor": "关键机制或材料事实错误", "high_anchor": "事实与前提准确，允许合理替代方案"},
+        {"id": "reasoning", "name": "推理与边界", "weight": 0.35,
+         "low_anchor": "只有结论且不能说明适用条件", "high_anchor": "说明原因、前提与边界"},
+        {"id": "verification", "name": "验证思路", "weight": 0.25,
+         "low_anchor": "没有可检验思路", "high_anchor": "提出可执行的小样例或验证步骤"}]}
+    hash_url = "https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/util/HashMap.html"
+    list_url = "https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/util/ArrayList.html"
+    facts = {"test_only": True, "cards": [
+        {"id": "FC-HASHMAP", "version": 1, "status": "draft", "reviewer_ids": [], "url": hash_url,
+         "license_status": "pending_owner_review",
+         "summary": "HashMap不承诺遍历顺序。get/put的常数时间说明有散列分布前提；实现未同步。此处为待人工核验摘要。"},
+        {"id": "FC-ARRAYLIST", "version": 1, "status": "draft", "reviewer_ids": [], "url": list_url,
+         "license_status": "pending_owner_review",
+         "summary": "ArrayList为可变数组列表，get为常数时间，添加为摊还常数时间，实现未同步；增长倍率不是接口承诺。此处为待人工核验摘要。"}]}
+    specs = [
+        ("HashMap遍历顺序", "用 HashMap 保存图书后，展示顺序能否依赖某次遍历结果？如果页面必须保持录入顺序，你会如何调整并验证？",
+         "集合顺序契约", "java.core", "FC-HASHMAP", "不能依赖HashMap未承诺的遍历顺序；先明确显示需求，再选择有明确顺序语义的结构或显式排序，并用不同插入序列验证。",
+         ["区分偶然结果与接口承诺", "根据显示需求设计并验证"], hash_url),
+        ("ArrayList访问与添加", "假设图书列表主要按下标读取、偶尔追加，使用 ArrayList 有什么依据？请区分单次追加与摊还成本，并说明如何验证选型。",
+         "集合访问成本", "java.core", "FC-ARRAYLIST", "按下标访问与追加的成本性质应结合官方契约解释；摊还成本不等于每次操作都一样快；用符合访问模式的小样例验证。",
+         ["说明下标访问与追加特点", "区分单次和摊还并说明验证"], list_url),
+        ("共享修改的线程边界", "两个线程同时修改同一个图书 ArrayList 时，可以直接沿用单线程代码吗？请说明需要保护的操作边界，并给出一种验证思路。",
+         "共享集合修改边界", "java.core", "FC-ARRAYLIST", "ArrayList本身未同步。先识别共享状态和复合操作，再选择线程隔离、外部同步或合适替代方案；不能将测试偶然无错视为安全证明。",
+         ["识别共享修改需要保护", "给出边界与验证限制"], list_url),
+        ("HashMap性能前提", "如果使用 HashMap 查询图书，请解释通常所说的查询性能结论依赖什么前提。遇到分布不均的键，你会先核查哪些信息？",
+         "散列性能前提", "java.core", "FC-HASHMAP", "常数时间说明依赖合理散列分布，不能无条件保证所有输入；核查键类型、散列与访问模式并在受控样例比较。",
+         ["指出散列分布前提", "用受控样例验证而非承诺固定耗时"], hash_url),
+        ("空值与未命中", "图书查询接口使用 HashMap 时，如果返回 null，怎样区分不存在的键与键对应空值？请先说明接口约定，再设计边界验证。",
+         "空值与未命中契约", "java.core", "FC-HASHMAP", "HashMap允许空值，因此仅凭get返回null不足以区分情况；可明确禁止空值或结合键存在性检查，验证空集合、缺失键及存在空值等场景。",
+         ["识别空值与未命中的歧义", "给出约定和边界样例"], hash_url),
+        ("列表容量与逻辑大小", "为图书 ArrayList 提前设置容量后，能否马上按这些下标读取图书？请区分容量和已有元素数量，并说明验证步骤。",
+         "容量与大小", "java.core", "FC-ARRAYLIST", "容量用于底层空间安排，size表示实际元素数，预留容量不等于已加入元素；用空列表、追加前后size和合法下标说明。",
+         ["区分capacity与size", "通过追加前后样例验证"], list_url),
+    ]
+    candidates = []
+    for i, (title, stem, focus, skill, fact, approach, points, url) in enumerate(specs, 1):
+        evaluation = {"goal": focus, "reference_approach": approach,
+                      "key_points": [{"point": p, "weight": 0.5} for p in points],
+                      "acceptable_alternatives": ["前提明确且符合相同契约的等价方案"],
+                      "common_mistakes": ["把一次运行结果当成全部输入的保证"],
+                      "rubric": rubric, "basis": [{"kind": "fact_card", "ref_id": fact,
+                                                     "note": "官方文档候选摘要，需真实人工审核"}],
+                      "answer_status": "model_generated", "trust": "provisional", "uncertainties": []}
+        candidates.append({"question_id": f"M1-JAVA-{i:04d}", "version": 1, "canonical_id": f"m1-java-{i}",
+                           "status": "draft", "answer_status": "model_generated", "title": title,
+                           "role_ids": ["java-backend"], "levels": ["intern", "junior"],
+                           "stem": stem, "focus": focus, "topic_key": f"java.sample.{i}",
+                           "skill_codes": [skill], "evaluation": evaluation,
+                           "provenance": "authored", "source_urls": [url],
+                           "license_status": "pending_owner_review"})
+    for question in candidates:
+        question["content_sha256"] = content_digest(question)
+    for card in facts["cards"]:
+        card["content_sha256"] = content_digest(card)
+    template_snapshot = materials["snapshots"][1]
+    catalog = {"sample_only": True,
+               "roles": [{"id": "java-backend", "name": "Java 后端（开发样板）",
+                          "levels": ["intern", "junior"], "enabled": False, "sample_only": True}],
+               "skill_codes": ["java.core", "java.concurrency", "test.junit"],
+               "jd_templates": [{"id": "java-backend-intern-v1", "version": 1, "role_id": "java-backend",
+                                 "level": "intern", "title": "Java 后端实习开发样板", "label": "内置练习岗位",
+                                 "text": template_snapshot["text"], "profile": template_snapshot["profile"]}],
+               "rubrics": [rubric]}
+    reviews = {"test_only": False, "decisions": [],
+               "required_fields": ["resource_type", "resource_id", "version", "content_sha256",
+                                   "reviewer_id", "decision", "reviewed_at", "note"],
+               "note": "空ledger，不表示任何真实审核；bank_question和fact_card均需两位真实审核者。"}
+    return catalog, {"test_only": False, "questions": candidates}, facts, reviews
+
+
+def build_plan(materials, bank, facts):
+    resume, jd = materials["snapshots"][:2]
+    common = {"id": uid(10), "preparation_id": uid(20), "input_revision": 1, "revision": 1,
+              "state": "ready", "role_id": "java-backend", "level": "intern", "main_question_count": 6,
+              "source_counts": {"bank": 3, "generated": 3}, "resume_snapshot_id": resume["id"],
+              "jd_snapshot_id": jd["id"], "focus_areas": ["Java集合", "课程项目", "边界验证"],
+              "limitations": ["仅合成结构样例；非真实AI或人工审核结果", "生成参考仍需谨慎解释"],
+              "created_at": STAMP, "confirmed_at": None}
+    questions = []
+    bank_sources = copy.deepcopy(bank["questions"][:3])
+    fact_sources = copy.deepcopy(facts["cards"])
+    reviews = []
+    for resource_type, resources, id_field in (("bank_question", bank_sources, "question_id"),
+                                                ("fact_card", fact_sources, "id")):
+        for resource in resources:
+            resource["status"] = "approved"
+            if resource_type == "bank_question":
+                resource["answer_status"] = "verified"
+                resource["license_status"] = "clear"
+                resource["evaluation"].update(answer_status="verified", trust="reviewed")
+            else:
+                resource["reviewer_ids"] = ["TEST-ONLY-A", "TEST-ONLY-B"]
+                resource["license_status"] = "clear"
+            resource["content_sha256"] = content_digest(resource)
+            for reviewer in ("TEST-ONLY-A", "TEST-ONLY-B"):
+                reviews.append({"resource_type": resource_type, "resource_id": resource[id_field],
+                                "version": resource["version"], "content_sha256": resource["content_sha256"],
+                                "reviewer_id": reviewer, "decision": "approve", "reviewed_at": STAMP,
+                                "note": "TEST ONLY：合成审核字段，不是真实人工批准"})
+    for i, candidate in enumerate(bank_sources, 1):
+        ev = copy.deepcopy(candidate["evaluation"])
+        ev.update(answer_status="verified", trust="reviewed")
+        questions.append({"id": uid(30 + i), "position": i, "source": "bank",
+            "bank_ref": {"question_id": candidate["question_id"], "version": 1,
+                         "canonical_id": candidate["canonical_id"], "review_status": "approved",
+                         "answer_status": "verified", "reviewer_ids": ["TEST-ONLY-A", "TEST-ONLY-B"],
+                         "content_sha256": candidate["content_sha256"], "license_status": "clear"},
+            "question_type": "knowledge",
+            "canonical_id": candidate["canonical_id"], "stem": candidate["stem"],
+            "focus": candidate["focus"], "topic_key": candidate["topic_key"],
+            "skill_codes": candidate["skill_codes"],
+            "anchors": [{"snapshot_id": jd["id"], "item_id": "req-1",
+                         "quote": jd["profile"]["requirements"][0]["evidence"]["quote"]}], "evaluation": ev})
+    specs = [
+        ("结合你参与的校园图书借阅课程项目，如果再次实现借阅模块，你会先明确哪些输入与状态约束？请描述一次合法借阅的检查过程。",
+         "借阅流程约束", "project.borrow.constraints", ["先澄清借阅前置条件", "逐步检查并说明状态变化"]),
+        ("你提到参与了借阅模块的边界测试，请选择一条实际测试说明输入与预期结果；如果当时没有这条记录，也可以明确给出现在会补充的假设用例。",
+         "测试证据与预期", "project.borrow.tests", ["区分实际做过与现在假设", "给出输入和可检验预期"]),
+        ("假设图书借阅页面提示操作失败，但再次查询发现图书已借出，你会怎样核实真实状态，并避免未经确认地再次提交？请说明排查顺序。",
+         "未知结果的核实", "project.borrow.uncertain", ["先核实状态而非盲目重试", "说明用户提示和复现方法"]),
+    ]
+    for offset, (stem, goal, topic, points) in enumerate(specs, 4):
+        anchor = {"snapshot_id": resume["id"], "item_id": "project-1",
+                  "quote": resume["profile"]["projects"][0]["evidence"]["quote"]}
+        ev = {"goal": goal, "reference_approach": "围绕已确认课程项目说明前提、分析步骤与验证；假设方案明确标为假设，不强求唯一实现。",
+              "key_points": [{"point": p, "weight": 0.5} for p in points],
+              "acceptable_alternatives": ["满足相同前提和验证目标的等价方案"],
+              "common_mistakes": ["把未实际发生的经历说成材料已确认事实"],
+              "rubric": copy.deepcopy(bank["questions"][0]["evaluation"]["rubric"]),
+              "basis": [{"kind": "material", "ref_id": f"{resume['id']}/project-1", "note": "以课程项目原文为事实边界"},
+                        {"kind": "reasoning", "ref_id": "hypothetical-analysis", "note": "仅评价思路与验证，不断言唯一技术实现"}],
+              "answer_status": "model_generated", "trust": "provisional", "uncertainties": []}
+        questions.append({"id": uid(30 + offset), "position": offset, "source": "generated", "bank_ref": None,
+                          "question_type": "experience",
+                          "canonical_id": f"fixture-generated-{offset}", "stem": stem, "focus": goal,
+                          "topic_key": topic, "skill_codes": ["test.junit"], "anchors": [anchor], "evaluation": ev})
+    internal = {**common, "test_only": True, "material_snapshots": [resume, jd], "questions": questions,
+                "bank_source_snapshots": bank_sources, "fact_cards": fact_sources, "content_reviews": reviews,
+                "prompt_version": "m1-v1-test-only", "model_id": "SYNTHETIC-NO-AI-CALL",
+                "semantic_review": {"duplicate_pairs": [], "grounding_issues": [], "uncertain": False, "reviewed_at": STAMP}}
+    return internal, common
+
+
+def build_cases(plan):
+    cases = []
+
+    def add(case_id, value, expected):
+        cases.append({"id": case_id, "expected_error": expected, "plan": value})
+
+    add("valid-six-test-only", copy.deepcopy(plan), None)
+    for count in (2, 4):
+        item = copy.deepcopy(plan)
+        half = count // 2
+        item["questions"] = item["questions"][:half] + item["questions"][3:3 + half]
+        for position, question in enumerate(item["questions"], 1):
+            question["position"] = position
+        item["main_question_count"] = count
+        item["source_counts"] = {"bank": half, "generated": half}
+        item["bank_source_snapshots"] = item["bank_source_snapshots"][:half]
+        add(f"valid-{count}-test-only", item, None)
+    modifications = [
+        ("wrong-quota", "SOURCE_QUOTA", lambda p: p["questions"][3].update(source="bank", bank_ref=copy.deepcopy(p["questions"][0]["bank_ref"]))),
+        ("duplicate-canonical", "DUPLICATE_QUESTION", lambda p: p["questions"][3].update(canonical_id=p["questions"][0]["canonical_id"])),
+        ("duplicate-normalized-stem", "DUPLICATE_QUESTION", lambda p: p["questions"][3].update(stem=p["questions"][0]["stem"] + "！")),
+        ("missing-evaluation", "SCHEMA_INVALID", lambda p: p["questions"][3].pop("evaluation")),
+        ("weight-sum", "EVALUATION_INVALID", lambda p: p["questions"][3]["evaluation"]["key_points"][0].update(weight=0.8)),
+        ("fake-quote", "EVIDENCE_INVALID", lambda p: p["questions"][3]["anchors"][0].update(quote="这是一段不存在的企业工作经历")),
+        ("semantic-duplicate", "DUPLICATE_QUESTION", lambda p: p["semantic_review"].update(duplicate_pairs=[{"left_id": p["questions"][0]["id"], "right_id": p["questions"][3]["id"], "reason": "测试用同义改写"}])),
+        ("semantic-uncertain", "DEDUP_UNCERTAIN", lambda p: p["semantic_review"].update(uncertain=True)),
+        ("unreviewed-bank", "SCHEMA_INVALID", lambda p: p["questions"][0]["bank_ref"].update(review_status="draft")),
+        ("generated-reuse", "GENERATED_REUSE", lambda p: p["questions"][3].update(bank_ref=copy.deepcopy(p["questions"][0]["bank_ref"]))),
+        ("odd-count", "SCHEMA_INVALID", lambda p: p.update(main_question_count=3)),
+        ("duplicate-position", "POSITION_INVALID", lambda p: p["questions"][1].update(position=1)),
+        ("stale-source-counts", "SOURCE_QUOTA", lambda p: p["source_counts"].update(bank=1)),
+        ("missing-basis", "SCHEMA_INVALID", lambda p: p["questions"][3]["evaluation"].update(basis=[])),
+        ("no-materials", "SCHEMA_INVALID", lambda p: p.update(material_snapshots=[])),
+        ("generated-false-verification", "EVALUATION_INVALID", lambda p: p["questions"][3]["evaluation"].update(answer_status="verified", trust="reviewed")),
+        ("unknown-fact-card", "EVALUATION_INVALID", lambda p: p["questions"][3]["evaluation"]["basis"].append({"kind": "fact_card", "ref_id": "NOT-EXISTS", "note": "测试未知依据"})),
+        ("unreviewed-fact-card", "EVALUATION_INVALID", lambda p: p["fact_cards"][0].update(status="draft")),
+        ("missing-second-reviewer", "BANK_INELIGIBLE", lambda p: p.update(content_reviews=[r for r in p["content_reviews"] if not (r["resource_type"] == "bank_question" and r["resource_id"] == p["questions"][0]["bank_ref"]["question_id"] and r["reviewer_id"] == "TEST-ONLY-B")])),
+        ("changed-approved-content", "BANK_INELIGIBLE", lambda p: p["bank_source_snapshots"][0].update(stem="审核后被修改的题目，不再对应原先的内容摘要")),
+        ("fabricated-experience", "GROUNDING_INVALID", lambda p: p["semantic_review"].update(grounding_issues=[{"question_id": p["questions"][3]["id"], "claim": "候选人有三年企业经验", "reason": "简历仅有课程项目"}])),
+        ("ready-with-confirmation-time", "PLAN_STATE_INVALID", lambda p: p.update(confirmed_at=STAMP)),
+    ]
+    for name, expected, mutate in modifications:
+        item = copy.deepcopy(plan)
+        mutate(item)
+        add(name, item, expected)
+    return {"test_only": True, "cases": cases}
+
+
+def outputs():
+    schema = build_schema()
+    materials = build_materials()
+    catalog, bank, facts, reviews = build_content(materials)
+    internal, public = build_plan(materials, bank, facts)
+    return {"contracts/m1/m1.schema.json": schema, "contracts/m1/openapi.json": build_openapi(schema),
+            "fixtures/m1/materials.json": materials, "fixtures/m1/catalog.json": catalog,
+            "fixtures/m1/bank-candidates.json": bank, "fixtures/m1/fact-cards.json": facts,
+            "fixtures/m1/content-reviews.json": reviews,
+            "fixtures/m1/internal-plan.example.json": internal,
+            "fixtures/m1/public-plan.example.json": public, "fixtures/m1/rule-cases.json": build_cases(internal)}
+
+
+def main():
+    parser = argparse.ArgumentParser(description="生成或检查M1契约与合成样例，不启动业务或调用AI")
+    parser.add_argument("--check", action="store_true", help="只比较生成物，不写文件")
+    args = parser.parse_args()
+    stale = []
+    for relative, value in outputs().items():
+        target = ROOT / relative
+        expected = json.dumps(value, ensure_ascii=False, indent=2) + "\n"
+        if args.check:
+            if not target.exists() or target.read_text(encoding="utf-8") != expected:
+                stale.append(relative)
+        else:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(expected, encoding="utf-8", newline="\n")
+    if stale:
+        raise SystemExit("生成物不同步，请运行 build_contracts.py：" + ", ".join(stale))
+    print("M1 generated artifacts are current" if args.check else "M1 artifacts generated (10 files)")
+
+
+if __name__ == "__main__":
+    main()

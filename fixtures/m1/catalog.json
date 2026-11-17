@@ -1,0 +1,102 @@
+{
+  "sample_only": true,
+  "roles": [
+    {
+      "id": "java-backend",
+      "name": "Java 后端（开发样板）",
+      "levels": [
+        "intern",
+        "junior"
+      ],
+      "enabled": false,
+      "sample_only": true
+    }
+  ],
+  "skill_codes": [
+    "java.core",
+    "java.concurrency",
+    "test.junit"
+  ],
+  "jd_templates": [
+    {
+      "id": "java-backend-intern-v1",
+      "version": 1,
+      "role_id": "java-backend",
+      "level": "intern",
+      "title": "Java 后端实习开发样板",
+      "label": "内置练习岗位",
+      "text": "内置练习岗位：Java 后端开发实习生。\n职责：在指导下完成 Java 功能开发并说明实现思路。\n要求：理解 Java 集合的使用及基本边界。\n要求：能够为简单功能设计边界测试。",
+      "profile": {
+        "kind": "jd",
+        "role_id": "java-backend",
+        "level": "intern",
+        "title": "Java 后端开发实习生",
+        "responsibilities": [
+          {
+            "item_id": "responsibility-1",
+            "text": "职责：在指导下完成 Java 功能开发并说明实现思路。",
+            "evidence": {
+              "quote": "职责：在指导下完成 Java 功能开发并说明实现思路。",
+              "origin": "extracted"
+            }
+          }
+        ],
+        "requirements": [
+          {
+            "item_id": "req-1",
+            "text": "理解 Java 集合的使用及基本边界",
+            "skill_codes": [
+              "java.core"
+            ],
+            "importance": "must",
+            "evidence": {
+              "quote": "要求：理解 Java 集合的使用及基本边界。",
+              "origin": "extracted"
+            }
+          },
+          {
+            "item_id": "req-2",
+            "text": "能够为简单功能设计边界测试",
+            "skill_codes": [
+              "test.junit"
+            ],
+            "importance": "must",
+            "evidence": {
+              "quote": "要求：能够为简单功能设计边界测试。",
+              "origin": "extracted"
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "rubrics": [
+    {
+      "id": "m1-explanation",
+      "version": 1,
+      "dimensions": [
+        {
+          "id": "accuracy",
+          "name": "准确性",
+          "weight": 0.4,
+          "low_anchor": "关键机制或材料事实错误",
+          "high_anchor": "事实与前提准确，允许合理替代方案"
+        },
+        {
+          "id": "reasoning",
+          "name": "推理与边界",
+          "weight": 0.35,
+          "low_anchor": "只有结论且不能说明适用条件",
+          "high_anchor": "说明原因、前提与边界"
+        },
+        {
+          "id": "verification",
+          "name": "验证思路",
+          "weight": 0.25,
+          "low_anchor": "没有可检验思路",
+          "high_anchor": "提出可执行的小样例或验证步骤"
+        }
+      ]
+    }
+  ]
+}

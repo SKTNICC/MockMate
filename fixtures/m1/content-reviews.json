@@ -1,0 +1,15 @@
+{
+  "test_only": false,
+  "decisions": [],
+  "required_fields": [
+    "resource_type",
+    "resource_id",
+    "version",
+    "content_sha256",
+    "reviewer_id",
+    "decision",
+    "reviewed_at",
+    "note"
+  ],
+  "note": "空ledger，不表示任何真实审核；bank_question和fact_card均需两位真实审核者。"
+}

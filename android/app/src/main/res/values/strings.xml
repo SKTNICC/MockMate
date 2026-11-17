@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">MockMate 模拟面试</string>
+    <string name="home_title">MockMate</string>
+    <string name="home_scaffold_message">M1 工程骨架已启动</string>
+    <string name="home_version_label">版本</string>
+    <string name="home_endpoint_label">API</string>
+    <string name="home_note">业务功能由后续任务卡实现</string>
+</resources>

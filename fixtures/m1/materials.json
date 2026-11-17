@@ -1,0 +1,189 @@
+{
+  "test_only": true,
+  "snapshots": [
+    {
+      "id": "00000000-0000-4000-8000-000000000001",
+      "material_id": "00000000-0000-4000-8000-000000000101",
+      "source_revision": 1,
+      "kind": "resume",
+      "title": "虚构学生简历（无工作经历）",
+      "text": "本科在读，计算机科学与技术专业。\n课程项目：校园图书借阅系统，使用 Java 的 ArrayList 和 HashMap 保存并查询图书信息；我参与了借阅模块与边界测试。\n学习过 Java 集合基础和 JUnit 单元测试。\n没有工作经历。",
+      "profile": {
+        "kind": "resume",
+        "education": [
+          {
+            "item_id": "edu-1",
+            "degree": "本科在读",
+            "major": "计算机科学与技术",
+            "evidence": {
+              "quote": "本科在读，计算机科学与技术专业。",
+              "origin": "extracted"
+            }
+          }
+        ],
+        "work_experience": [],
+        "projects": [
+          {
+            "item_id": "project-1",
+            "name": "校园图书借阅系统",
+            "description": "课程项目：校园图书借阅系统，使用 Java 的 ArrayList 和 HashMap 保存并查询图书信息；我参与了借阅模块与边界测试。",
+            "skill_codes": [
+              "java.core",
+              "test.junit"
+            ],
+            "evidence": {
+              "quote": "课程项目：校园图书借阅系统，使用 Java 的 ArrayList 和 HashMap 保存并查询图书信息；我参与了借阅模块与边界测试。",
+              "origin": "extracted"
+            }
+          }
+        ],
+        "skills": [
+          {
+            "item_id": "skill-1",
+            "name": "Java 集合基础和 JUnit",
+            "code": "java.core",
+            "evidence": {
+              "quote": "学习过 Java 集合基础和 JUnit 单元测试。",
+              "origin": "extracted"
+            }
+          }
+        ]
+      },
+      "template_id": null,
+      "template_version": null,
+      "confirmed_at": "2026-11-16T00:00:00Z"
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000002",
+      "material_id": "00000000-0000-4000-8000-000000000102",
+      "source_revision": 1,
+      "kind": "jd",
+      "title": "内置JD开发样例",
+      "text": "内置练习岗位：Java 后端开发实习生。\n职责：在指导下完成 Java 功能开发并说明实现思路。\n要求：理解 Java 集合的使用及基本边界。\n要求：能够为简单功能设计边界测试。",
+      "profile": {
+        "kind": "jd",
+        "role_id": "java-backend",
+        "level": "intern",
+        "title": "Java 后端开发实习生",
+        "responsibilities": [
+          {
+            "item_id": "responsibility-1",
+            "text": "职责：在指导下完成 Java 功能开发并说明实现思路。",
+            "evidence": {
+              "quote": "职责：在指导下完成 Java 功能开发并说明实现思路。",
+              "origin": "extracted"
+            }
+          }
+        ],
+        "requirements": [
+          {
+            "item_id": "req-1",
+            "text": "理解 Java 集合的使用及基本边界",
+            "skill_codes": [
+              "java.core"
+            ],
+            "importance": "must",
+            "evidence": {
+              "quote": "要求：理解 Java 集合的使用及基本边界。",
+              "origin": "extracted"
+            }
+          },
+          {
+            "item_id": "req-2",
+            "text": "能够为简单功能设计边界测试",
+            "skill_codes": [
+              "test.junit"
+            ],
+            "importance": "must",
+            "evidence": {
+              "quote": "要求：能够为简单功能设计边界测试。",
+              "origin": "extracted"
+            }
+          }
+        ]
+      },
+      "template_id": "java-backend-intern-v1",
+      "template_version": 1,
+      "confirmed_at": "2026-11-16T00:00:00Z"
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000003",
+      "material_id": "00000000-0000-4000-8000-000000000103",
+      "source_revision": 1,
+      "kind": "resume",
+      "title": "虚构学生简历（无项目无工作）",
+      "text": "本科在读，计算机科学与技术专业。\n学习过 Java 集合基础和 JUnit 单元测试。",
+      "profile": {
+        "kind": "resume",
+        "education": [
+          {
+            "item_id": "edu-1",
+            "degree": "本科在读",
+            "major": "计算机科学与技术",
+            "evidence": {
+              "quote": "本科在读，计算机科学与技术专业。",
+              "origin": "extracted"
+            }
+          }
+        ],
+        "work_experience": [],
+        "projects": [],
+        "skills": [
+          {
+            "item_id": "skill-1",
+            "name": "Java 集合基础和 JUnit",
+            "code": "java.core",
+            "evidence": {
+              "quote": "学习过 Java 集合基础和 JUnit 单元测试。",
+              "origin": "extracted"
+            }
+          }
+        ]
+      },
+      "template_id": null,
+      "template_version": null,
+      "confirmed_at": "2026-11-16T00:00:00Z"
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000004",
+      "material_id": "00000000-0000-4000-8000-000000000104",
+      "source_revision": 1,
+      "kind": "jd",
+      "title": "自备JD开发样例",
+      "text": "自备练习JD：Java 后端实习。\n职责：在指导下编写 Java 基础功能。\n要求：了解线程安全，能区分共享读写和单线程使用。",
+      "profile": {
+        "kind": "jd",
+        "role_id": "java-backend",
+        "level": "intern",
+        "title": "Java 后端实习",
+        "responsibilities": [
+          {
+            "item_id": "responsibility-1",
+            "text": "在指导下编写 Java 基础功能",
+            "evidence": {
+              "quote": "职责：在指导下编写 Java 基础功能。",
+              "origin": "extracted"
+            }
+          }
+        ],
+        "requirements": [
+          {
+            "item_id": "req-1",
+            "text": "了解线程安全，能区分共享读写和单线程使用",
+            "skill_codes": [
+              "java.concurrency"
+            ],
+            "importance": "must",
+            "evidence": {
+              "quote": "要求：了解线程安全，能区分共享读写和单线程使用。",
+              "origin": "extracted"
+            }
+          }
+        ]
+      },
+      "template_id": null,
+      "template_version": null,
+      "confirmed_at": "2026-11-16T00:00:00Z"
+    }
+  ]
+}

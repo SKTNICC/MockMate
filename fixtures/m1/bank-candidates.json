@@ -1,0 +1,509 @@
+{
+  "test_only": false,
+  "questions": [
+    {
+      "question_id": "M1-JAVA-0001",
+      "version": 1,
+      "canonical_id": "m1-java-1",
+      "status": "draft",
+      "answer_status": "model_generated",
+      "title": "HashMap遍历顺序",
+      "role_ids": [
+        "java-backend"
+      ],
+      "levels": [
+        "intern",
+        "junior"
+      ],
+      "stem": "用 HashMap 保存图书后，展示顺序能否依赖某次遍历结果？如果页面必须保持录入顺序，你会如何调整并验证？",
+      "focus": "集合顺序契约",
+      "topic_key": "java.sample.1",
+      "skill_codes": [
+        "java.core"
+      ],
+      "evaluation": {
+        "goal": "集合顺序契约",
+        "reference_approach": "不能依赖HashMap未承诺的遍历顺序；先明确显示需求，再选择有明确顺序语义的结构或显式排序，并用不同插入序列验证。",
+        "key_points": [
+          {
+            "point": "区分偶然结果与接口承诺",
+            "weight": 0.5
+          },
+          {
+            "point": "根据显示需求设计并验证",
+            "weight": 0.5
+          }
+        ],
+        "acceptable_alternatives": [
+          "前提明确且符合相同契约的等价方案"
+        ],
+        "common_mistakes": [
+          "把一次运行结果当成全部输入的保证"
+        ],
+        "rubric": {
+          "id": "m1-explanation",
+          "version": 1,
+          "dimensions": [
+            {
+              "id": "accuracy",
+              "name": "准确性",
+              "weight": 0.4,
+              "low_anchor": "关键机制或材料事实错误",
+              "high_anchor": "事实与前提准确，允许合理替代方案"
+            },
+            {
+              "id": "reasoning",
+              "name": "推理与边界",
+              "weight": 0.35,
+              "low_anchor": "只有结论且不能说明适用条件",
+              "high_anchor": "说明原因、前提与边界"
+            },
+            {
+              "id": "verification",
+              "name": "验证思路",
+              "weight": 0.25,
+              "low_anchor": "没有可检验思路",
+              "high_anchor": "提出可执行的小样例或验证步骤"
+            }
+          ]
+        },
+        "basis": [
+          {
+            "kind": "fact_card",
+            "ref_id": "FC-HASHMAP",
+            "note": "官方文档候选摘要，需真实人工审核"
+          }
+        ],
+        "answer_status": "model_generated",
+        "trust": "provisional",
+        "uncertainties": []
+      },
+      "provenance": "authored",
+      "source_urls": [
+        "https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/util/HashMap.html"
+      ],
+      "license_status": "pending_owner_review",
+      "content_sha256": "04c2137497139a6d46b8b6b47de3880fd488c740d7b92584f224f1641e191f3f"
+    },
+    {
+      "question_id": "M1-JAVA-0002",
+      "version": 1,
+      "canonical_id": "m1-java-2",
+      "status": "draft",
+      "answer_status": "model_generated",
+      "title": "ArrayList访问与添加",
+      "role_ids": [
+        "java-backend"
+      ],
+      "levels": [
+        "intern",
+        "junior"
+      ],
+      "stem": "假设图书列表主要按下标读取、偶尔追加，使用 ArrayList 有什么依据？请区分单次追加与摊还成本，并说明如何验证选型。",
+      "focus": "集合访问成本",
+      "topic_key": "java.sample.2",
+      "skill_codes": [
+        "java.core"
+      ],
+      "evaluation": {
+        "goal": "集合访问成本",
+        "reference_approach": "按下标访问与追加的成本性质应结合官方契约解释；摊还成本不等于每次操作都一样快；用符合访问模式的小样例验证。",
+        "key_points": [
+          {
+            "point": "说明下标访问与追加特点",
+            "weight": 0.5
+          },
+          {
+            "point": "区分单次和摊还并说明验证",
+            "weight": 0.5
+          }
+        ],
+        "acceptable_alternatives": [
+          "前提明确且符合相同契约的等价方案"
+        ],
+        "common_mistakes": [
+          "把一次运行结果当成全部输入的保证"
+        ],
+        "rubric": {
+          "id": "m1-explanation",
+          "version": 1,
+          "dimensions": [
+            {
+              "id": "accuracy",
+              "name": "准确性",
+              "weight": 0.4,
+              "low_anchor": "关键机制或材料事实错误",
+              "high_anchor": "事实与前提准确，允许合理替代方案"
+            },
+            {
+              "id": "reasoning",
+              "name": "推理与边界",
+              "weight": 0.35,
+              "low_anchor": "只有结论且不能说明适用条件",
+              "high_anchor": "说明原因、前提与边界"
+            },
+            {
+              "id": "verification",
+              "name": "验证思路",
+              "weight": 0.25,
+              "low_anchor": "没有可检验思路",
+              "high_anchor": "提出可执行的小样例或验证步骤"
+            }
+          ]
+        },
+        "basis": [
+          {
+            "kind": "fact_card",
+            "ref_id": "FC-ARRAYLIST",
+            "note": "官方文档候选摘要，需真实人工审核"
+          }
+        ],
+        "answer_status": "model_generated",
+        "trust": "provisional",
+        "uncertainties": []
+      },
+      "provenance": "authored",
+      "source_urls": [
+        "https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/util/ArrayList.html"
+      ],
+      "license_status": "pending_owner_review",
+      "content_sha256": "3f8cde002785a8353c537f00699e416f9e190b50efd339e539f508608f11860b"
+    },
+    {
+      "question_id": "M1-JAVA-0003",
+      "version": 1,
+      "canonical_id": "m1-java-3",
+      "status": "draft",
+      "answer_status": "model_generated",
+      "title": "共享修改的线程边界",
+      "role_ids": [
+        "java-backend"
+      ],
+      "levels": [
+        "intern",
+        "junior"
+      ],
+      "stem": "两个线程同时修改同一个图书 ArrayList 时，可以直接沿用单线程代码吗？请说明需要保护的操作边界，并给出一种验证思路。",
+      "focus": "共享集合修改边界",
+      "topic_key": "java.sample.3",
+      "skill_codes": [
+        "java.core"
+      ],
+      "evaluation": {
+        "goal": "共享集合修改边界",
+        "reference_approach": "ArrayList本身未同步。先识别共享状态和复合操作，再选择线程隔离、外部同步或合适替代方案；不能将测试偶然无错视为安全证明。",
+        "key_points": [
+          {
+            "point": "识别共享修改需要保护",
+            "weight": 0.5
+          },
+          {
+            "point": "给出边界与验证限制",
+            "weight": 0.5
+          }
+        ],
+        "acceptable_alternatives": [
+          "前提明确且符合相同契约的等价方案"
+        ],
+        "common_mistakes": [
+          "把一次运行结果当成全部输入的保证"
+        ],
+        "rubric": {
+          "id": "m1-explanation",
+          "version": 1,
+          "dimensions": [
+            {
+              "id": "accuracy",
+              "name": "准确性",
+              "weight": 0.4,
+              "low_anchor": "关键机制或材料事实错误",
+              "high_anchor": "事实与前提准确，允许合理替代方案"
+            },
+            {
+              "id": "reasoning",
+              "name": "推理与边界",
+              "weight": 0.35,
+              "low_anchor": "只有结论且不能说明适用条件",
+              "high_anchor": "说明原因、前提与边界"
+            },
+            {
+              "id": "verification",
+              "name": "验证思路",
+              "weight": 0.25,
+              "low_anchor": "没有可检验思路",
+              "high_anchor": "提出可执行的小样例或验证步骤"
+            }
+          ]
+        },
+        "basis": [
+          {
+            "kind": "fact_card",
+            "ref_id": "FC-ARRAYLIST",
+            "note": "官方文档候选摘要，需真实人工审核"
+          }
+        ],
+        "answer_status": "model_generated",
+        "trust": "provisional",
+        "uncertainties": []
+      },
+      "provenance": "authored",
+      "source_urls": [
+        "https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/util/ArrayList.html"
+      ],
+      "license_status": "pending_owner_review",
+      "content_sha256": "2f73b1d0c4a4437d9cc7eb288d93fa4fcc1743a00225d53db18d45472bb98144"
+    },
+    {
+      "question_id": "M1-JAVA-0004",
+      "version": 1,
+      "canonical_id": "m1-java-4",
+      "status": "draft",
+      "answer_status": "model_generated",
+      "title": "HashMap性能前提",
+      "role_ids": [
+        "java-backend"
+      ],
+      "levels": [
+        "intern",
+        "junior"
+      ],
+      "stem": "如果使用 HashMap 查询图书，请解释通常所说的查询性能结论依赖什么前提。遇到分布不均的键，你会先核查哪些信息？",
+      "focus": "散列性能前提",
+      "topic_key": "java.sample.4",
+      "skill_codes": [
+        "java.core"
+      ],
+      "evaluation": {
+        "goal": "散列性能前提",
+        "reference_approach": "常数时间说明依赖合理散列分布，不能无条件保证所有输入；核查键类型、散列与访问模式并在受控样例比较。",
+        "key_points": [
+          {
+            "point": "指出散列分布前提",
+            "weight": 0.5
+          },
+          {
+            "point": "用受控样例验证而非承诺固定耗时",
+            "weight": 0.5
+          }
+        ],
+        "acceptable_alternatives": [
+          "前提明确且符合相同契约的等价方案"
+        ],
+        "common_mistakes": [
+          "把一次运行结果当成全部输入的保证"
+        ],
+        "rubric": {
+          "id": "m1-explanation",
+          "version": 1,
+          "dimensions": [
+            {
+              "id": "accuracy",
+              "name": "准确性",
+              "weight": 0.4,
+              "low_anchor": "关键机制或材料事实错误",
+              "high_anchor": "事实与前提准确，允许合理替代方案"
+            },
+            {
+              "id": "reasoning",
+              "name": "推理与边界",
+              "weight": 0.35,
+              "low_anchor": "只有结论且不能说明适用条件",
+              "high_anchor": "说明原因、前提与边界"
+            },
+            {
+              "id": "verification",
+              "name": "验证思路",
+              "weight": 0.25,
+              "low_anchor": "没有可检验思路",
+              "high_anchor": "提出可执行的小样例或验证步骤"
+            }
+          ]
+        },
+        "basis": [
+          {
+            "kind": "fact_card",
+            "ref_id": "FC-HASHMAP",
+            "note": "官方文档候选摘要，需真实人工审核"
+          }
+        ],
+        "answer_status": "model_generated",
+        "trust": "provisional",
+        "uncertainties": []
+      },
+      "provenance": "authored",
+      "source_urls": [
+        "https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/util/HashMap.html"
+      ],
+      "license_status": "pending_owner_review",
+      "content_sha256": "5de61ee86b8879b84049d7651623997ba034f5e8aaa88cc9319cb923ca95b600"
+    },
+    {
+      "question_id": "M1-JAVA-0005",
+      "version": 1,
+      "canonical_id": "m1-java-5",
+      "status": "draft",
+      "answer_status": "model_generated",
+      "title": "空值与未命中",
+      "role_ids": [
+        "java-backend"
+      ],
+      "levels": [
+        "intern",
+        "junior"
+      ],
+      "stem": "图书查询接口使用 HashMap 时，如果返回 null，怎样区分不存在的键与键对应空值？请先说明接口约定，再设计边界验证。",
+      "focus": "空值与未命中契约",
+      "topic_key": "java.sample.5",
+      "skill_codes": [
+        "java.core"
+      ],
+      "evaluation": {
+        "goal": "空值与未命中契约",
+        "reference_approach": "HashMap允许空值，因此仅凭get返回null不足以区分情况；可明确禁止空值或结合键存在性检查，验证空集合、缺失键及存在空值等场景。",
+        "key_points": [
+          {
+            "point": "识别空值与未命中的歧义",
+            "weight": 0.5
+          },
+          {
+            "point": "给出约定和边界样例",
+            "weight": 0.5
+          }
+        ],
+        "acceptable_alternatives": [
+          "前提明确且符合相同契约的等价方案"
+        ],
+        "common_mistakes": [
+          "把一次运行结果当成全部输入的保证"
+        ],
+        "rubric": {
+          "id": "m1-explanation",
+          "version": 1,
+          "dimensions": [
+            {
+              "id": "accuracy",
+              "name": "准确性",
+              "weight": 0.4,
+              "low_anchor": "关键机制或材料事实错误",
+              "high_anchor": "事实与前提准确，允许合理替代方案"
+            },
+            {
+              "id": "reasoning",
+              "name": "推理与边界",
+              "weight": 0.35,
+              "low_anchor": "只有结论且不能说明适用条件",
+              "high_anchor": "说明原因、前提与边界"
+            },
+            {
+              "id": "verification",
+              "name": "验证思路",
+              "weight": 0.25,
+              "low_anchor": "没有可检验思路",
+              "high_anchor": "提出可执行的小样例或验证步骤"
+            }
+          ]
+        },
+        "basis": [
+          {
+            "kind": "fact_card",
+            "ref_id": "FC-HASHMAP",
+            "note": "官方文档候选摘要，需真实人工审核"
+          }
+        ],
+        "answer_status": "model_generated",
+        "trust": "provisional",
+        "uncertainties": []
+      },
+      "provenance": "authored",
+      "source_urls": [
+        "https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/util/HashMap.html"
+      ],
+      "license_status": "pending_owner_review",
+      "content_sha256": "79568f050f53d98244cb63e687ed94a25733adeb09c99f0528244f5812b406b4"
+    },
+    {
+      "question_id": "M1-JAVA-0006",
+      "version": 1,
+      "canonical_id": "m1-java-6",
+      "status": "draft",
+      "answer_status": "model_generated",
+      "title": "列表容量与逻辑大小",
+      "role_ids": [
+        "java-backend"
+      ],
+      "levels": [
+        "intern",
+        "junior"
+      ],
+      "stem": "为图书 ArrayList 提前设置容量后，能否马上按这些下标读取图书？请区分容量和已有元素数量，并说明验证步骤。",
+      "focus": "容量与大小",
+      "topic_key": "java.sample.6",
+      "skill_codes": [
+        "java.core"
+      ],
+      "evaluation": {
+        "goal": "容量与大小",
+        "reference_approach": "容量用于底层空间安排，size表示实际元素数，预留容量不等于已加入元素；用空列表、追加前后size和合法下标说明。",
+        "key_points": [
+          {
+            "point": "区分capacity与size",
+            "weight": 0.5
+          },
+          {
+            "point": "通过追加前后样例验证",
+            "weight": 0.5
+          }
+        ],
+        "acceptable_alternatives": [
+          "前提明确且符合相同契约的等价方案"
+        ],
+        "common_mistakes": [
+          "把一次运行结果当成全部输入的保证"
+        ],
+        "rubric": {
+          "id": "m1-explanation",
+          "version": 1,
+          "dimensions": [
+            {
+              "id": "accuracy",
+              "name": "准确性",
+              "weight": 0.4,
+              "low_anchor": "关键机制或材料事实错误",
+              "high_anchor": "事实与前提准确，允许合理替代方案"
+            },
+            {
+              "id": "reasoning",
+              "name": "推理与边界",
+              "weight": 0.35,
+              "low_anchor": "只有结论且不能说明适用条件",
+              "high_anchor": "说明原因、前提与边界"
+            },
+            {
+              "id": "verification",
+              "name": "验证思路",
+              "weight": 0.25,
+              "low_anchor": "没有可检验思路",
+              "high_anchor": "提出可执行的小样例或验证步骤"
+            }
+          ]
+        },
+        "basis": [
+          {
+            "kind": "fact_card",
+            "ref_id": "FC-ARRAYLIST",
+            "note": "官方文档候选摘要，需真实人工审核"
+          }
+        ],
+        "answer_status": "model_generated",
+        "trust": "provisional",
+        "uncertainties": []
+      },
+      "provenance": "authored",
+      "source_urls": [
+        "https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/util/ArrayList.html"
+      ],
+      "license_status": "pending_owner_review",
+      "content_sha256": "c0e71f658ec15ae10020cc9c466afbd53db5ea5118cca65f8c5104469ab72432"
+    }
+  ]
+}

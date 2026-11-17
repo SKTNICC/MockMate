@@ -1,0 +1,78 @@
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: mockmate
+      POSTGRES_PASSWORD: mockmate_dev_only
+      POSTGRES_DB: mockmate
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mockmate -d mockmate"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  migrate:
+    build: .
+    command: ["python", "-m", "alembic", "upgrade", "head"]
+    environment:
+      APP_ENV: development
+      DATABASE_URL: postgresql+psycopg://mockmate:mockmate_dev_only@db:5432/mockmate
+      PRIVATE_FILE_ROOT: /data/private
+      AI_PROVIDER: disabled
+      ALLOW_TEST_FIXTURES: "false"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  api:
+    build: .
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
+    environment:
+      APP_ENV: development
+      DATABASE_URL: postgresql+psycopg://mockmate:mockmate_dev_only@db:5432/mockmate
+      PRIVATE_FILE_ROOT: /data/private
+      AI_PROVIDER: ${AI_PROVIDER:-disabled}
+      AI_BASE_URL: ${AI_BASE_URL:-https://api.deepseek.com}
+      AI_MODEL: ${AI_MODEL:-}
+      AI_API_KEY: ${AI_API_KEY:-}
+      ALLOW_TEST_FIXTURES: ${ALLOW_TEST_FIXTURES:-false}
+      M1_SAMPLE_CATALOG: ${M1_SAMPLE_CATALOG:-false}
+    ports:
+      - "8000:8000"
+    volumes:
+      - privatefiles:/data/private
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request;urllib.request.urlopen('http://127.0.0.1:8000/readyz')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  worker:
+    build: .
+    command: ["python", "-m", "app.workers.runner"]
+    environment:
+      APP_ENV: development
+      DATABASE_URL: postgresql+psycopg://mockmate:mockmate_dev_only@db:5432/mockmate
+      PRIVATE_FILE_ROOT: /data/private
+      AI_PROVIDER: ${AI_PROVIDER:-disabled}
+      AI_BASE_URL: ${AI_BASE_URL:-https://api.deepseek.com}
+      AI_MODEL: ${AI_MODEL:-}
+      AI_API_KEY: ${AI_API_KEY:-}
+      ALLOW_TEST_FIXTURES: ${ALLOW_TEST_FIXTURES:-false}
+      M1_SAMPLE_CATALOG: ${M1_SAMPLE_CATALOG:-false}
+    volumes:
+      - privatefiles:/data/private
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+volumes:
+  pgdata:
+  privatefiles:

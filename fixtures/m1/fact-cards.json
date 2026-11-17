@@ -1,0 +1,25 @@
+{
+  "test_only": true,
+  "cards": [
+    {
+      "id": "FC-HASHMAP",
+      "version": 1,
+      "status": "draft",
+      "reviewer_ids": [],
+      "url": "https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/util/HashMap.html",
+      "license_status": "pending_owner_review",
+      "summary": "HashMap不承诺遍历顺序。get/put的常数时间说明有散列分布前提；实现未同步。此处为待人工核验摘要。",
+      "content_sha256": "6e9f98eee3ed17de02ed9bc887f33735b9bb8f68458579f15406225fef551f2e"
+    },
+    {
+      "id": "FC-ARRAYLIST",
+      "version": 1,
+      "status": "draft",
+      "reviewer_ids": [],
+      "url": "https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/util/ArrayList.html",
+      "license_status": "pending_owner_review",
+      "summary": "ArrayList为可变数组列表，get为常数时间，添加为摊还常数时间，实现未同步；增长倍率不是接口承诺。此处为待人工核验摘要。",
+      "content_sha256": "cdad3c7a81afd182812db4a658b20fb6623bec9da4302964a2d6864153453c8d"
+    }
+  ]
+}
