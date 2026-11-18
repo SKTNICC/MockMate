@@ -561,6 +561,14 @@ fun SecondaryAction(
     }
 }
 
+object JobRecoveryPolicy {
+    fun retryButtonText(job: JobDto): String = when (job.kind) {
+        "match" -> "重试匹配分析（会再次调用模型）"
+        "plan" -> "重试生成计划（会再次调用模型）"
+        else -> "明确重试该任务（可能产生新的模型调用）"
+    }
+}
+
 @Composable
 fun JobRecoveryActions(
     job: JobDto?,
@@ -617,7 +625,7 @@ fun JobRecoveryActions(
         if (job.retryable) {
             Spacer(Modifier.height(6.dp))
             PrimaryAction(
-                text = "明确重试该任务（可能产生新的模型调用）",
+                text = JobRecoveryPolicy.retryButtonText(job),
                 onClick = onRetry,
             )
         }

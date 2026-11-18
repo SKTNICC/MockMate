@@ -32,11 +32,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.mockmate.app.core.network.JobDto
 import com.mockmate.app.core.network.MatchRowDto
+import com.mockmate.app.core.network.PreparationDto
 import com.mockmate.app.core.network.PublicPlanDto
 import com.mockmate.app.ui.AppState
 import com.mockmate.app.ui.AppViewModel
 import com.mockmate.app.ui.ErrorDiagnosticsMapper
+import com.mockmate.app.ui.PlanErrorState
 import com.mockmate.app.ui.components.ConsentDialog
 import com.mockmate.app.ui.components.DeveloperDiagnosticPanel
 import com.mockmate.app.ui.components.EmptyHint
@@ -55,6 +58,46 @@ private fun matchStatusLabel(status: String): String = when (status) {
     else -> status
 }
 
+data class MatchUiPolicyState(
+    val recoveryJob: JobDto?,
+    val hasCurrentFailedMatch: Boolean,
+    val hasCurrentRunningMatch: Boolean,
+    val showStartMatchAction: Boolean,
+    val startMatchEnabled: Boolean,
+)
+
+object MatchScreenPolicy {
+    fun evaluate(
+        preparationId: String,
+        prep: PreparationDto?,
+        job: JobDto?,
+        loading: Boolean,
+    ): MatchUiPolicyState {
+        val ready = prep != null && prep.resume_snapshot_id != null && prep.jd_snapshot_id != null
+        val recoveryJob = job?.takeIf { candidate ->
+            candidate.kind == "match" &&
+                candidate.target_id == preparationId &&
+                (prep == null || candidate.input_revision == prep.revision || candidate.state == "superseded")
+        }
+        val currentRevisionJob = recoveryJob?.takeIf { candidate ->
+            prep != null && candidate.input_revision == prep.revision
+        }
+        val hasCurrentFailedMatch = currentRevisionJob != null &&
+            (currentRevisionJob.state == "failed" || currentRevisionJob.state == "interrupted")
+        val hasCurrentRunningMatch = currentRevisionJob != null &&
+            (currentRevisionJob.state == "queued" || currentRevisionJob.state == "running")
+        val showStartMatchAction = !hasCurrentFailedMatch
+        val startMatchEnabled = showStartMatchAction && ready && !loading && !hasCurrentRunningMatch
+        return MatchUiPolicyState(
+            recoveryJob = recoveryJob,
+            hasCurrentFailedMatch = hasCurrentFailedMatch,
+            hasCurrentRunningMatch = hasCurrentRunningMatch,
+            showStartMatchAction = showStartMatchAction,
+            startMatchEnabled = startMatchEnabled,
+        )
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun MatchScreen(vm: AppViewModel, state: AppState, preparationId: String) {
@@ -62,6 +105,12 @@ fun MatchScreen(vm: AppViewModel, state: AppState, preparationId: String) {
     val prep = state.preparation
     val report = state.matchReport
     val ready = prep != null && prep.resume_snapshot_id != null && prep.jd_snapshot_id != null
+    val policy = remember(preparationId, prep, state.job, state.loading) {
+        MatchScreenPolicy.evaluate(preparationId, prep, state.job, state.loading)
+    }
+    val matchJob = policy.recoveryJob
+    val hasCurrentFailedMatch = policy.hasCurrentFailedMatch
+    val hasCurrentRunningMatch = policy.hasCurrentRunningMatch
 
     Scaffold(
         topBar = {
@@ -104,11 +153,23 @@ fun MatchScreen(vm: AppViewModel, state: AppState, preparationId: String) {
                         style = MaterialTheme.typography.bodySmall,
                     )
                     Spacer(Modifier.height(8.dp))
-                    PrimaryAction(
-                        text = if (report == null) "开始匹配分析" else "重新分析",
-                        enabled = ready && !state.loading,
-                        onClick = { showConsent = true },
-                    )
+                    if (hasCurrentFailedMatch) {
+                        Text(
+                            text = if (matchJob?.retryable == true) {
+                                "当前版本已有失败的匹配任务，请使用下方「重试匹配分析」按钮。"
+                            } else {
+                                "当前版本的匹配任务已失败且不可继续重试，请查看下方原因；如需重新分析，请修改材料或准备设置以生成新版本。"
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                    } else {
+                        PrimaryAction(
+                            text = if (report == null) "开始匹配分析" else "重新分析",
+                            enabled = policy.startMatchEnabled,
+                            onClick = { showConsent = true },
+                        )
+                    }
                     if (report != null) {
                         Spacer(Modifier.height(8.dp))
                         val supportedCount = report.rows.count { it.status == "supported" }
@@ -134,13 +195,15 @@ fun MatchScreen(vm: AppViewModel, state: AppState, preparationId: String) {
             }
             item {
                 JobRecoveryActions(
-                    job = state.job,
+                    job = matchJob,
                     onQuery = { vm.queryCurrentJob() },
                     onRetry = { vm.retryCurrentJob() },
                 )
             }
             if (report == null) {
-                item { EmptyHint("还没有匹配结果。点击上方「开始匹配分析」逐项比对 JD 要求与简历证据。") }
+                if (!hasCurrentFailedMatch && !hasCurrentRunningMatch) {
+                    item { EmptyHint("还没有匹配结果。点击上方「开始匹配分析」逐项比对 JD 要求与简历证据。") }
+                }
             } else {
                 items(report.rows, key = { it.requirement_id }) { row -> MatchRowCard(row) }
             }
@@ -209,6 +272,67 @@ private fun MatchRowCard(row: MatchRowDto) {
     }
 }
 
+data class PlanUiPolicyState(
+    val recoveryJob: JobDto?,
+    val hasCurrentFailedPlan: Boolean,
+    val hasCurrentRunningPlan: Boolean,
+    val showStartPlanAction: Boolean,
+    val startPlanEnabled: Boolean,
+    val showPlanErrorCard: Boolean,
+)
+
+object PlanScreenPolicy {
+    fun evaluate(
+        preparationId: String,
+        prep: PreparationDto?,
+        job: JobDto?,
+        planError: PlanErrorState?,
+        loading: Boolean,
+    ): PlanUiPolicyState {
+        val materialsReady = prep != null && prep.resume_snapshot_id != null && prep.jd_snapshot_id != null
+        val matchReady = prep != null && prep.match_report_id != null
+        val ready = materialsReady && matchReady
+        val recoveryJob = job?.takeIf { candidate ->
+            candidate.kind == "plan" &&
+                candidate.target_id == preparationId &&
+                (prep == null || candidate.input_revision == prep.revision || candidate.state == "superseded")
+        }
+        val currentRevisionJob = recoveryJob?.takeIf { candidate ->
+            prep != null && candidate.input_revision == prep.revision
+        }
+        val hasCurrentFailedPlan = currentRevisionJob != null &&
+            (currentRevisionJob.state == "failed" || currentRevisionJob.state == "interrupted")
+        val hasCurrentRunningPlan = currentRevisionJob != null &&
+            (currentRevisionJob.state == "queued" || currentRevisionJob.state == "running")
+        val showStartPlanAction = ready && !hasCurrentFailedPlan && !hasCurrentRunningPlan
+        val startPlanEnabled = showStartPlanAction && !loading
+
+        val planErrorForCurrent = planError != null &&
+            (planError.preparationId == null || planError.preparationId == preparationId) &&
+            (planError.inputRevision == null || prep == null || planError.inputRevision == prep.revision)
+
+        val duplicatesRecoveryJob = recoveryJob != null && planError != null && (
+            planError.jobId == recoveryJob.id ||
+                (
+                    planError.jobId == null &&
+                        planError.code != "BANK_INSUFFICIENT" &&
+                        planError.code == recoveryJob.error?.code &&
+                        (recoveryJob.state == "failed" || recoveryJob.state == "interrupted")
+                    )
+            )
+        val showPlanErrorCard = planErrorForCurrent && !duplicatesRecoveryJob
+
+        return PlanUiPolicyState(
+            recoveryJob = recoveryJob,
+            hasCurrentFailedPlan = hasCurrentFailedPlan,
+            hasCurrentRunningPlan = hasCurrentRunningPlan,
+            showStartPlanAction = showStartPlanAction,
+            startPlanEnabled = startPlanEnabled,
+            showPlanErrorCard = showPlanErrorCard,
+        )
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun PlanHubScreen(vm: AppViewModel, state: AppState, preparationId: String) {
@@ -219,6 +343,9 @@ fun PlanHubScreen(vm: AppViewModel, state: AppState, preparationId: String) {
     val materialsReady = prep != null && prep.resume_snapshot_id != null && prep.jd_snapshot_id != null
     val matchReady = prep != null && prep.match_report_id != null
     val ready = materialsReady && matchReady
+    val policy = remember(preparationId, prep, state.job, state.planError, state.loading) {
+        PlanScreenPolicy.evaluate(preparationId, prep, state.job, state.planError, state.loading)
+    }
 
     Scaffold(
         topBar = {
@@ -292,21 +419,50 @@ fun PlanHubScreen(vm: AppViewModel, state: AppState, preparationId: String) {
                                 onClick = { vm.openMatch(preparationId) },
                             )
                         }
+                    } else if (policy.hasCurrentFailedPlan) {
+                        val failedJob = policy.recoveryJob
+                        Text(
+                            text = when {
+                                failedJob?.retryable == true ->
+                                    "当前版本已有失败的计划生成任务，请使用下方「重试生成计划」按钮。"
+                                (failedJob?.attempt ?: 0) >= 2 ->
+                                    "当前版本的计划生成任务已用完 2 次生成尝试且仍失败，可沿用当前材料新建准备，或修改材料／设置以产生新版本。"
+                                else ->
+                                    "当前版本的计划生成任务已失败且不可直接重试，可沿用当前材料新建准备，或修改材料／设置以生成新版本。"
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                        if (failedJob?.retryable != true && materialsReady) {
+                            Spacer(Modifier.height(8.dp))
+                            SecondaryAction(
+                                text = "沿用材料新建准备",
+                                enabled = !state.loading,
+                                onClick = { vm.redoPreparation(preparationId) },
+                            )
+                        }
+                    } else if (policy.hasCurrentRunningPlan) {
+                        Text(
+                            text = "当前版本已有计划生成任务正在进行，请查看下方任务进度。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
                     } else {
                         PrimaryAction(
                             text = "生成计划",
-                            enabled = !state.loading,
+                            enabled = policy.startPlanEnabled,
                             onClick = { showConsent = true },
                         )
                     }
                     Spacer(Modifier.height(8.dp))
                     JobRecoveryActions(
-                        job = state.job,
+                        job = policy.recoveryJob,
                         onQuery = { vm.queryCurrentJob() },
                         onRetry = { vm.retryCurrentJob() },
                     )
                 }
-                state.planError?.let { planError ->
+                if (policy.showPlanErrorCard) {
+                    state.planError?.let { planError ->
                     Spacer(Modifier.height(10.dp))
                     val insufficient = if (planError.code == "BANK_INSUFFICIENT") {
                         PlanErrorFormatter.parseBankInsufficient(planError.details)
@@ -372,6 +528,14 @@ fun PlanHubScreen(vm: AppViewModel, state: AppState, preparationId: String) {
                                 )
                             }
                             Spacer(Modifier.height(8.dp))
+                            if (materialsReady) {
+                                SecondaryAction(
+                                    text = "沿用材料新建准备",
+                                    enabled = !state.loading,
+                                    onClick = { vm.redoPreparation(preparationId) },
+                                )
+                                Spacer(Modifier.height(6.dp))
+                            }
                             SecondaryAction(
                                 text = "回到准备检查材料或设置",
                                 onClick = { vm.returnToSetup(preparationId) },
@@ -379,6 +543,7 @@ fun PlanHubScreen(vm: AppViewModel, state: AppState, preparationId: String) {
                         }
                         Spacer(Modifier.height(6.dp))
                         DeveloperDiagnosticPanel(info = friendly)
+                    }
                     }
                 }
             } else {
@@ -437,7 +602,7 @@ fun PlanHubScreen(vm: AppViewModel, state: AppState, preparationId: String) {
                         )
                     }
                     Spacer(Modifier.height(8.dp))
-                    SecondaryAction(text = "基于当前材料重新制定", onClick = { vm.redoPreparation() })
+                    SecondaryAction(text = "基于当前材料重新制定", onClick = { vm.redoPreparation(preparationId) })
                 }
                 Spacer(Modifier.height(8.dp))
                 SecondaryAction(text = "刷新摘要（只读，不重新生成）", onClick = {

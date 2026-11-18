@@ -10,6 +10,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 
+from pydantic import ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -64,6 +65,22 @@ WORK_ITEM_VALIDATION_VERSION = "m1-work-item-v2"
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _summarize_generated_question(slot_key: str, question: dict) -> dict:
+    anchor_refs: list[str] = []
+    for anchor in question.get("anchors") or []:
+        if isinstance(anchor, dict) and anchor.get("snapshot_id") and anchor.get("item_id"):
+            ref = f"{anchor['snapshot_id']}/{anchor['item_id']}"
+            if ref not in anchor_refs:
+                anchor_refs.append(ref)
+    return {
+        "slot": slot_key,
+        "question_type": str(question.get("question_type") or ""),
+        "focus": str(question.get("focus") or "")[:60],
+        "topic_key": str(question.get("topic_key") or ""),
+        "anchor_refs": anchor_refs,
+    }
 
 
 class Heartbeat:
@@ -184,6 +201,12 @@ class JobWorker:
     ) -> None:
         last = getattr(provider, "last_call", None) or {}
         usage = last.get("usage")
+        raw_finish = last.get("finish_reason")
+        finish_reason = (
+            raw_finish.strip()
+            if isinstance(raw_finish, str) and raw_finish.strip()
+            else "unknown"
+        )
         record = {
             "stage": stage,
             "slot": slot,
@@ -192,6 +215,7 @@ class JobWorker:
             "model": getattr(provider, "model_id", ""),
             "request_id": last.get("request_id") or "",
             "usage": usage if isinstance(usage, dict) else None,
+            "finish_reason": finish_reason,
             "outcome": outcome,
             "result_known": outcome in {"success", "known_invalid", "auth_failed", "request_rejected"},
             "error_code": error_code,
@@ -245,6 +269,43 @@ class JobWorker:
             job, provider, stage=stage, slot=slot, outcome="success"
         )
         return result
+
+    def _annotate_last_ai_record(
+        self,
+        job: Job,
+        *,
+        stage: str,
+        slot: str | None,
+        validation_outcome: str,
+        validation_details: list[str] | None = None,
+    ) -> None:
+        db = SessionLocal()
+        try:
+            fenced = self._fence(db, job)
+            if fenced is None:
+                return
+            records = list(fenced.ai_call_records or [])
+            for idx in range(len(records) - 1, -1, -1):
+                rec = records[idx]
+                if (
+                    isinstance(rec, dict)
+                    and rec.get("stage") == stage
+                    and rec.get("slot") == slot
+                    and rec.get("attempt") == job.attempt
+                ):
+                    updated = dict(rec)
+                    updated["validation_outcome"] = validation_outcome
+                    if validation_details:
+                        updated["validation_details"] = list(validation_details)
+                    records[idx] = updated
+                    fenced.ai_call_records = records
+                    db.commit()
+                    return
+        except Exception as exc:  # pragma: no cover - 诊断附注失败不能掩盖主错误
+            db.rollback()
+            LOG.error("ai record annotate failed id=%s error_type=%s", job.id, type(exc).__name__)
+        finally:
+            db.close()
 
     def _fail(
         self, job: Job, code: str, message: str, details: list[str] | None = None
@@ -497,7 +558,18 @@ class JobWorker:
         finally:
             db.close()
 
+        bank_forbidden = [
+            {
+                "stem": item.content.get("stem", ""),
+                "source": "bank",
+                "ref": item.question.question_id,
+            }
+            for item in all_bank
+            if item.content.get("stem")
+        ]
         generated: list[dict] = []
+        generated_summaries: list[dict] = []
+        generated_forbidden: list[dict] = []
         for index in range(1, half + 1):
             slot = f"generated-{index}"
             question_type = "knowledge" if index % 2 == 0 and all_fact_cards else "experience"
@@ -514,32 +586,46 @@ class JobWorker:
                 fact_cards=all_fact_cards,
                 rubric=rubric,
                 previous_stems=[item["stem"] for item in generated],
+                previous_summaries=generated_summaries,
             )
             context_hash = generation_context_hash(context)
             allowed_ids = {card["id"] for card in context["fact_cards"]}
+            forbidden_entries = [*generated_forbidden, *bank_forbidden]
 
             reused = False
             cached = worked.get(slot)
             if (
                 isinstance(cached, dict)
                 and cached.get("validation_version") == WORK_ITEM_VALIDATION_VERSION
-                and cached.get("context_hash") == context_hash
                 and isinstance(cached.get("question"), dict)
             ):
-                try:
-                    self._validate_generated(
-                        cached["question"],
-                        resume,
-                        jd,
-                        allowed_fact_card_ids=allowed_ids,
-                        expected_rubric=rubric,
-                        expected_question_type=context.get("question_type"),
-                        forbidden_stems=context.get("avoid_stems", []),
-                    )
-                    generated.append(cached["question"])
-                    reused = True
-                except AppError:
-                    reused = False
+                saved_hash = cached.get("context_hash")
+                hash_matches = saved_hash == context_hash
+                # 兼容新增 previous_summaries 前写入的旧槽位缓存键；仍需在下方重新校验题目本身。
+                if (
+                    isinstance(saved_hash, str)
+                    and not hash_matches
+                    and "previous_summaries" in context
+                ):
+                    legacy_context = dict(context)
+                    del legacy_context["previous_summaries"]
+                    hash_matches = saved_hash == generation_context_hash(legacy_context)
+                if hash_matches:
+                    try:
+                        self._validate_generated(
+                            cached["question"],
+                            resume,
+                            jd,
+                            allowed_fact_card_ids=allowed_ids,
+                            expected_rubric=rubric,
+                            expected_question_type=context.get("question_type"),
+                            forbidden_stems=context.get("avoid_stems", []),
+                            forbidden_entries=forbidden_entries,
+                        )
+                        generated.append(cached["question"])
+                        reused = True
+                    except (AppError, ValidationError):
+                        reused = False
 
             if not reused:
                 question = self._generate_slot(
@@ -550,6 +636,7 @@ class JobWorker:
                     jd,
                     rubric,
                     allowed_ids,
+                    forbidden_entries=forbidden_entries,
                 )
                 generated.append(question)
                 package = {
@@ -559,6 +646,12 @@ class JobWorker:
                 }
                 if not self._save_slot(job, slot, package, content_digest(question)):
                     return
+            else:
+                question = generated[-1]
+            generated_summaries.append(_summarize_generated_question(slot, question))
+            generated_forbidden.append(
+                {"stem": question["stem"], "source": "prior_generated", "ref": slot}
+            )
 
         # 生成题技术结论可能引用不在 bank 依据集中的已审卡片；计划必须把实际使用的卡片
         # 一并带入审核快照，而不是只保留题库题引用过的那几张。
@@ -1065,6 +1158,17 @@ class JobWorker:
         finally:
             db.close()
 
+    @staticmethod
+    def _validation_record_details(exc: AppError) -> list[str]:
+        structured = [
+            entry
+            for entry in exc.details
+            if isinstance(entry, str) and "=" in entry and "text" not in entry.lower()
+        ]
+        if structured:
+            return structured[:6]
+        return ["reason=slot_validation_failed"]
+
     def _generate_slot(
         self,
         job: Job | None,
@@ -1074,9 +1178,12 @@ class JobWorker:
         jd: MaterialSnapshot,
         rubric: dict,
         allowed_fact_card_ids: set[str],
+        *,
+        forbidden_entries: list[dict] | None = None,
     ) -> dict:
         """单槽初次输出 + 最多一次针对已知无效输出的纠正。"""
         last_error: AppError | None = None
+        slot_key = context.get("slot_key")
         for attempt in range(2):
             call_context = dict(context)
             if last_error is not None:
@@ -1100,7 +1207,7 @@ class JobWorker:
                         job,
                         provider,
                         stage="plan",
-                        slot=context.get("slot_key"),
+                        slot=slot_key,
                         func=provider.generate_questions,
                         count=1,
                         resume_snapshot=resume,
@@ -1115,10 +1222,19 @@ class JobWorker:
                 last_error = exc
                 continue
             if len(items) != 1:
+                count_details = ["reason=invalid_question_count", f"returned={len(items)}"]
+                if job is not None:
+                    self._annotate_last_ai_record(
+                        job,
+                        stage="plan",
+                        slot=slot_key,
+                        validation_outcome="rejected",
+                        validation_details=count_details,
+                    )
                 last_error = AppError(
                     "AI_INVALID_OUTPUT",
                     "模型每个槽位必须返回且只返回 1 道题",
-                    [f"returned={len(items)}"],
+                    count_details,
                 )
                 continue
             try:
@@ -1130,20 +1246,46 @@ class JobWorker:
                     expected_rubric=rubric,
                     expected_question_type=context.get("question_type"),
                     forbidden_stems=context.get("avoid_stems", []),
+                    forbidden_entries=forbidden_entries,
                 )
+                if job is not None:
+                    self._annotate_last_ai_record(
+                        job,
+                        stage="plan",
+                        slot=slot_key,
+                        validation_outcome="passed",
+                    )
                 return items[0]
             except AppError as exc:
                 if exc.code != "AI_INVALID_OUTPUT":
                     raise
+                if job is not None:
+                    self._annotate_last_ai_record(
+                        job,
+                        stage="plan",
+                        slot=slot_key,
+                        validation_outcome="rejected",
+                        validation_details=self._validation_record_details(exc),
+                    )
                 last_error = exc
+        slot_key = str(context.get("slot_key") or "generated")
+        structured: list[str] = ["stage=plan", f"slot={slot_key}"]
+        extra: list[str] = []
+        for entry in list(last_error.details) if last_error else []:
+            if not isinstance(entry, str) or entry.startswith(("stage=", "slot=")):
+                continue
+            if "=" in entry:
+                if entry not in structured:
+                    structured.append(entry)
+            elif entry not in extra:
+                extra.append(entry)
+        last_msg = last_error.message if last_error else "unknown"
+        if last_msg and last_msg not in extra:
+            extra.insert(0, last_msg)
         raise AppError(
             "AI_INVALID_OUTPUT",
             "生成槽位在有限纠正后仍不合法",
-            [
-                context.get("slot_key", "generated"),
-                last_error.message if last_error else "unknown",
-                *((last_error.details if last_error else [])[:3]),
-            ],
+            [*structured, *extra[:4]],
         )
 
     def _validate_semantic_output(self, result: dict, known_ids: set[str]) -> None:
@@ -1188,6 +1330,7 @@ class JobWorker:
         expected_rubric: dict | None = None,
         expected_question_type: str | None = None,
         forbidden_stems: list[str] | None = None,
+        forbidden_entries: list[dict] | None = None,
     ) -> None:
         from app.schemas import GeneratedQuestionOutput
         from app.services.evidence import profile_items, validate_anchor
@@ -1204,19 +1347,57 @@ class JobWorker:
                 ],
             )
         stem_key = normalized_stem(model.stem)
+        candidates: list[dict] = []
+        seen_forbidden_keys: set[str] = set()
+        for entry in forbidden_entries or []:
+            if not isinstance(entry, dict):
+                continue
+            stem_val = entry.get("stem")
+            if not stem_val:
+                continue
+            key = normalized_stem(stem_val)
+            seen_forbidden_keys.add(key)
+            candidates.append(entry)
         for forbidden in forbidden_stems or []:
             if not forbidden:
                 continue
-            if normalized_stem(forbidden) == stem_key or (
-                stem_similarity(forbidden, model.stem) >= SEMANTIC_DUPLICATE_THRESHOLD
-            ):
+            key = normalized_stem(forbidden)
+            if key in seen_forbidden_keys:
+                continue
+            seen_forbidden_keys.add(key)
+            candidates.append({"stem": forbidden, "source": None, "ref": None})
+
+        for entry in candidates:
+            forbidden = entry["stem"]
+            is_exact = normalized_stem(forbidden) == stem_key
+            similarity = stem_similarity(forbidden, model.stem)
+            if is_exact or similarity >= SEMANTIC_DUPLICATE_THRESHOLD:
+                duplicate_kind = "exact" if is_exact else "near"
+                details = [
+                    "reason=duplicate_stem",
+                    f"duplicate_kind={duplicate_kind}",
+                ]
+                if duplicate_kind == "near":
+                    details.extend(
+                        [
+                            f"similarity={similarity:.2f}",
+                            f"threshold={SEMANTIC_DUPLICATE_THRESHOLD:.2f}",
+                        ]
+                    )
+                source = entry.get("source")
+                ref = entry.get("ref")
+                if source == "prior_generated":
+                    details.append("conflict_source=prior_generated")
+                    if ref:
+                        details.append(f"conflict_slot={ref}")
+                elif source == "bank":
+                    details.append("conflict_source=bank")
+                    if ref:
+                        details.append(f"conflict_question_id={ref}")
                 raise AppError(
                     "AI_INVALID_OUTPUT",
                     "生成题与本次禁止题干重复",
-                    [
-                        f"重复题干：{model.stem[:40]}",
-                        f"forbidden={forbidden[:40]}",
-                    ],
+                    details,
                 )
         snapshots = {str(resume.id): resume, str(jd.id): jd}
         items_by_snapshot = {

@@ -22,6 +22,10 @@ RETRYABLE_JOB_ERRORS = {
     "AI_RATE_LIMITED",
     "JOB_INTERRUPTED",
 }
+VALID_GENERATED_SLOTS = {"generated-1", "generated-2", "generated-3"}
+RETRYABLE_PLAN_FORMAT_REASONS = {"output_truncated", "empty_content", "invalid_json"}
+LEGACY_PLAN_SLOT_FAILURE_MESSAGE = "生成槽位在有限纠正后仍不合法"
+LEGACY_PLAN_INVALID_JSON_DETAIL = "AI 返回内容不是合法 JSON"
 JOB_ERROR_MESSAGES = {
     "AI_TIMEOUT": "AI 服务超时，结果未知",
     "AI_UNAVAILABLE": "AI 服务暂时不可用",
@@ -229,15 +233,42 @@ def inputs_current(db: Session, job: Job) -> bool:
     return preparation.revision == job.input_revision
 
 
+def _is_retryable_plan_format_failure(job: Job) -> bool:
+    """仅对计划出题槽位的明确输出/JSON 格式失败开放显式重试；业务校验失败保持不可重试。"""
+    err = job.error if isinstance(job.error, dict) else {}
+    details = err.get("details") if isinstance(err.get("details"), list) else []
+    kv: dict[str, str] = {}
+    for entry in details:
+        if isinstance(entry, str) and "=" in entry:
+            key, _, value = entry.partition("=")
+            kv[key.strip()] = value.strip()
+    if (
+        kv.get("stage") == "plan"
+        and kv.get("slot") in VALID_GENERATED_SLOTS
+        and kv.get("reason") in RETRYABLE_PLAN_FORMAT_REASONS
+    ):
+        return True
+    return (
+        err.get("message") == LEGACY_PLAN_SLOT_FAILURE_MESSAGE
+        and len(details) == 2
+        and details[0] in VALID_GENERATED_SLOTS
+        and details[1] == LEGACY_PLAN_INVALID_JSON_DETAIL
+    )
+
+
 def is_retryable(db: Session, job: Job, max_attempts: int = 2) -> bool:
     if job.state not in ("failed", "interrupted"):
         return False
     if job.attempt >= max_attempts:
         return False
     code = job.error_code or (job.error or {}).get("code")
+    if job.kind == "plan" and code == "AI_INVALID_OUTPUT":
+        if not _is_retryable_plan_format_failure(job):
+            return False
+        return inputs_current(db, job)
     retryable_codes = RETRYABLE_JOB_ERRORS
-    if job.kind in ("follow_up", "interview_report"):
-        # 追问与报告允许在模型输出结构非法后显式重试；M1 任务行为保持不变。
+    if job.kind in ("match", "follow_up", "interview_report"):
+        # 匹配分析、追问与报告允许在模型输出结构非法后显式重试；其余 M1 任务行为保持不变。
         retryable_codes = RETRYABLE_JOB_ERRORS | {"AI_INVALID_OUTPUT"}
     if code not in retryable_codes:
         return False

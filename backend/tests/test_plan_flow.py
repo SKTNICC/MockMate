@@ -350,3 +350,68 @@ def test_production_mode_rejects_test_only_bank(client: TestClient, worker, db) 
     db.rollback()
     assert getattr(caught.value, "code", "") == "BANK_INSUFFICIENT", repr(caught.value)
 
+
+def test_minimal_resume_without_experience_allows_jd_hypothetical_scenario_and_publishes_six(
+    client: TestClient, worker, db
+) -> None:
+    """无工作经历与项目时，仍可围绕 JD 要求与真实锚点生成不同任务并发布 3+3 六题计划。"""
+    _, token = issue_token(client)
+    minimal_resume_text = (
+        "软件工程专业本科在读。\n"
+        "掌握 Java 集合与面向接口编程，学习 JUnit 单元测试基础。"
+    )
+    minimal_profile = {
+        "kind": "resume",
+        "education": [
+            {
+                "item_id": "edu-1",
+                "degree": "本科在读",
+                "major": "软件工程",
+                "evidence": {"quote": "软件工程专业本科在读。", "origin": "extracted"},
+            }
+        ],
+        "work_experience": [],
+        "projects": [],
+        "skills": [
+            {
+                "item_id": "skill-1",
+                "name": "Java 集合与 JUnit",
+                "code": "java.core",
+                "evidence": {
+                    "quote": "掌握 Java 集合与面向接口编程，学习 JUnit 单元测试基础。",
+                    "origin": "extracted",
+                },
+            }
+        ],
+    }
+    created = client.post(
+        "/v1/materials/text",
+        json={"kind": "resume", "title": "无经历极简简历", "text": minimal_resume_text},
+        headers={**auth(token), "Idempotency-Key": new_key()},
+    )
+    assert created.status_code == 201
+    snap = client.post(
+        f"/v1/materials/{created.json()['id']}/confirm",
+        json={"revision": 1, "profile": minimal_profile},
+        headers={**auth(token), "Idempotency-Key": new_key()},
+    )
+    assert snap.status_code == 201
+    resume_id = snap.json()["id"]
+    jd_id = create_confirmed_template_jd(client, token)
+
+    prep = _make_prep(client, token, count=6, resume=resume_id, jd=jd_id)
+    _run_match(client, token, worker, prep["id"])
+    generate = _run_plan(client, token, worker, prep["id"])
+    assert generate.status_code == 202
+    plan_job = wait_job(client, token, generate.json()["id"], worker, attempts=4)
+    assert plan_job["state"] == "succeeded", plan_job
+
+    plan_id = plan_job["result_ref"]["id"]
+    public = client.get(f"/v1/plans/{plan_id}", headers=auth(token)).json()
+    _assert_public_plan(public, 6)
+
+    plan_row = db.get(Plan, plan_id)
+    generated = [q for q in plan_row.internal_payload["questions"] if q["source"] == "generated"]
+    assert len(generated) == 3
+    assert len({q["stem"] for q in generated}) == 3
+

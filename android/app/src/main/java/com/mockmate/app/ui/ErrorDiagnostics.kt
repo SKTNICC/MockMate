@@ -40,9 +40,14 @@ object ErrorDiagnosticsMapper {
         httpStatus = message.httpStatus,
         retryable = message.retryable,
         diagnosticContext = message.diagnosticContext,
+        jobKind = message.jobKind,
     )
 
-    fun fromJob(job: JobDto, extraContext: String? = null): FriendlyErrorInfo {
+    fun fromJob(
+        job: JobDto,
+        extraContext: String? = null,
+        inputUpdated: Boolean = false,
+    ): FriendlyErrorInfo {
         val err = job.error
         val ctx = buildString {
             append("jobId=${job.id} · kind=${job.kind} · state=${job.state} · attempt=${job.attempt} · target=${job.target_id} (rev=${job.input_revision})")
@@ -58,6 +63,9 @@ object ErrorDiagnosticsMapper {
             httpStatus = null,
             retryable = job.retryable,
             diagnosticContext = ctx,
+            jobKind = job.kind,
+            attempt = job.attempt,
+            inputUpdated = inputUpdated || job.state == "superseded",
         )
     }
 
@@ -68,18 +76,90 @@ object ErrorDiagnosticsMapper {
         httpStatus: Int? = null,
         retryable: Boolean = false,
         diagnosticContext: String? = null,
+        jobKind: String? = null,
+        attempt: Int? = null,
+        inputUpdated: Boolean = false,
     ): FriendlyErrorInfo {
         val kvDetails = parseKeyValueDetails(details)
-        val slot = kvDetails["slot"]
+        val rawSlot = kvDetails["slot"] ?: details.firstOrNull { it.startsWith("generated-") }
+        val slotNumber = rawSlot?.removePrefix("generated-")?.takeIf { it.isNotBlank() }
         val itemId = kvDetails["item_id"]
         val field = kvDetails["field"]
         val section = kvDetails["section"]
         val lastCode = kvDetails["last_code"]
+        val stage = kvDetails["stage"]
+        val reason = kvDetails["reason"]
+        val finishReason = kvDetails["finish_reason"]
+        val conflictSource = kvDetails["conflict_source"]
 
         return when (code) {
             "AI_INVALID_OUTPUT", "EVALUATION_INVALID", "GROUNDING_INVALID", "DUPLICATE_QUESTION", "DEDUP_UNCERTAIN" -> {
-                val slotHint = if (slot != null) "（第 $slot 个出题槽位）" else ""
+                val slotHint = if (slotNumber != null) "（第 $slotNumber 个出题槽位）" else ""
+                val isMatchEvidenceError =
+                    reason == "invalid_evidence_selection" ||
+                        (stage == "match" && rawMessage.contains("引用原文不属于所引用的材料条目")) ||
+                        (jobKind == "match" && (
+                            rawMessage.contains("引用原文不属于所引用的材料条目") ||
+                                rawMessage.contains("引用的条目不在材料结构中") ||
+                                rawMessage.contains("引用原文在当前材料中不存在")
+                            ))
+                val isMatchStage = jobKind == "match" || stage == "match"
+                val isPlanStage = jobKind == "plan" || stage == "plan" || rawSlot?.startsWith("generated-") == true
+                val isLengthTruncated = finishReason == "length"
+                val isPlanUnreadableOutput = isPlanStage && !isLengthTruncated && (
+                    reason in setOf("invalid_json", "empty_content", "non_object_json") ||
+                        rawMessage.contains("不是合法 JSON") ||
+                        rawMessage.contains("不是非空字符串") ||
+                        rawMessage.contains("必须是对象") ||
+                        details.any {
+                            it.contains("不是合法 JSON") ||
+                                it.contains("不是非空字符串") ||
+                                it.contains("必须是对象")
+                        }
+                    )
+                val isPlanSchemaError = isPlanStage && reason == "invalid_question_schema"
+                val isPlanDuplicateStem = isPlanStage && (
+                    reason == "duplicate_stem" ||
+                        rawMessage.contains("禁止题干重复") ||
+                        details.any {
+                            it.startsWith("重复题干：") ||
+                                it.startsWith("forbidden=") ||
+                                it.contains("禁止题干重复")
+                        }
+                    )
+                val isMaterialMissingOrUnconfirmed =
+                    rawMessage.contains("无法从该简历文本结构化") ||
+                        rawMessage.contains("未找到职责或要求") ||
+                        rawMessage.contains("没有可分析的显式要求") ||
+                        rawMessage.contains("材料版本已失效") ||
+                        rawMessage.contains("手动填写")
                 val subReason = when {
+                    isMatchEvidenceError ->
+                        "本次分析未能把引用关联到正确的简历条目。本次匹配报告未生成，已确认的材料已保留。"
+                    isPlanStage && isLengthTruncated -> {
+                        val target = if (slotNumber != null) "第 $slotNumber 道题" else "题目"
+                        "AI 生成的${target}模型输出中途结束（达到长度上限），未能完整返回 JSON。本次计划未保存，已确认的材料和匹配报告已保留。"
+                    }
+                    isPlanUnreadableOutput ->
+                        if (slotNumber != null) {
+                            "AI 生成的第 $slotNumber 道题返回了无法读取的结果。本次计划未保存，已确认的材料和匹配报告已保留。"
+                        } else {
+                            "AI 生成题目时返回了无法读取的结果。本次计划未保存，已确认的材料和匹配报告已保留。"
+                        }
+                    isPlanDuplicateStem -> {
+                        val target = if (slotNumber != null) "第 $slotNumber 道 AI 题" else "AI 题目"
+                        if (conflictSource == "bank") {
+                            "${target}与题库已有题目过于相似，本次计划未发布。已确认的材料仍可复用。"
+                        } else {
+                            "${target}与本场已有题目过于相似，本次计划未发布。已确认的材料仍可复用。"
+                        }
+                    }
+                    isPlanSchemaError ->
+                        if (slotNumber != null) {
+                            "AI 生成的第 $slotNumber 道题格式未通过服务端校验。本次计划未保存，已确认的材料和匹配报告已保留。"
+                        } else {
+                            "AI 生成的题目格式未通过服务端校验。本次计划未保存，已确认的材料和匹配报告已保留。"
+                        }
                     rawMessage.contains("无法从该简历文本结构化") ->
                         "AI 未能从当前简历文本中识别出有效的教育、项目或技能段落。"
                     rawMessage.contains("未找到职责或要求") || rawMessage.contains("没有可分析的显式要求") ->
@@ -90,12 +170,36 @@ object ErrorDiagnosticsMapper {
                         "AI 本次生成的题目与已有题库或已曝光题目过于相似$slotHint，已被服务端拦截。"
                     rawMessage.contains("依据卡") || rawMessage.contains("锚点") || code == "GROUNDING_INVALID" ->
                         "AI 生成的题目未能严格关联到您的材料原文或知识依据卡$slotHint。"
+                    isMatchStage ->
+                        "本次匹配分析的模型输出未通过服务端校验。本次匹配报告未生成，已确认的材料已保留。"
                     else -> "外部 AI 模型本次返回的数据结构未通过严格契约校验$slotHint。"
                 }
                 val suggestion = when {
-                    rawMessage.contains("手动填写") -> "建议检查原文是否过于简短，或直接在下方手动添加结构化条目。"
+                    rawMessage.contains("手动填写") ->
+                        "建议检查原文是否过于简短，或直接在下方手动添加结构化条目。"
+                    isMatchEvidenceError || (isMatchStage && !isMaterialMissingOrUnconfirmed) ->
+                        if (retryable) {
+                            "已确认的材料已保留，请点击「重试匹配分析」（会再次调用模型）。"
+                        } else {
+                            "本次匹配报告未生成，已确认的材料已保留。可展开下方诊断详情查看具体原因。"
+                        }
+                    isPlanStage -> when {
+                        retryable ->
+                            "已确认的材料和匹配报告已保留，请点击「重试生成计划」（会再次调用模型）。"
+                        inputUpdated ->
+                            "当前准备设置或材料已更新，旧任务不可重试，请基于当前版本重新生成计划。"
+                        (attempt ?: 0) >= 2 ->
+                            "已用完 2 次生成尝试，当前任务不能继续重试。可点击「沿用材料新建准备」复用已确认材料重新生成，或展开下方诊断详情查看原因。"
+                        isLengthTruncated || isPlanUnreadableOutput ->
+                            "准备输入可能已更新或当前状态暂不支持重试，请先点击「只读查询最新状态」确认，或在更新设置后重新生成计划。"
+                        isPlanDuplicateStem ->
+                            "可点击「沿用材料新建准备」复用已确认材料重新生成，或展开下方诊断详情查看原因。"
+                        else ->
+                            "当前失败原因不支持直接重试。本次计划未保存，已确认的材料和匹配报告已保留。可展开下方诊断详情查看具体原因。"
+                    }
                     retryable -> "您的材料和准备进度完好无损，直接点击「重试」重新调用模型即可。"
-                    else -> "建议检查并丰富简历/JD 的结构化内容后再试，或点击重试。"
+                    isMaterialMissingOrUnconfirmed -> "建议检查并丰富简历/JD 的结构化内容后再试。"
+                    else -> "可展开下方诊断详情查看原因，或调整设置后重新发起。"
                 }
                 FriendlyErrorInfo(
                     userTitle = "AI 生成结果未通过质量校验",

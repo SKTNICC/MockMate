@@ -120,43 +120,102 @@ def parse_prompt(
     return SYSTEM_BASE, user
 
 
-def match_prompt(*, resume_text, resume_profile, jd_profile, resume_snapshot_id) -> tuple[str, str]:
+def match_prompt(
+    *,
+    resume_text: str,
+    resume_candidates: list[dict],
+    jd_profile: dict,
+) -> tuple[str, str]:
     schema = {
         "rows": [
             {
                 "requirement_id": "req-1",
                 "status": "supported",
-                "resume_evidence": [
-                    {
-                        "snapshot_id": resume_snapshot_id,
-                        "item_id": "project-1",
-                        "quote": "简历原文逐字片段",
-                    }
-                ],
-                "explanation": "为什么是这个结论，只依据材料",
-                "suggested_focus": "面试准备建议",
+                "resume_item_ids": ["project-1"],
+                "explanation": "已确认的项目条目描述了相关经历与技能使用。",
+                "suggested_focus": "说明具体实现细节与边界验证方法。",
             }
         ]
     }
-    user = f"""逐条对照 JD 要求与简历材料，给出“要求→支持原文→待验证／未体现”的对应关系。
-status 只能是 supported（简历中有可定位原文支持）、to_verify（有相关背景但要求未直接体现）、
-not_evidenced（当前材料没有支持）。resume_evidence 可为空数组，但填写时 quote 必须逐字来自简历原文，
-item_id 必须来自简历结构。不要输出百分比或录用概率。
+    jd_requirements = [
+        {
+            "requirement_id": req.get("item_id"),
+            "text": req.get("text"),
+            "importance": req.get("importance"),
+            "skill_codes": req.get("skill_codes") or [],
+        }
+        for req in (jd_profile or {}).get("requirements") or []
+    ]
+    user = f"""逐条对照 JD 要求与已确认的简历候选条目，给出每条要求的匹配结论与关联的简历候选条目 ID。
+规则要求：
+1. jd_requirements 中的每条 requirement_id 在 rows 中必须出现且只能出现一次，不得遗漏、重复或编造。
+2. status 只能是：
+   - supported：候选表中有直接、明确的支持证据；此时 resume_item_ids 必须至少包含 1 个候选 item_id。
+   - to_verify：简历中有相关背景但证据不够直接或不够充分，需要面试核实；resume_item_ids 可为空数组或列出相关候选 item_id。
+   - not_evidenced：当前材料没有支持；此时 resume_item_ids 必须为空数组 []。
+3. 未体现（not_evidenced）和待验证（to_verify）不等同于候选人不具备能力；explanation 和 suggested_focus 只能基于材料与岗位要求给出，不要输出百分比或录用概率。
+4. resume_item_ids 中每个元素必须精确取自下方「可引用简历候选表」中的 item_id，且同一行内不得重复；候选表里的 quote 只用于帮你理解条目含义，输出 JSON 中不要包含 quote 或 snapshot_id。
+5. 下方简历原文仅作整体语境参考，可引用证据必须以「可引用简历候选表」为准。
 
-简历结构（anchors.item_id 必须取自这里的 item_id）：
-{json.dumps(resume_profile, ensure_ascii=False)}
+可引用简历候选表（resume_item_ids 必须取自这里的 item_id）：
+{json.dumps(resume_candidates, ensure_ascii=False)}
 
-JD 结构：
+JD 要求列表（rows[].requirement_id 必须逐一对应这里的 requirement_id）：
+{json.dumps(jd_requirements, ensure_ascii=False)}
+
+JD 结构（补充语境）：
 {json.dumps(jd_profile, ensure_ascii=False)}
 
 只输出如下 JSON：
 {json.dumps(schema, ensure_ascii=False)}
 
-简历原文：
+简历原文（仅作语境参考）：
 <<<
 {resume_text}
 >>>"""
     return SYSTEM_BASE, user
+
+
+def _fallback_anchors_from_profile(
+    profile: dict | None,
+    *,
+    snapshot_id: str,
+    source_kind: str,
+) -> list[dict]:
+    if not isinstance(profile, dict):
+        return []
+    sections = (
+        ("work_experience", "projects", "skills", "education")
+        if source_kind == "resume"
+        else ("requirements",)
+    )
+    anchors: list[dict] = []
+    for section in sections:
+        for item in profile.get(section) or []:
+            if not isinstance(item, dict):
+                continue
+            quote = (item.get("evidence") or {}).get("quote")
+            item_id = item.get("item_id")
+            if not quote or not item_id:
+                continue
+            entry: dict = {
+                "snapshot_id": snapshot_id,
+                "item_id": item_id,
+                "quote": quote,
+                "source_kind": source_kind,
+                "label": (
+                    item.get("name")
+                    or item.get("organization")
+                    or item.get("major")
+                    or item.get("degree")
+                    or item.get("text")
+                    or item_id
+                ),
+            }
+            if source_kind == "jd":
+                entry["skill_codes"] = list(item.get("skill_codes") or [])
+            anchors.append(entry)
+    return anchors
 
 
 def generate_prompt(
@@ -173,8 +232,21 @@ def generate_prompt(
     context=None,
 ) -> tuple[str, str]:
     context = context or {}
+    slot_key = context.get("slot_key", "generated-1")
+    slot_index = context.get("slot_index", 1)
     slot_type = context.get("question_type", "experience")
+    role_id = context.get("role_id") or (jd_profile or {}).get("role_id") or ""
+    level = context.get("level") or (jd_profile or {}).get("level") or ""
+
     anchors = list(context.get("allowed_anchors") or [])
+    if not anchors:
+        anchors = _fallback_anchors_from_profile(
+            resume_profile, snapshot_id=resume_snapshot_id, source_kind="resume"
+        ) + _fallback_anchors_from_profile(
+            jd_profile, snapshot_id=jd_snapshot_id, source_kind="jd"
+        )
+
+    fact_cards = list(context.get("fact_cards") or [])
     sample_anchor = (
         {
             "snapshot_id": anchors[0]["snapshot_id"],
@@ -188,6 +260,35 @@ def generate_prompt(
             "quote": "材料原文逐字片段",
         }
     )
+    material_ref_id = f"{sample_anchor['snapshot_id']}/{sample_anchor['item_id']}"
+    if slot_type == "knowledge":
+        sample_card_id = fact_cards[0]["id"] if fact_cards else "fact-card-id"
+        sample_basis = [
+            {
+                "kind": "fact_card",
+                "ref_id": sample_card_id,
+                "note": "以本槽允许的已审依据卡为技术结论边界",
+            },
+            {
+                "kind": "material",
+                "ref_id": material_ref_id,
+                "note": "关联本场材料原文锚点",
+            },
+        ]
+    else:
+        sample_basis = [
+            {
+                "kind": "material",
+                "ref_id": material_ref_id,
+                "note": "以材料原文为事实边界",
+            },
+            {
+                "kind": "reasoning",
+                "ref_id": "hypothetical-analysis",
+                "note": "仅评价思路与验证",
+            },
+        ]
+
     schema = {
         "questions": [
             {
@@ -208,61 +309,138 @@ def generate_prompt(
                     "acceptable_alternatives": ["合理替代解"],
                     "common_mistakes": ["常见错误边界"],
                     "rubric": rubric,
-                    "basis": [
-                        {
-                            "kind": "material",
-                            "ref_id": f"{resume_snapshot_id}/project-1",
-                            "note": "以简历原文为事实边界",
-                        },
-                        {
-                            "kind": "reasoning",
-                            "ref_id": "hypothetical-analysis",
-                            "note": "仅评价思路与验证",
-                        },
-                    ],
+                    "basis": sample_basis,
                     "answer_status": "model_generated",
                     "trust": "provisional",
-                    "uncertainties": ["仍需人工复核的点"],
+                    "uncertainties": [],
                 },
             }
         ]
     }
-    user = f"""本次只为这一个槽位生成 {count} 道个性化主问题（调用方固定 count=1）：
-- 本次槽位类型固定为 {slot_type}：experience（经历／推理表达）或 knowledge（技术知识）。
-- 只允许从 slot_context.allowed_anchors 选择 anchors；item_id 与 quote 必须原样来自该列表。
-- 没有项目／工作经历时，可以引用 JD 明确要求构造“假设场景”，但必须说明是假设，不得编造成做过。
-- knowledge 题必须在 evaluation.basis 引用 slot_context.fact_cards 中的已审 fact_card；
-  不得把技术断言藏在 reasoning 里绕过。experience 题至少引用一条本场材料依据。
-- 不得与题库题干重复或同义改写；不得复用 avoid_stems 中列出的题干。
-- 评价依据必须完整：考察目标、参考思路、评分要点（权重和=1）、合理替代解、错误边界、量表。
-- 生成题 answer_status 固定 model_generated，trust 固定 provisional，绝不能写 verified/reviewed。
-- uncertainties 必须为空数组；仍有未解决事实冲突时不要输出该题，交由调用方失败处理。
-- 只能返回 1 道题；多返回或少返回都视为非法输出，不能静默截断。
 
-已有题干（禁止复用）：
+    slot_meta: dict = {
+        "slot_key": slot_key,
+        "slot_index": slot_index,
+        "question_type": slot_type,
+        "role_id": role_id,
+        "level": level,
+        "prefer_jd_scenario": bool(context.get("prefer_jd_scenario")),
+        "target_skill_codes": list(context.get("target_skill_codes") or []),
+        "match_focus": list(context.get("match_focus") or []),
+        "resume_snapshot_id": resume_snapshot_id,
+        "jd_snapshot_id": jd_snapshot_id,
+    }
+
+    previous_summaries = [
+        item for item in (context.get("previous_summaries") or []) if isinstance(item, dict)
+    ]
+
+    correction = context.get("correction")
+    correction_block = ""
+    if isinstance(correction, dict) and correction:
+        corr_details = [str(item) for item in (correction.get("details") or [])]
+        kv = {
+            k.strip(): v.strip()
+            for entry in corr_details
+            if "=" in entry
+            for k, _, v in [entry.partition("=")]
+        }
+        reason = kv.get("reason", "")
+        finish_reason = kv.get("finish_reason", "")
+        if reason == "output_truncated" or finish_reason == "length":
+            correction_block = (
+                "\n\n上一次生成纠正要求（请严格遵守）：\n"
+                "上一次输出因达到长度上限被截断（reason=output_truncated, finish_reason=length）。"
+                "请为同一槽位重新输出完整的单个 JSON 对象（仅 1 题），并精简可选解释字段"
+                "（reference_approach 控制在 2–3 句以内，acceptable_alternatives、common_mistakes、"
+                "basis[].note 控制为简短要点），确保 JSON 在结束前完整闭合。"
+            )
+        elif reason in {"empty_content", "invalid_json", "non_object_json"}:
+            correction_block = (
+                "\n\n上一次生成纠正要求（请严格遵守）：\n"
+                f"上一次输出未返回完整合法的 JSON 对象（reason={reason}）。"
+                "请重新为同一槽位产出完整、可被严格 json.loads 解析的单个 JSON 对象（questions 恰好 1 题），"
+                "不要输出空内容、Markdown 代码块或任何非 JSON 文本。"
+            )
+        elif reason == "duplicate_stem":
+            conflict_source = kv.get("conflict_source", "")
+            conflict_slot = kv.get("conflict_slot", "")
+            conflict_qid = kv.get("conflict_question_id", "")
+            duplicate_kind = kv.get("duplicate_kind", "")
+            conflict_summary = next(
+                (
+                    item
+                    for item in previous_summaries
+                    if conflict_slot and item.get("slot") == conflict_slot
+                ),
+                None,
+            )
+            conflict_ref = conflict_slot or conflict_qid or "已有题目"
+            topic_parts: list[str] = []
+            if conflict_summary:
+                if conflict_summary.get("focus"):
+                    topic_parts.append(f"focus={conflict_summary['focus']}")
+                if conflict_summary.get("topic_key"):
+                    topic_parts.append(f"topic_key={conflict_summary['topic_key']}")
+                if conflict_summary.get("anchor_refs"):
+                    topic_parts.append(
+                        f"anchor_refs={','.join(str(x) for x in conflict_summary['anchor_refs'])}"
+                    )
+            conflict_note = f"（已考察：{', '.join(topic_parts)}）" if topic_parts else ""
+            correction_block = (
+                "\n\n上一次生成纠正要求（请严格遵守）：\n"
+                f"上一次为槽位 {slot_key} 生成的题目触发去重拦截"
+                f"（reason=duplicate_stem, duplicate_kind={duplicate_kind or 'duplicate'}, "
+                f"conflict_source={conflict_source or 'unknown'}, 冲突标识={conflict_ref}{conflict_note}）。"
+                f"本次必须在**同一槽位 {slot_key}** 选择完全不同的实际作答任务"
+                "（例如转向验证失败路径、并发边界或不同前提权衡），"
+                "重新输出一条完整、合法的单个 JSON 对象（questions 恰好 1 题）；"
+                "禁止题干仍以「已有题干」列表为准，并保持原有槽位类型、允许锚点、评价依据和 rubric 要求不变。"
+            )
+        else:
+            corr_msg = str(correction.get("message") or "输出不符合契约要求")
+            correction_block = (
+                "\n\n上一次生成纠正要求（请严格遵守）：\n"
+                f"失败原因：{corr_msg}；诊断详情：{json.dumps(corr_details, ensure_ascii=False)}。"
+                "请保持同一槽位要求修正以上问题，输出完整单个 JSON 对象（questions 恰好 1 题）。"
+            )
+
+    user = f"""本次只为槽位 {slot_key} 生成 {count} 道个性化主问题（调用方固定 count=1）：
+- 只输出单个 JSON 对象，格式为 {{"questions": [ <恰好 1 道题> ]}}；多返回或少返回都视为非法输出。
+- 槽位类型固定为 {slot_type}：experience（经历／推理表达）或 knowledge（技术知识）。
+- 只允许从下方「允许锚点」选择 anchors；snapshot_id、item_id 与 quote 必须原样来自该列表。
+- 后续题选择顺序：结合「match_focus」与下方「已考察槽位摘要」，优先选择仍与岗位要求相关且前序槽位尚未充分覆盖的条目或考察点；材料较少时允许复用同一真实锚点，但必须考察不同的实际作答任务（例如前序题已问数据库访问的资源管理，后一题可考察如何验证失败路径或异常恢复）。只换项目名、题干开场措辞或挪动句子不足以构成新题。
+- 题干（stem）直接给出设问，只带必要背景；长段简历原话已在 anchors 中保存，不要在 stem 中重复整段原话。
+- 没有项目／工作经历时，可以引用 JD 锚点构造“假设场景”，但必须说明是假设，不得编造成做过。
+- knowledge 题必须在 evaluation.basis 引用下方「可用依据卡」中的已审 fact_card；不得把技术断言藏在 reasoning 里绕过。experience 题必须在 evaluation.basis 至少引用一条本场材料依据（<snapshot_id>/<item_id>）。
+- 不得与下方「已有题干」重复、同义改写或只换壳考察同一设问角度。
+- 评价依据必须完整：考察目标、参考思路、评分要点（权重和=1）、合理替代解、错误边界；evaluation.rubric 必须原样保留下方示例中的 rubric 对象。
+- 生成题 answer_status 固定 "model_generated"，trust 固定 "provisional"，uncertainties 必须为空数组 []。{correction_block}
+
+槽位与岗位信息：
+{json.dumps(slot_meta, ensure_ascii=False)}
+
+允许锚点（anchors 必须原样取自这里）：
+{json.dumps(anchors, ensure_ascii=False)}
+
+可用依据卡（knowledge 题必须从中引用 fact_card）：
+{json.dumps(fact_cards, ensure_ascii=False)}
+
+已有题干（禁止复用或同义改写）：
 {json.dumps(avoid_stems, ensure_ascii=False)}
 
-槽位上下文（类型、允许锚点、依据卡、匹配重点、量表、禁止题干）：
-{json.dumps(context, ensure_ascii=False)}
+已考察槽位摘要（后续出题必须考察不同作答任务）：
+{json.dumps(previous_summaries, ensure_ascii=False)}
 
-简历结构（anchors.item_id 必须取自这里的 item_id）：
-{json.dumps(resume_profile, ensure_ascii=False)}
+只输出如下 JSON（恰好 1 题，rubric 必须原样保留）：
+{json.dumps(schema, ensure_ascii=False, indent=2)}
 
-简历快照 ID：{resume_snapshot_id}
-JD 快照 ID：{jd_snapshot_id}
-
-JD 结构：
-{json.dumps(jd_profile, ensure_ascii=False)}
-
-只输出如下 JSON：
-{json.dumps(schema, ensure_ascii=False)}
-
-简历原文：
+简历原文（仅作语境参考）：
 <<<
 {resume_text}
 >>>
 
-JD 原文：
+JD 原文（仅作语境参考）：
 <<<
 {jd_text}
 >>>"""

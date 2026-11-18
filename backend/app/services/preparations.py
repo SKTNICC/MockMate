@@ -378,6 +378,7 @@ def build_generation_context(
     fact_cards: list[EligibleFactCard],
     rubric: dict,
     previous_stems: list[str],
+    previous_summaries: list[dict] | None = None,
 ) -> dict:
     """构造单个生成槽位的显式上下文；context_hash 覆盖所有会影响结果的输入。"""
     rows = list((report.payload or {}).get("rows") or [])
@@ -433,6 +434,7 @@ def build_generation_context(
         "fact_cards": card_payload,
         "rubric": rubric,
         "avoid_stems": avoid_stems,
+        "previous_summaries": list(previous_summaries or []),
         "resume_snapshot_id": str(resume.id),
         "jd_snapshot_id": str(jd.id),
         "preparation_revision": preparation.revision,

@@ -68,7 +68,16 @@ object InterviewUiMerge {
     }
 
     fun shouldApplyJob(current: JobDto?, incoming: JobDto): Boolean {
-        if (current == null || current.id != incoming.id) return true
+        if (current == null) return true
+        if (current.id != incoming.id) {
+            if (current.kind == incoming.kind &&
+                current.target_id == incoming.target_id &&
+                incoming.input_revision < current.input_revision
+            ) {
+                return false
+            }
+            return true
+        }
         if (incoming.attempt < current.attempt) return false
         if (current.state in terminalStates && incoming.state !in terminalStates) {
             // 只有显式重试（attempt 递增）才能把终态任务重新置为 queued/running。

@@ -30,6 +30,11 @@ class Settings(BaseSettings):
     ai_model: str = Field(default="", alias="AI_MODEL")
     ai_api_key: str = Field(default="", alias="AI_API_KEY")
     ai_timeout_seconds: int = Field(default=60, alias="AI_TIMEOUT_SECONDS")
+    ai_plan_generate_thinking: str = Field(default="disabled", alias="AI_PLAN_GENERATE_THINKING")
+    ai_plan_generate_max_tokens: int | None = Field(default=4096, alias="AI_PLAN_GENERATE_MAX_TOKENS")
+    ai_plan_generate_retry_max_tokens: int | None = Field(
+        default=8192, alias="AI_PLAN_GENERATE_RETRY_MAX_TOKENS"
+    )
 
     max_upload_bytes: int = Field(default=10 * 1024 * 1024, alias="MAX_UPLOAD_BYTES")
     max_material_characters: int = Field(default=20000, alias="MAX_MATERIAL_CHARACTERS")
@@ -50,6 +55,14 @@ class Settings(BaseSettings):
     @classmethod
     def _expand_root(cls, value: Path) -> Path:
         return value.expanduser()
+
+    @field_validator("ai_plan_generate_max_tokens", "ai_plan_generate_retry_max_tokens", mode="before")
+    @classmethod
+    def _optional_positive_int(cls, value: object) -> int | None:
+        if value is None or value == "":
+            return None
+        parsed = int(value)
+        return parsed if parsed > 0 else None
 
     @property
     def is_production(self) -> bool:

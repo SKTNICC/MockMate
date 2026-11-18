@@ -96,6 +96,7 @@ data class UiMessage(
     val httpStatus: Int? = null,
     val retryable: Boolean = false,
     val diagnosticContext: String? = null,
+    val jobKind: String? = null,
 )
 
 /** 已无法随当前回合提交、但仍属于本机的加密草稿；只用于查看或复制。 */
@@ -120,6 +121,9 @@ data class PlanErrorState(
     val httpStatus: Int? = null,
     val retryable: Boolean = false,
     val diagnosticContext: String? = null,
+    val jobId: String? = null,
+    val preparationId: String? = null,
+    val inputRevision: Int? = null,
 )
 
 sealed interface Screen {
@@ -869,9 +873,10 @@ class AppViewModel internal constructor(
     private suspend fun loadSnapshotLabels(prep: PreparationDto, ctx: RequestContext) {
         val resume = prep.resume_snapshot_id?.let { repository.snapshot(it) }
         val jd = prep.jd_snapshot_id?.let { repository.snapshot(it) }
-        if (!isAccountCurrent(ctx)) return
-        update {
-            it.copy(
+        if (!isCurrent(ctx)) return
+        update { current ->
+            if (current.preparation?.id != prep.id) return@update current
+            current.copy(
                 resumeSnapshot = resume?.let { okOrNull(it) },
                 jdSnapshot = jd?.let { okOrNull(it) },
             )
@@ -1443,14 +1448,32 @@ class AppViewModel internal constructor(
     // ------------------------------------------------------------ 匹配
 
     fun openMatch(preparationId: String) {
-        update { it.copy(job = null) }
+        val prep = state.value.preparation?.takeIf { it.id == preparationId }
+        update {
+            it.copy(
+                job = null,
+                matchReport = if (prep?.match_report_id == null) {
+                    null
+                } else {
+                    it.matchReport?.takeIf { report -> report.id == prep.match_report_id }
+                },
+            )
+        }
         push(Screen.Match(preparationId))
         val ctx = currentRequestContext() ?: return
-        val prep = state.value.preparation
         if (prep?.match_report_id != null) {
             viewModelScope.launch {
                 when (val result = repository.matchReport(prep.match_report_id)) {
-                    is ApiResult.Ok -> if (isCurrent(ctx)) update { it.copy(matchReport = result.value) }
+                    is ApiResult.Ok -> if (isCurrent(ctx)) update { current ->
+                        val latestPrep = current.preparation
+                        if (latestPrep == null ||
+                            (latestPrep.id == preparationId && result.value.input_revision >= latestPrep.revision)
+                        ) {
+                            current.copy(matchReport = result.value)
+                        } else {
+                            current
+                        }
+                    }
                     is ApiResult.Err -> showError(result, ctx)
                 }
             }
@@ -1486,17 +1509,34 @@ class AppViewModel internal constructor(
     // ------------------------------------------------------------ 计划
 
     fun openPlan(preparationId: String) {
-        update { it.copy(job = null, planError = null) }
+        val prep = state.value.preparation?.takeIf { it.id == preparationId }
+        update {
+            it.copy(
+                job = null,
+                planError = null,
+                plan = if (prep?.current_plan_id == null) {
+                    null
+                } else {
+                    it.plan?.takeIf { plan -> plan.id == prep.current_plan_id }
+                },
+            )
+        }
         push(Screen.PlanHub(preparationId))
         val ctx = currentRequestContext() ?: return
-        val prep = state.value.preparation
-        if (prep == null || prep.id != preparationId) {
+        if (prep == null) {
             val token = ++loadToken
             viewModelScope.launch {
                 val loaded = repository.preparation(preparationId)
                 if (loadToken != token || !isCurrent(ctx)) return@launch
                 if (loaded is ApiResult.Ok) {
-                    update { it.copy(preparation = loaded.value) }
+                    update { current ->
+                        val existing = current.preparation
+                        if (existing == null || existing.id != preparationId || loaded.value.revision >= existing.revision) {
+                            current.copy(preparation = loaded.value)
+                        } else {
+                            current
+                        }
+                    }
                     loadPlanFor(loaded.value, ctx)
                 } else if (loaded is ApiResult.Err) {
                     showError(loaded, ctx)
@@ -1513,8 +1553,21 @@ class AppViewModel internal constructor(
         viewModelScope.launch {
             when (val result = repository.plan(planId)) {
                 is ApiResult.Ok -> if (isCurrent(ctx)) {
-                    update { it.copy(plan = result.value) }
-                    loadInterviewForPlan(planId)
+                    var applied = false
+                    update { current ->
+                        val latestPrep = current.preparation
+                        if (latestPrep == null ||
+                            (latestPrep.id == prep.id &&
+                                result.value.preparation_id == prep.id &&
+                                result.value.input_revision >= latestPrep.revision)
+                        ) {
+                            applied = true
+                            current.copy(plan = result.value)
+                        } else {
+                            current
+                        }
+                    }
+                    if (applied) loadInterviewForPlan(planId)
                 }
                 is ApiResult.Err -> showError(result, ctx)
             }
@@ -1534,7 +1587,17 @@ class AppViewModel internal constructor(
                 return@launch
             }
             val prepValue = (prep as ApiResult.Ok).value
-            update { it.copy(preparation = prepValue) }
+            var prepApplied = false
+            update { current ->
+                val latestPrep = current.preparation
+                if (latestPrep == null || latestPrep.id != preparationId || prepValue.revision >= latestPrep.revision) {
+                    prepApplied = true
+                    current.copy(preparation = prepValue)
+                } else {
+                    current
+                }
+            }
+            if (!prepApplied) return@launch
             val planId = prepValue.current_plan_id
             if (planId == null) {
                 update { it.copy(plan = null, message = UiMessage("服务端尚未记录当前计划", isError = true)) }
@@ -1542,11 +1605,20 @@ class AppViewModel internal constructor(
             }
             when (val plan = repository.plan(planId)) {
                 is ApiResult.Err -> showError(plan, ctx)
-                is ApiResult.Ok -> if (isCurrent(ctx)) update {
-                    it.copy(
-                        plan = plan.value,
-                        message = UiMessage("计划摘要已刷新（未重新生成）", isError = false),
-                    )
+                is ApiResult.Ok -> if (isCurrent(ctx)) update { current ->
+                    val latestPrep = current.preparation
+                    if (latestPrep == null ||
+                        (latestPrep.id == preparationId &&
+                            plan.value.preparation_id == preparationId &&
+                            plan.value.input_revision >= latestPrep.revision)
+                    ) {
+                        current.copy(
+                            plan = plan.value,
+                            message = UiMessage("计划摘要已刷新（未重新生成）", isError = false),
+                        )
+                    } else {
+                        current
+                    }
                 }
             }
             loadInterviewForPlan(planId)
@@ -1578,18 +1650,28 @@ class AppViewModel internal constructor(
                         job.details,
                     )
                     if (isScopeCurrent(page)) {
-                        update {
-                            it.copy(
-                                planError = PlanErrorState(
-                                    code = job.code,
-                                    message = formattedMessage,
-                                    details = job.details,
-                                    rawServerMessage = job.message,
-                                    httpStatus = job.httpStatus,
-                                    retryable = job.retryable,
-                                    diagnosticContext = "POST /preparations/$preparationId/generate-plan · rev=${prep.revision}",
-                                ),
-                            )
+                        update { current ->
+                            val latestPrep = current.preparation
+                            if (latestPrep == null ||
+                                (latestPrep.id == preparationId && latestPrep.revision == prep.revision)
+                            ) {
+                                current.copy(
+                                    planError = PlanErrorState(
+                                        code = job.code,
+                                        message = formattedMessage,
+                                        details = job.details,
+                                        rawServerMessage = job.message,
+                                        httpStatus = job.httpStatus,
+                                        retryable = job.retryable,
+                                        diagnosticContext = "POST /preparations/$preparationId/generate-plan · rev=${prep.revision}",
+                                        jobId = null,
+                                        preparationId = preparationId,
+                                        inputRevision = prep.revision,
+                                    ),
+                                )
+                            } else {
+                                current
+                            }
                         }
                     }
                     showError(job.copy(message = formattedMessage), ctx, page)
@@ -1666,7 +1748,13 @@ class AppViewModel internal constructor(
             return
         }
         val entry = scopeForJob(job.kind, prep?.id, job.target_id, job.id) ?: return
-        update { it.copy(loading = true, busyLabel = "重试中…") }
+        update {
+            it.copy(
+                loading = true,
+                busyLabel = "重试中…",
+                planError = if (job.kind == "plan") null else it.planError,
+            )
+        }
         viewModelScope.launch {
             val result = performWrite(
                 ctx,
@@ -1734,12 +1822,16 @@ class AppViewModel internal constructor(
         }
     }
 
-    fun redoPreparation() {
-        val prep = state.value.preparation ?: return
-        val resumeId = state.value.resumeSnapshot?.id ?: prep.resume_snapshot_id
-        val jdId = state.value.jdSnapshot?.id ?: prep.jd_snapshot_id
+    fun redoPreparation(preparationId: String? = null) {
+        val prep = state.value.preparation?.takeIf {
+            preparationId == null || it.id == preparationId
+        } ?: return
+        // 仅使用当前准备绑定的快照，避免引用其他页面残留的 resumeSnapshot/jdSnapshot。
+        val resumeId = prep.resume_snapshot_id
+        val jdId = prep.jd_snapshot_id
         val ctx = currentRequestContext() ?: return
-        update { it.copy(loading = true, busyLabel = "重新制定…") }
+        val page = pageSnapshot() ?: return
+        update { it.copy(loading = true, busyLabel = "新建准备中…") }
         viewModelScope.launch {
             val result = performWrite(
                 ctx,
@@ -1765,20 +1857,43 @@ class AppViewModel internal constructor(
             }
             if (!isAccountCurrent(ctx)) return@launch
             when (result) {
-                is ApiResult.Err -> showError(result)
+                is ApiResult.Err -> {
+                    if (isScopeCurrent(page)) {
+                        showError(result, ctx, page)
+                    }
+                }
                 is ApiResult.Ok -> {
+                    if (!isScopeCurrent(page)) {
+                        refreshPreparations()
+                        return@launch
+                    }
                     bumpNavigation()
+                    val newCtx = currentRequestContext()
                     update {
                         it.copy(
                             preparation = result.value,
                             plan = null,
+                            planError = null,
                             matchReport = null,
+                            job = null,
+                            resumeSnapshot = null,
+                            jdSnapshot = null,
                             loading = false,
                             busyLabel = null,
                             interviewForPlan = null,
                             stack = listOf(Screen.PreparationList, Screen.Setup(result.value.id)),
-                            message = UiMessage("已新建准备，旧计划保留只读", isError = false),
+                            message = UiMessage(
+                                if (prep.current_plan_id != null) {
+                                    "已沿用材料新建准备，旧计划保留只读"
+                                } else {
+                                    "已沿用材料新建准备，旧失败记录保留只读"
+                                },
+                                isError = false,
+                            ),
                         )
+                    }
+                    if (newCtx != null) {
+                        loadSnapshotLabels(result.value, newCtx)
                     }
                     refreshPreparations()
                 }
@@ -2824,6 +2939,28 @@ class AppViewModel internal constructor(
                 ) {
                     return
                 }
+                val currentPrep = state.value.preparation
+                if (currentPrep != null &&
+                    outcome.preparation != null &&
+                    currentPrep.id == outcome.preparation.id &&
+                    outcome.preparation.revision < currentPrep.revision
+                ) {
+                    return
+                }
+                if (currentPrep != null &&
+                    outcome.matchReport != null &&
+                    currentPrep.id == outcome.matchReport.preparation_id &&
+                    outcome.matchReport.input_revision < currentPrep.revision
+                ) {
+                    return
+                }
+                if (currentPrep != null &&
+                    outcome.plan != null &&
+                    currentPrep.id == outcome.plan.preparation_id &&
+                    outcome.plan.input_revision < currentPrep.revision
+                ) {
+                    return
+                }
                 val message = when {
                     outcome.interviewReport != null -> "报告已生成"
                     outcome.interview != null && outcome.job.kind == "interview_report" -> "报告状态已更新"
@@ -2893,6 +3030,7 @@ class AppViewModel internal constructor(
                                 details = outcome.job.error?.details ?: emptyList(),
                                 retryable = outcome.job.retryable,
                                 diagnosticContext = "jobId=${outcome.job.id} · kind=${outcome.job.kind} · state=${outcome.job.state} · attempt=${outcome.job.attempt}",
+                                jobKind = outcome.job.kind,
                             ),
                         )
                     }
@@ -2904,6 +3042,21 @@ class AppViewModel internal constructor(
                     return
                 }
                 if (!InterviewUiMerge.shouldApplyJob(state.value.job, outcome.job)) return
+                val currentPrep = state.value.preparation
+                if (currentPrep != null &&
+                    outcome.job.kind in setOf("match", "plan") &&
+                    outcome.job.target_id == currentPrep.id &&
+                    outcome.job.input_revision < currentPrep.revision &&
+                    outcome.job.state != "superseded"
+                ) {
+                    return
+                }
+                if (currentPrep != null &&
+                    outcome.job.kind in setOf("match", "plan") &&
+                    outcome.job.target_id != currentPrep.id
+                ) {
+                    return
+                }
                 val isError = outcome.job.state != "queued" && outcome.job.state != "running"
                 val planErr = outcome.job.error
                 val formattedOutcomeMsg = if (outcome.job.kind == "plan" && planErr != null) {
@@ -2915,17 +3068,27 @@ class AppViewModel internal constructor(
                 update {
                     it.copy(
                         job = outcome.job,
-                        planError = if (outcome.job.kind == "plan" && outcome.job.state == "failed" && planErr != null) {
-                            PlanErrorState(
-                                code = planErr.code,
-                                message = formattedOutcomeMsg,
-                                details = planErr.details,
-                                rawServerMessage = planErr.message,
-                                retryable = outcome.job.retryable,
-                                diagnosticContext = jobCtx,
-                            )
-                        } else {
-                            it.planError
+                        planError = when {
+                            outcome.job.kind == "plan" &&
+                                outcome.job.state == "failed" &&
+                                planErr != null &&
+                                (currentPrep == null ||
+                                    (outcome.job.target_id == currentPrep.id &&
+                                        outcome.job.input_revision >= currentPrep.revision)) ->
+                                PlanErrorState(
+                                    code = planErr.code,
+                                    message = formattedOutcomeMsg,
+                                    details = planErr.details,
+                                    rawServerMessage = planErr.message,
+                                    retryable = outcome.job.retryable,
+                                    diagnosticContext = jobCtx,
+                                    jobId = outcome.job.id,
+                                    preparationId = outcome.job.target_id,
+                                    inputRevision = outcome.job.input_revision,
+                                )
+                            outcome.job.kind == "plan" &&
+                                outcome.job.state in setOf("queued", "running", "superseded") -> null
+                            else -> it.planError
                         },
                         loading = false,
                         busyLabel = null,
@@ -2937,6 +3100,7 @@ class AppViewModel internal constructor(
                             details = outcome.job.error?.details ?: emptyList(),
                             retryable = outcome.job.retryable,
                             diagnosticContext = jobCtx,
+                            jobKind = outcome.job.kind,
                         ),
                     )
                 }

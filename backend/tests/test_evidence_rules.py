@@ -332,3 +332,137 @@ def test_jd_only_hypothetical_plan_can_publish_without_project(
         assert generated[0]["question_type"] == "experience"
         assert str(generated[0]["anchors"][0]["snapshot_id"]) == jd_snapshot.json()["id"]
         assert generated[0]["anchors"][0]["item_id"] == "req-1"
+
+
+def test_match_misattributed_quote_is_rejected_while_id_selection_succeeds() -> None:
+    import httpx
+    from pathlib import Path
+    from app.ai.provider import DeepSeekProvider
+    from app.core.config import Settings
+    from app.services.evidence import profile_items, validate_anchor, validate_match_rows
+
+    resume_text = (
+        "技能：熟悉 Java 集合与并发基础。\n"
+        "项目：校园图书借阅系统，使用 ArrayList 保存借阅记录。\n"
+        "其他课程笔记：曾用 HashMap 做过词频统计。"
+    )
+    resume = type("Snap", (), {})()
+    resume.id = uuid.UUID("00000000-0000-4000-8000-000000000011")
+    resume.text = resume_text
+    resume.profile = {
+        "kind": "resume",
+        "education": [],
+        "work_experience": [],
+        "projects": [
+            {
+                "item_id": "project-1",
+                "name": "校园图书借阅系统",
+                "description": "使用 ArrayList 保存借阅记录",
+                "skill_codes": ["java.core"],
+                "evidence": {
+                    "quote": "项目：校园图书借阅系统，使用 ArrayList 保存借阅记录。",
+                    "origin": "extracted",
+                },
+            }
+        ],
+        "skills": [
+            {
+                "item_id": "skill-1",
+                "name": "Java 集合与并发",
+                "code": "java.core",
+                "evidence": {"quote": "技能：熟悉 Java 集合与并发基础。", "origin": "extracted"},
+            }
+        ],
+    }
+    jd = type("Snap", (), {})()
+    jd.id = uuid.UUID("00000000-0000-4000-8000-000000000012")
+    jd.text = "要求：掌握 Java 集合。"
+    jd.profile = {
+        "kind": "jd",
+        "role_id": "java-backend",
+        "level": "intern",
+        "title": "Java 实习",
+        "responsibilities": [
+            {
+                "item_id": "resp-1",
+                "text": "完成模块开发",
+                "evidence": {"quote": "要求：掌握 Java 集合。", "origin": "extracted"},
+            }
+        ],
+        "requirements": [
+            {
+                "item_id": "req-1",
+                "text": "掌握 Java 集合",
+                "skill_codes": ["java.core"],
+                "importance": "must",
+                "evidence": {"quote": "要求：掌握 Java 集合。", "origin": "extracted"},
+            }
+        ],
+    }
+
+    # 某句文字只出现在整份原文的其它位置：原 validate_anchor 仍拒绝把它挂到 skill-1。
+    with pytest.raises(AppError) as caught:
+        validate_anchor(
+            {
+                "snapshot_id": str(resume.id),
+                "item_id": "skill-1",
+                "quote": "其他课程笔记：曾用 HashMap 做过词频统计。",
+            },
+            snapshots={str(resume.id): resume},
+            items_by_snapshot={str(resume.id): profile_items(resume.profile)},
+            error_code="AI_INVALID_OUTPUT",
+        )
+    assert caught.value.code == "AI_INVALID_OUTPUT"
+    assert "引用原文不属于所引用的材料条目" in caught.value.message
+
+    # 模拟 DeepSeek 仅返回合适的条目 ID，后端按条目已保存原文生成 Anchor 并通过校验。
+    settings = Settings(
+        APP_ENV="test",
+        DATABASE_URL="postgresql+psycopg://mockmate@127.0.0.1:55432/mockmate_test",
+        PRIVATE_FILE_ROOT=str(Path(__file__).resolve().parents[1] / "runtime" / "test-private"),
+        AI_PROVIDER="deepseek",
+        AI_MODEL="deepseek-stub",
+        AI_API_KEY="stub-key",
+        AI_BASE_URL="https://api.deepseek.test",
+        ALLOW_TEST_FIXTURES=True,
+    )
+    provider = DeepSeekProvider(
+        settings,
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                json={
+                    "id": "req-synth",
+                    "choices": [
+                        {
+                            "message": {
+                                "content": json.dumps(
+                                    {
+                                        "rows": [
+                                            {
+                                                "requirement_id": "req-1",
+                                                "status": "supported",
+                                                "resume_item_ids": ["skill-1"],
+                                                "explanation": "技能条目直接体现 Java 集合基础。",
+                                                "suggested_focus": "说明集合底层结构与边界。",
+                                            }
+                                        ]
+                                    },
+                                    ensure_ascii=False,
+                                )
+                            }
+                        }
+                    ],
+                },
+            )
+        ),
+    )
+    rows = provider.match_requirements(resume_snapshot=resume, jd_snapshot=jd)
+    validated = validate_match_rows(rows, resume, jd)
+    assert validated[0]["resume_evidence"] == [
+        {
+            "snapshot_id": str(resume.id),
+            "item_id": "skill-1",
+            "quote": "技能：熟悉 Java 集合与并发基础。",
+        }
+    ]

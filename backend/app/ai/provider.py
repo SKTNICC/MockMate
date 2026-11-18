@@ -12,13 +12,14 @@ import os
 import time
 import uuid
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import Annotated, Any, Literal
 
 from app.core.config import Settings
 from app.core.errors import AppError
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from app.schemas import DuplicateReviewOutput, GeneratedQuestionOutput, MatchRow, ResumeProfile, JdProfile
+from app.services.evidence import profile_items
 from app.services.text import normalized_stem
 
 
@@ -97,6 +98,45 @@ def _validate(model: type[BaseModel], data: object):
             for error in exc.errors()[:4]
         ]
         raise AppError("AI_INVALID_OUTPUT", "AI 输出不符合契约结构", details=details)
+
+
+class MatchSelectionRow(BaseModel):
+    """DeepSeek 匹配阶段的内部输出行：模型只选择可引用候选 ID，不直接输出 quote 或 snapshot_id。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    requirement_id: str = Field(min_length=1)
+    status: Literal["supported", "to_verify", "not_evidenced"]
+    resume_item_ids: list[Annotated[str, Field(min_length=1)]]
+    explanation: str = Field(min_length=1)
+    suggested_focus: str = Field(min_length=1)
+
+
+class MatchSelectionOutput(BaseModel):
+    """DeepSeek 匹配阶段的内部输出契约。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    rows: list[MatchSelectionRow] = Field(min_length=1)
+
+
+def _build_match_candidates(resume_snapshot) -> tuple[list[dict], dict[str, str]]:
+    """从已确认简历快照构建单次匹配候选表及 item_id -> verbatim quote 映射。"""
+    resume_text = getattr(resume_snapshot, "text", "") or ""
+    items = profile_items(getattr(resume_snapshot, "profile", None))
+    candidates: list[dict] = []
+    quote_by_id: dict[str, str] = {}
+    for item_id, item in items.items():
+        evidence = item.get("evidence") or {}
+        quote = evidence.get("quote") if isinstance(evidence, dict) else None
+        if not isinstance(quote, str) or not quote.strip() or quote not in resume_text:
+            continue
+        quote_by_id[item_id] = quote
+        candidate = {k: v for k, v in item.items() if k != "evidence"}
+        candidate["item_id"] = item_id
+        candidate["quote"] = quote
+        candidates.append(candidate)
+    return candidates, quote_by_id
 
 
 def get_provider(settings: Settings) -> AiProvider:
@@ -704,10 +744,16 @@ class DeepSeekProvider(AiProvider):
         self._base_url = settings.ai_base_url.rstrip("/")
 
     # -- HTTP
-    def _chat_json(self, system: str, user: str) -> tuple[dict, str]:
+    def _chat_json(
+        self,
+        system: str,
+        user: str,
+        *,
+        request_options: dict[str, Any] | None = None,
+    ) -> tuple[dict, str]:
         import httpx
 
-        payload = {
+        payload: dict[str, Any] = {
             "model": self.model_id,
             "messages": [
                 {"role": "system", "content": system},
@@ -716,26 +762,40 @@ class DeepSeekProvider(AiProvider):
             "response_format": {"type": "json_object"},
             "temperature": 0.2,
         }
+        if request_options:
+            for key, value in request_options.items():
+                if value is not None:
+                    payload[key] = value
         self.last_call = {
             "provider": self.name,
             "model": self.model_id,
             "request_id": "",
             "usage": None,
+            "finish_reason": "unknown",
             "outcome": "unknown",
         }
-        try:
+
+        def _post(req_payload: dict[str, Any]) -> httpx.Response:
             client_kwargs = {"timeout": self._settings.ai_timeout_seconds}
             if self._transport is not None:
                 client_kwargs["transport"] = self._transport
             with httpx.Client(**client_kwargs) as client:
-                response = client.post(
+                return client.post(
                     f"{self._base_url}/chat/completions",
                     headers={
                         "Authorization": f"Bearer {self._settings.ai_api_key}",
                         "Content-Type": "application/json",
                     },
-                    json=payload,
+                    json=req_payload,
                 )
+
+        try:
+            response = _post(payload)
+            if response.status_code == 400 and "thinking" in payload:
+                body_lower = (response.text or "").lower()
+                if "thinking" in body_lower and "content_filter" not in body_lower:
+                    fallback_payload = {k: v for k, v in payload.items() if k != "thinking"}
+                    response = _post(fallback_payload)
         except httpx.TimeoutException:
             self.last_call["outcome"] = "timeout"
             raise AppError("AI_TIMEOUT", "AI 服务超时，结果未知")
@@ -760,10 +820,18 @@ class DeepSeekProvider(AiProvider):
             data = response.json()
         except ValueError:
             self.last_call["outcome"] = "known_invalid"
-            raise AppError("AI_INVALID_OUTPUT", "AI 服务返回的 HTTP 响应不是合法 JSON")
+            raise AppError(
+                "AI_INVALID_OUTPUT",
+                "AI 服务返回的 HTTP 响应不是合法 JSON",
+                details=["reason=invalid_json", "finish_reason=unknown"],
+            )
         if not isinstance(data, dict):
             self.last_call["outcome"] = "known_invalid"
-            raise AppError("AI_INVALID_OUTPUT", "AI 服务返回的响应形状非法")
+            raise AppError(
+                "AI_INVALID_OUTPUT",
+                "AI 服务返回的响应形状非法",
+                details=["reason=invalid_response_shape", "finish_reason=unknown"],
+            )
 
         request_id = data.get("id") or response.headers.get("x-request-id") or ""
         usage = data.get("usage")
@@ -772,21 +840,72 @@ class DeepSeekProvider(AiProvider):
 
         try:
             choices = data["choices"]
-            content = choices[0]["message"]["content"]
+            if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+                raise TypeError("invalid choices")
+            first_choice = choices[0]
+            raw_finish = first_choice.get("finish_reason")
+            finish_reason = (
+                raw_finish.strip()
+                if isinstance(raw_finish, str) and raw_finish.strip()
+                else "unknown"
+            )
+            self.last_call["finish_reason"] = finish_reason
         except (KeyError, IndexError, TypeError):
             self.last_call["outcome"] = "known_invalid"
-            raise AppError("AI_INVALID_OUTPUT", "AI 响应缺少合法的 choices/message/content")
+            raise AppError(
+                "AI_INVALID_OUTPUT",
+                "AI 响应缺少合法的 choices/message/content",
+                details=["reason=invalid_response_shape", "finish_reason=unknown"],
+            )
+
+        if finish_reason == "content_filter":
+            self.last_call["outcome"] = "request_rejected"
+            raise AppError(
+                "AI_REQUEST_REJECTED",
+                "AI 输出触发上游内容过滤",
+                details=["reason=content_filter", f"finish_reason={finish_reason}"],
+            )
+        if finish_reason == "length":
+            self.last_call["outcome"] = "known_invalid"
+            raise AppError(
+                "AI_INVALID_OUTPUT",
+                "AI 输出因达到长度上限而未完整结束",
+                details=["reason=output_truncated", f"finish_reason={finish_reason}"],
+            )
+
+        try:
+            content = first_choice["message"]["content"]
+        except (KeyError, TypeError):
+            self.last_call["outcome"] = "known_invalid"
+            raise AppError(
+                "AI_INVALID_OUTPUT",
+                "AI 响应缺少合法的 choices/message/content",
+                details=["reason=invalid_response_shape", f"finish_reason={finish_reason}"],
+            )
+
         if not isinstance(content, str) or not content.strip():
             self.last_call["outcome"] = "known_invalid"
-            raise AppError("AI_INVALID_OUTPUT", "AI 返回内容不是非空字符串")
+            raise AppError(
+                "AI_INVALID_OUTPUT",
+                "AI 返回内容不是非空字符串",
+                details=["reason=empty_content", f"finish_reason={finish_reason}"],
+            )
         try:
             parsed = json.loads(content)
         except json.JSONDecodeError:
             self.last_call["outcome"] = "known_invalid"
-            raise AppError("AI_INVALID_OUTPUT", "AI 返回内容不是合法 JSON")
+            raise AppError(
+                "AI_INVALID_OUTPUT",
+                "AI 返回内容不是合法 JSON",
+                details=["reason=invalid_json", f"finish_reason={finish_reason}"],
+            )
         if not isinstance(parsed, dict):
             self.last_call["outcome"] = "known_invalid"
-            raise AppError("AI_INVALID_OUTPUT", "AI 返回的 JSON 必须是对象")
+            raise AppError(
+                "AI_INVALID_OUTPUT",
+                "AI 返回的 JSON 必须是对象",
+                details=["reason=non_object_json", f"finish_reason={finish_reason}"],
+            )
         self.last_call["outcome"] = "success"
         return parsed, request_id
 
@@ -813,20 +932,121 @@ class DeepSeekProvider(AiProvider):
             return _validate(ResumeProfile, parsed).model_dump(mode="json")
         return _validate(JdProfile, parsed).model_dump(mode="json")
 
+    def _raise_invalid_match(self, message: str, extra_details: list[str]) -> None:
+        self.last_call["outcome"] = "known_invalid"
+        raise AppError(
+            "AI_INVALID_OUTPUT",
+            message,
+            details=["stage=match", "reason=invalid_evidence_selection", *extra_details],
+        )
+
     def match_requirements(self, *, resume_snapshot, jd_snapshot) -> list[dict]:
         from app.ai.prompts import match_prompt
 
+        candidates, quote_by_id = _build_match_candidates(resume_snapshot)
         system, user = match_prompt(
             resume_text=resume_snapshot.text,
-            resume_profile=resume_snapshot.profile,
+            resume_candidates=candidates,
             jd_profile=jd_snapshot.profile,
-            resume_snapshot_id=str(resume_snapshot.id),
         )
         parsed, _ = self._chat_json(system, user)
-        rows = parsed.get("rows") if isinstance(parsed, dict) else None
-        if not rows:
-            raise AppError("AI_INVALID_OUTPUT", "AI 未返回匹配结果")
-        return [_validate(MatchRow, row).model_dump(mode="json") for row in rows]
+        try:
+            selection = _validate(MatchSelectionOutput, parsed)
+        except AppError as exc:
+            self.last_call["outcome"] = "known_invalid"
+            raise AppError(
+                exc.code,
+                exc.message,
+                details=["stage=match", "reason=invalid_evidence_selection", *exc.details],
+            ) from exc
+
+        requirement_ids = {
+            item["item_id"]
+            for item in ((jd_snapshot.profile or {}).get("requirements") or [])
+            if isinstance(item, dict) and item.get("item_id")
+        }
+        seen_reqs: set[str] = set()
+        rows: list[dict] = []
+        for row in selection.rows:
+            if row.requirement_id not in requirement_ids:
+                self._raise_invalid_match(
+                    "匹配结果引用了不存在的 JD 要求",
+                    [f"requirement_id={row.requirement_id}"],
+                )
+            if row.requirement_id in seen_reqs:
+                self._raise_invalid_match(
+                    "匹配结果 JD 要求重复",
+                    [f"requirement_id={row.requirement_id}"],
+                )
+            seen_reqs.add(row.requirement_id)
+
+            seen_items: set[str] = set()
+            evidence: list[dict] = []
+            for item_id in row.resume_item_ids:
+                if item_id in seen_items:
+                    self._raise_invalid_match(
+                        "匹配结果引用了重复的简历条目 ID",
+                        [f"requirement_id={row.requirement_id}", f"item_id={item_id}"],
+                    )
+                if item_id not in quote_by_id:
+                    self._raise_invalid_match(
+                        "匹配结果引用了不存在或不可引用的简历条目 ID",
+                        [f"requirement_id={row.requirement_id}", f"item_id={item_id}"],
+                    )
+                seen_items.add(item_id)
+                evidence.append(
+                    {
+                        "snapshot_id": str(resume_snapshot.id),
+                        "item_id": item_id,
+                        "quote": quote_by_id[item_id],
+                    }
+                )
+
+            if row.status == "supported" and not evidence:
+                self._raise_invalid_match(
+                    "supported 匹配必须选择至少一条有效简历条目",
+                    [f"requirement_id={row.requirement_id}", "status=supported"],
+                )
+            if row.status == "not_evidenced" and evidence:
+                self._raise_invalid_match(
+                    "not_evidenced 匹配不能附带支持条目",
+                    [f"requirement_id={row.requirement_id}", "status=not_evidenced"],
+                )
+
+            rows.append(
+                MatchRow(
+                    requirement_id=row.requirement_id,
+                    status=row.status,
+                    resume_evidence=evidence,
+                    explanation=row.explanation,
+                    suggested_focus=row.suggested_focus,
+                ).model_dump(mode="json")
+            )
+
+        missing = requirement_ids - seen_reqs
+        if missing:
+            self._raise_invalid_match(
+                "匹配结果未覆盖全部 JD 要求",
+                [f"requirement_id={req_id}" for req_id in sorted(missing)[:3]],
+            )
+        return rows
+
+    def _plan_request_options(self, context: dict | None) -> dict[str, Any]:
+        options: dict[str, Any] = {}
+        thinking_mode = (self._settings.ai_plan_generate_thinking or "").strip().lower()
+        if thinking_mode in {"disabled", "enabled"}:
+            options["thinking"] = {"type": thinking_mode}
+        max_tokens = self._settings.ai_plan_generate_max_tokens
+        if isinstance(max_tokens, int) and max_tokens > 0:
+            correction = (context or {}).get("correction")
+            if isinstance(correction, dict):
+                corr_details = [str(item) for item in (correction.get("details") or [])]
+                if "reason=output_truncated" in corr_details or "finish_reason=length" in corr_details:
+                    retry_max = self._settings.ai_plan_generate_retry_max_tokens
+                    if isinstance(retry_max, int) and retry_max > max_tokens:
+                        max_tokens = retry_max
+            options["max_tokens"] = max_tokens
+        return options
 
     def generate_questions(
         self,
@@ -852,11 +1072,38 @@ class DeepSeekProvider(AiProvider):
             avoid_stems=avoid_stems,
             context=context,
         )
-        parsed, _ = self._chat_json(system, user)
+        parsed, _ = self._chat_json(
+            system,
+            user,
+            request_options=self._plan_request_options(context),
+        )
+        finish_reason = self.last_call.get("finish_reason") or "unknown"
         items = parsed.get("questions") if isinstance(parsed, dict) else None
-        if not items:
-            raise AppError("AI_INVALID_OUTPUT", "AI 未返回生成题")
-        return [_validate(GeneratedQuestionOutput, item).model_dump(mode="json") for item in items]
+        if not isinstance(items, list) or not items:
+            self.last_call["outcome"] = "known_invalid"
+            raise AppError(
+                "AI_INVALID_OUTPUT",
+                "AI 未返回生成题",
+                details=["reason=invalid_question_schema", f"finish_reason={finish_reason}"],
+            )
+        validated: list[dict] = []
+        for item in items:
+            try:
+                validated.append(
+                    _validate(GeneratedQuestionOutput, item).model_dump(mode="json")
+                )
+            except AppError as exc:
+                self.last_call["outcome"] = "known_invalid"
+                raise AppError(
+                    exc.code,
+                    exc.message,
+                    details=[
+                        "reason=invalid_question_schema",
+                        f"finish_reason={finish_reason}",
+                        *exc.details,
+                    ],
+                ) from exc
+        return validated
 
     def review_questions(
         self,
