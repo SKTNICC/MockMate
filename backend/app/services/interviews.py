@@ -16,6 +16,7 @@ from typing import Iterable
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
+from app.core.db import read_snapshot_session
 from app.core.errors import AppError
 from app.models import (
     InterviewAnswer,
@@ -55,7 +56,7 @@ OPENING_VERSION = "m2-opening-v1"
 CLOSING_VERSION = "m2-closing-v1"
 RUBRIC_POLICY_VERSION = "m2-rubric-policy-v1"
 FOLLOW_UP_PROMPT_VERSION = "m2-follow-up-v1"
-SCORE_PROMPT_VERSION = "m2-score-v1"
+SCORE_PROMPT_VERSION = "m2-score-v2"
 MAX_ANSWER_CODEPOINTS = 4000
 EXPRESSION_DIMENSION_ID = "expression_structure"
 EXPRESSION_DIMENSION_NAME = "表达结构"
@@ -519,10 +520,19 @@ def build_detail(db: Session, session: InterviewSession, max_attempts: int) -> I
 
 
 def get_detail(
-    db: Session, *, owner_id: uuid.UUID, session_id: uuid.UUID, max_attempts: int
+    *,
+    owner_id: uuid.UUID,
+    session_id: uuid.UUID,
+    max_attempts: int,
 ) -> InterviewDetail:
-    session = _session_for_owner(db, owner_id, session_id)
-    return build_detail(db, session, max_attempts)
+    """所有详情字段从同一个 REPEATABLE READ 只读快照生成。
+
+    路由先结束鉴权只读事务并归还连接，这里再建立独立只读快照连接，
+    从归属检查开始保持一致读视图，worker 在读取子表期间提交的新状态不会混入本响应。
+    """
+    with read_snapshot_session() as snapshot:
+        session = _session_for_owner(snapshot, owner_id, session_id)
+        return build_detail(snapshot, session, max_attempts)
 
 
 # --------------------------------------------------------------------------- 历史记录
@@ -1180,13 +1190,57 @@ def _expected_dimensions(question: InterviewQuestion) -> list[dict]:
     return dims
 
 
+def _ordered_question_turns(
+    turns: list[InterviewTurn],
+) -> list[InterviewTurn]:
+    """按实际曝光顺序排列同一主问题的回合；时间相同则主问题优先。"""
+    fallback = datetime.min.replace(tzinfo=timezone.utc)
+    return sorted(
+        turns,
+        key=lambda turn: (
+            turn.presented_at or fallback,
+            turn.kind != "main",
+            str(turn.id),
+        ),
+    )
+
+
 def question_slot_hash(question: InterviewQuestion, turns: list[InterviewTurn], answers: dict) -> str:
-    parts = [str(question.id), question.stem, str((question.evaluation or {}).get("rubric"))]
-    for turn in sorted(turns, key=lambda t: (t.kind, str(t.id))):
-        answer = answers.get(turn.id)
-        parts.append(f"{turn.kind}:{turn.id}:{_sha256(answer.text) if answer else 'skipped'}")
-    parts.extend([RUBRIC_POLICY_VERSION, SCORE_PROMPT_VERSION])
-    return _sha256("|".join(parts))
+    """评分槽位的稳定内容标识。
+
+    题干、回合顺序、回答标识与原文摘要、评分口径和提示词版本全部纳入确定性 JSON；
+    worker 查缓存与发布事务重核使用同一规则。旧版本槽位不会与新 hash 命中。
+    """
+    ordered = _ordered_question_turns(turns)
+    payload = {
+        "question_id": str(question.id),
+        "position": question.position,
+        "source": question.source,
+        "stem": question.stem,
+        "dimensions": _expected_dimensions(question),
+        "rubric_policy_version": RUBRIC_POLICY_VERSION,
+        "score_prompt_version": SCORE_PROMPT_VERSION,
+        "turns": [
+            {
+                "order": index,
+                "turn_id": str(turn.id),
+                "kind": turn.kind,
+                "prompt": turn.prompt,
+                "answer_id": str(answers[turn.id].id) if turn.id in answers else None,
+                "answer_sha256": (
+                    _sha256(answers[turn.id].text) if turn.id in answers else None
+                ),
+            }
+            for index, turn in enumerate(ordered)
+        ],
+    }
+    canonical = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return _sha256(canonical)
 
 
 def validate_question_score(
@@ -1243,7 +1297,7 @@ def validate_question_score(
                     InterviewEvidence(answer_id=anchor.answer_id, quote=anchor.quote)
                 )
             if not valid:
-                # 无效引文降为受限维度，清掉分数、引文和依赖失效引文的结论。
+                # 无效引文降为受限维度，清掉分数、引文和依赖失效引文的结论与建议。
                 results.append(
                     InterviewDimensionResult(
                         dimension_id=item.dimension_id,
@@ -1252,8 +1306,8 @@ def validate_question_score(
                         verdict="uncertain",
                         score=None,
                         evidence=[],
-                        explanation="评分引文无法在本场本题原回答中逐字定位，已降为受限结果。",
-                        improvement=item.improvement,
+                        explanation="原回答无法定位引文，已降为受限结果；该维度的建议一并撤回。",
+                        improvement="",
                     )
                 )
                 continue
@@ -1321,9 +1375,7 @@ def _report_questions(
         turns_by_question.setdefault(turn.question_id, []).append(turn)
     items: list[InterviewReportQuestion] = []
     for question in questions:
-        question_turns = sorted(
-            turns_by_question.get(question.id, []), key=lambda t: (t.kind != "main", t.presented_at)
-        )
+        question_turns = _ordered_question_turns(turns_by_question.get(question.id, []))
         outcome = question.status
         if outcome == "current":
             outcome = "unanswered"
@@ -1565,7 +1617,9 @@ def publish_report_from_work(
         item = work_items.get(str(question.id))
         if item is None:
             raise AppError("INTERVIEW_STATE_INVALID", "评分结果不完整，不能发布报告")
-        question_turns = [t for t in turns if t.question_id == question.id]
+        question_turns = _ordered_question_turns(
+            [t for t in turns if t.question_id == question.id]
+        )
         question_answers = {
             t.id: answers[t.id] for t in question_turns if t.id in answers
         }

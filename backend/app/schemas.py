@@ -206,6 +206,15 @@ class Roles(ContractModel):
     items: list[Role] = Field(default_factory=list)
 
 
+class SkillCode(ContractModel):
+    code: str = Field(min_length=1)
+    label: str = Field(min_length=1)
+
+
+class SkillCodes(ContractModel):
+    items: list[SkillCode] = Field(default_factory=list)
+
+
 class JdTemplate(ContractModel):
     id: str = Field(min_length=1)
     version: int = Field(ge=1)

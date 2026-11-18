@@ -17,6 +17,11 @@
     "java.concurrency",
     "test.junit"
   ],
+  "skill_code_labels": {
+    "java.core": "Java 基础",
+    "java.concurrency": "Java 并发",
+    "test.junit": "JUnit 测试"
+  },
   "jd_templates": [
     {
       "id": "java-backend-intern-v1",

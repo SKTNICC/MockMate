@@ -16,11 +16,30 @@ data class StoredSession(
     val token: String,
 )
 
+interface SessionStore {
+    fun save(session: StoredSession): Boolean
+    fun load(): StoredSession?
+    fun clear()
+}
+
+class InMemorySessionStore(private var stored: StoredSession? = null) : SessionStore {
+    override fun save(session: StoredSession): Boolean {
+        stored = session
+        return true
+    }
+
+    override fun load(): StoredSession? = stored
+
+    override fun clear() {
+        stored = null
+    }
+}
+
 /**
  * token 只在 Android Keystore 支持的 AES/GCM 加密后落盘；不写日志。
  * 退出登录立即清除；换账号不会读到上一个账号的 token。
  */
-class SecureSessionStore(context: Context) {
+class SecureSessionStore(context: Context) : SessionStore {
     private val prefs = context.getSharedPreferences("mockmate_session", Context.MODE_PRIVATE)
 
     private fun keyStore(): KeyStore = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
@@ -42,7 +61,7 @@ class SecureSessionStore(context: Context) {
         return generator.generateKey()
     }
 
-    fun save(session: StoredSession): Boolean = runCatching {
+    override fun save(session: StoredSession): Boolean = runCatching {
         val cipher = Cipher.getInstance(TRANSFORMATION)
         cipher.init(Cipher.ENCRYPT_MODE, secretKey())
         val payload = buildString {
@@ -56,7 +75,7 @@ class SecureSessionStore(context: Context) {
         true
     }.getOrDefault(false)
 
-    fun load(): StoredSession? = runCatching {
+    override fun load(): StoredSession? = runCatching {
         val blob = prefs.getString(KEY_SESSION, null) ?: return null
         val raw = Base64.decode(blob, Base64.NO_WRAP)
         if (raw.size <= IV_BYTES) return null
@@ -69,7 +88,7 @@ class SecureSessionStore(context: Context) {
         StoredSession(payload[0], payload[1], payload[2])
     }.getOrNull()
 
-    fun clear() {
+    override fun clear() {
         prefs.edit().remove(KEY_SESSION).apply()
     }
 
@@ -82,7 +101,7 @@ class SecureSessionStore(context: Context) {
 }
 
 /** 进程内当前会话；token 只供网络层读取。 */
-class SessionManager(private val store: SecureSessionStore) : com.mockmate.app.core.network.TokenProvider {
+class SessionManager(private val store: SessionStore) : com.mockmate.app.core.network.TokenProvider {
     @Volatile
     var current: StoredSession? = null
         private set

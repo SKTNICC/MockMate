@@ -55,6 +55,7 @@ def test_missing_idempotency_key_is_rejected(client: TestClient) -> None:
 
 def test_unauthenticated_requests(client: TestClient) -> None:
     assert client.get("/v1/materials").status_code == 401
+    assert client.get("/v1/skill-codes").status_code == 401
     response = client.get("/v1/roles", headers={"Authorization": "Bearer nope"})
     assert response.status_code == 401
     assert response.json()["error"]["code"] == "UNAUTHENTICATED"

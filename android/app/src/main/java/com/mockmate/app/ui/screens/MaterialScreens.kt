@@ -1,8 +1,12 @@
 package com.mockmate.app.ui.screens
 
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -13,15 +17,22 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.InputChip
+import androidx.compose.material3.InputChipDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -34,20 +45,22 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import com.mockmate.app.core.network.JdTemplateDto
 import com.mockmate.app.core.network.MaterialDraftDto
+import com.mockmate.app.core.network.SkillCodeDto
 import com.mockmate.app.core.network.SnapshotDto
 import com.mockmate.app.ui.AppState
 import com.mockmate.app.ui.AppViewModel
+import com.mockmate.app.ui.SkillCatalogStatus
 import com.mockmate.app.ui.components.ConsentDialog
 import com.mockmate.app.ui.components.EmptyHint
 import com.mockmate.app.ui.components.InfoCard
 import com.mockmate.app.ui.components.JobRecoveryActions
 import com.mockmate.app.ui.components.KeyValueRow
-import com.mockmate.app.ui.components.MessageBanner
 import com.mockmate.app.ui.components.PrimaryAction
 import com.mockmate.app.ui.components.SecondaryAction
 import com.mockmate.app.ui.components.StatusChip
@@ -298,7 +311,7 @@ private fun TemplateCard(template: JdTemplateDto, onUse: () -> Unit) {
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun ReviewScreen(
     vm: AppViewModel,
@@ -309,14 +322,31 @@ fun ReviewScreen(
     val material = state.material?.takeIf { it.id == materialId }
     val kind = material?.kind ?: "resume"
     val prep = state.preparation
-    val items = remember(material?.id, material?.revision, material?.profile) {
+    val items = remember(material?.id, material?.revision) {
         mutableStateListOf<ItemDraft>().apply { addAll(ProfileDraftCodec.parse(material?.profile, kind)) }
     }
+    var hasManualEdits by remember(material?.id, material?.revision) { mutableStateOf(false) }
+    var appliedProfile by remember(material?.id, material?.revision) { mutableStateOf(material?.profile) }
     var showParseConsent by rememberSaveable { mutableStateOf(false) }
-    var jdTitle by rememberSaveable(material?.id) { mutableStateOf(material?.title ?: "") }
+    var jdTitle by rememberSaveable(material?.id, material?.revision) { mutableStateOf(material?.title ?: "") }
 
     LaunchedEffect(material?.title) {
         if (material != null && jdTitle.isBlank()) jdTitle = material.title
+    }
+    LaunchedEffect(material?.id, material?.revision, material?.profile) {
+        val incoming = material?.profile
+        if (incoming != null && incoming != appliedProfile) {
+            if (!hasManualEdits || items.isEmpty()) {
+                items.clear()
+                items.addAll(ProfileDraftCodec.parse(incoming, kind))
+                hasManualEdits = false
+            }
+            appliedProfile = incoming
+        }
+    }
+
+    val skillCatalogMap = remember(state.skillCodes) {
+        state.skillCodes.associateBy { it.code }
     }
 
     Scaffold(
@@ -382,17 +412,44 @@ fun ReviewScreen(
                         val sectionItems = items.withIndex().filter { it.value.section == section }
                         sectionItems.forEach { indexed ->
                             val item = indexed.value
+                            val resolvedId = ProfileDraftCodec.resolvedItemId(item, items)
+                            val isFlaggedInvalid = state.invalidSkillItemId != null &&
+                                state.invalidSkillItemId == resolvedId
+                            val bringIntoViewRequester = remember(resolvedId) { BringIntoViewRequester() }
+                            LaunchedEffect(state.invalidSkillFocusNonce, isFlaggedInvalid) {
+                                if (isFlaggedInvalid) {
+                                    bringIntoViewRequester.bringIntoView()
+                                }
+                            }
                             ProfileItemEditor(
                                 item = item,
                                 kind = kind,
-                                onChange = { updated -> items[indexed.index] = updated },
-                                onRemove = { items.removeAt(indexed.index) },
+                                availableSkills = state.skillCodes,
+                                skillCatalogMap = skillCatalogMap,
+                                catalogStatus = state.skillCatalogStatus,
+                                catalogError = state.skillCatalogError,
+                                isFlaggedInvalid = isFlaggedInvalid,
+                                onReloadCatalog = { vm.refreshSkillCodes() },
+                                onChange = { updated ->
+                                    hasManualEdits = true
+                                    if (isFlaggedInvalid && updated.skillCodes != item.skillCodes) {
+                                        vm.clearInvalidSkillHighlight()
+                                    }
+                                    items[indexed.index] = updated
+                                },
+                                onRemove = {
+                                    hasManualEdits = true
+                                    if (isFlaggedInvalid) vm.clearInvalidSkillHighlight()
+                                    items.removeAt(indexed.index)
+                                },
                                 defaultQuote = material.text?.lineSequence()?.firstOrNull { it.isNotBlank() }?.take(60) ?: "",
+                                modifier = Modifier.bringIntoViewRequester(bringIntoViewRequester),
                             )
                         }
                         Spacer(Modifier.height(4.dp))
                         AssistChip(
                             onClick = {
+                                hasManualEdits = true
                                 val firstLine =
                                     material.text?.lineSequence()?.firstOrNull { it.isNotBlank() }?.take(60) ?: ""
                                 items.add(
@@ -480,19 +537,37 @@ fun ReviewScreen(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun ProfileItemEditor(
     item: ItemDraft,
     kind: String,
+    availableSkills: List<SkillCodeDto>,
+    skillCatalogMap: Map<String, SkillCodeDto>,
+    catalogStatus: SkillCatalogStatus,
+    catalogError: String?,
+    isFlaggedInvalid: Boolean,
+    onReloadCatalog: () -> Unit,
     onChange: (ItemDraft) -> Unit,
     onRemove: () -> Unit,
     defaultQuote: String,
+    modifier: Modifier = Modifier,
 ) {
+    var showSkillPicker by remember { mutableStateOf(false) }
+
     Column(
-        Modifier
+        modifier
             .fillMaxWidth()
             .padding(vertical = 6.dp),
     ) {
+        if (isFlaggedInvalid) {
+            Text(
+                "此条目包含已失效或未启用的技能标签，请移除或替换后重新确认。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+            )
+            Spacer(Modifier.height(4.dp))
+        }
         fieldSpecs(kind, item.section).forEach { spec ->
             OutlinedTextField(
                 value = item.fields[spec.key].orEmpty(),
@@ -505,13 +580,20 @@ private fun ProfileItemEditor(
             )
             Spacer(Modifier.height(4.dp))
         }
-        if (item.section == "projects" || item.section == "requirements") {
-            OutlinedTextField(
-                value = item.skillCodes,
-                onValueChange = { onChange(item.copy(skillCodes = it)) },
-                label = { Text("技能码（逗号分隔，可空）") },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
+        if (supportsSkillSelection(item.section)) {
+            SkillAssociationEditor(
+                selectedCodes = item.skillCodes,
+                multiSelect = allowsMultipleSkills(item.section),
+                availableSkills = availableSkills,
+                skillCatalogMap = skillCatalogMap,
+                catalogStatus = catalogStatus,
+                catalogError = catalogError,
+                onReloadCatalog = onReloadCatalog,
+                onOpenPicker = { showSkillPicker = true },
+                onRemoveCode = { code ->
+                    onChange(item.copy(skillCodes = item.skillCodes.filterNot { it == code }))
+                },
+                onClearAll = { onChange(item.copy(skillCodes = emptyList())) },
             )
             Spacer(Modifier.height(4.dp))
         }
@@ -536,6 +618,218 @@ private fun ProfileItemEditor(
             TextButton(onClick = onRemove) { Text("删除") }
         }
     }
+
+    if (showSkillPicker) {
+        SkillPickerDialog(
+            multiSelect = allowsMultipleSkills(item.section),
+            initialSelection = item.skillCodes,
+            availableSkills = availableSkills,
+            onConfirm = { nextCodes ->
+                onChange(item.copy(skillCodes = nextCodes))
+                showSkillPicker = false
+            },
+            onDismiss = { showSkillPicker = false },
+        )
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun SkillAssociationEditor(
+    selectedCodes: List<String>,
+    multiSelect: Boolean,
+    availableSkills: List<SkillCodeDto>,
+    skillCatalogMap: Map<String, SkillCodeDto>,
+    catalogStatus: SkillCatalogStatus,
+    catalogError: String?,
+    onReloadCatalog: () -> Unit,
+    onOpenPicker: () -> Unit,
+    onRemoveCode: (String) -> Unit,
+    onClearAll: () -> Unit,
+) {
+    Text("关联技能（可选）", style = MaterialTheme.typography.labelMedium)
+    Spacer(Modifier.height(4.dp))
+    val hasUnavailableTag = catalogStatus == SkillCatalogStatus.LOADED &&
+        selectedCodes.any { skillCatalogMap[it] == null }
+    if (selectedCodes.isNotEmpty()) {
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            selectedCodes.forEach { code ->
+                val matched = skillCatalogMap[code]
+                val unavailable = catalogStatus == SkillCatalogStatus.LOADED && matched == null
+                val label = when {
+                    matched != null -> matched.label
+                    unavailable -> "不可用标签"
+                    else -> "已选技能"
+                }
+                InputChip(
+                    selected = !unavailable,
+                    onClick = { onRemoveCode(code) },
+                    label = { Text(label) },
+                    trailingIcon = { Text("×") },
+                    colors = if (unavailable) {
+                        InputChipDefaults.inputChipColors(
+                            containerColor = MaterialTheme.colorScheme.errorContainer,
+                            labelColor = MaterialTheme.colorScheme.onErrorContainer,
+                            trailingIconColor = MaterialTheme.colorScheme.onErrorContainer,
+                        )
+                    } else {
+                        InputChipDefaults.inputChipColors()
+                    },
+                )
+            }
+        }
+        if (hasUnavailableTag) {
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "此技能标签已不可用，请移除或替换。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+            )
+        }
+        Spacer(Modifier.height(4.dp))
+    }
+
+    when (catalogStatus) {
+        SkillCatalogStatus.IDLE, SkillCatalogStatus.LOADING -> {
+            Text(
+                "正在加载可选技能…",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        SkillCatalogStatus.FAILED -> {
+            Text(
+                "技能目录加载失败：${catalogError ?: "请稍后重试"}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                AssistChip(onClick = onReloadCatalog, label = { Text("重新加载技能") })
+                if (selectedCodes.isNotEmpty()) {
+                    TextButton(onClick = onClearAll) { Text("清除已选") }
+                }
+            }
+        }
+        SkillCatalogStatus.LOADED -> {
+            if (availableSkills.isEmpty()) {
+                Text(
+                    "当前没有可用的技能标签。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                if (selectedCodes.isNotEmpty()) {
+                    TextButton(onClick = onClearAll) { Text("移除标签") }
+                }
+            } else {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    val actionLabel = when {
+                        hasUnavailableTag -> "替换技能"
+                        multiSelect || selectedCodes.isEmpty() -> "选择技能"
+                        else -> "更换技能"
+                    }
+                    AssistChip(onClick = onOpenPicker, label = { Text(actionLabel) })
+                    if (selectedCodes.isNotEmpty()) {
+                        TextButton(onClick = onClearAll) { Text("清除") }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SkillPickerDialog(
+    multiSelect: Boolean,
+    initialSelection: List<String>,
+    availableSkills: List<SkillCodeDto>,
+    onConfirm: (List<String>) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val availableCodeSet = remember(availableSkills) {
+        availableSkills.map { it.code }.toSet()
+    }
+    var query by remember { mutableStateOf("") }
+    var draftSelection by remember(initialSelection) {
+        mutableStateOf(sanitizeSkillSelection(initialSelection, availableCodeSet, multiSelect))
+    }
+    val filtered = remember(query, availableSkills) {
+        val needle = query.trim()
+        if (needle.isBlank()) availableSkills
+        else availableSkills.filter { it.label.contains(needle, ignoreCase = true) }
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(if (multiSelect) "选择关联技能（可多选）" else "选择关联技能（单选）") },
+        text = {
+            Column(Modifier.fillMaxWidth()) {
+                OutlinedTextField(
+                    value = query,
+                    onValueChange = { query = it },
+                    label = { Text("搜索技能") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(Modifier.height(8.dp))
+                if (filtered.isEmpty()) {
+                    Text(
+                        "没有匹配的技能标签",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                } else {
+                    Column(
+                        Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 260.dp)
+                            .verticalScroll(rememberScrollState()),
+                    ) {
+                        filtered.forEach { skill ->
+                            val selected = skill.code in draftSelection
+                            val toggle = {
+                                draftSelection = if (multiSelect) {
+                                    if (selected) draftSelection - skill.code
+                                    else (draftSelection + skill.code).distinct()
+                                } else {
+                                    if (selected) emptyList() else listOf(skill.code)
+                                }
+                            }
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { toggle() }
+                                    .padding(vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                if (multiSelect) {
+                                    Checkbox(checked = selected, onCheckedChange = { toggle() })
+                                } else {
+                                    RadioButton(selected = selected, onClick = toggle)
+                                }
+                                Text(skill.label, style = MaterialTheme.typography.bodyMedium)
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    onConfirm(sanitizeSkillSelection(draftSelection, availableCodeSet, multiSelect))
+                },
+            ) { Text("确定") }
+        },
+        dismissButton = {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                TextButton(onClick = { draftSelection = emptyList() }) { Text("清空") }
+                TextButton(onClick = onDismiss) { Text("取消") }
+            }
+        },
+    )
 }
 
 @Composable

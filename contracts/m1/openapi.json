@@ -626,6 +626,125 @@
         }
       }
     },
+    "/skill-codes": {
+      "get": {
+        "operationId": "listSkillCodes",
+        "summary": "可用技能词表",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillCodes"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "统一错误；具体code与语义见M1架构说明",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "统一错误；具体code与语义见M1架构说明",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "统一错误；具体code与语义见M1架构说明",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "统一错误；具体code与语义见M1架构说明",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "统一错误；具体code与语义见M1架构说明",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "统一错误；具体code与语义见M1架构说明",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "统一错误；具体code与语义见M1架构说明",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "统一错误；具体code与语义见M1架构说明",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "统一错误；具体code与语义见M1架构说明",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "统一错误；具体code与语义见M1架构说明",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/jd-templates": {
       "get": {
         "operationId": "listJdTemplates",
@@ -8592,6 +8711,24 @@
           "sample_only"
         ]
       },
+      "SkillCode": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "type": "string",
+            "minLength": 1
+          },
+          "label": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "code",
+          "label"
+        ]
+      },
       "JdTemplate": {
         "type": "object",
         "additionalProperties": false,
@@ -8650,6 +8787,22 @@
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/Role"
+            },
+            "minItems": 0
+          }
+        },
+        "required": [
+          "items"
+        ]
+      },
+      "SkillCodes": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SkillCode"
             },
             "minItems": 0
           }

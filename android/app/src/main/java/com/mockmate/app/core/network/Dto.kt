@@ -45,6 +45,15 @@ data class RoleDto(
 data class RolesResponse(val items: List<RoleDto>)
 
 @Serializable
+data class SkillCodeDto(
+    val code: String,
+    val label: String,
+)
+
+@Serializable
+data class SkillCodesResponse(val items: List<SkillCodeDto>)
+
+@Serializable
 data class EvidenceDto(val quote: String, val origin: String = "extracted")
 
 @Serializable

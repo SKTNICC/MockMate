@@ -107,6 +107,7 @@ def test_auth_and_material_shapes(client: TestClient) -> None:
     )
     validate("Snapshot", snapshot.json())
     validate("Roles", client.get("/v1/roles", headers=auth(token)).json())
+    validate("SkillCodes", client.get("/v1/skill-codes", headers=auth(token)).json())
     validate("JdTemplates", client.get("/v1/jd-templates", headers=auth(token)).json())
 
 

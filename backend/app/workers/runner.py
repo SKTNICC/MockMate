@@ -53,6 +53,7 @@ from app.services.text import (
     detect_jd_level_conflict,
     extract_text_from_file,
     normalized_stem,
+    sanitize_profile_skill_codes,
     validate_profile,
 )
 
@@ -315,7 +316,11 @@ class JobWorker:
             kind = draft.kind
             role_id = job.input_payload.get("role_id")
             level = job.input_payload.get("level")
-            allowed_skill_codes = catalog.allowed_skill_codes(db)
+            enabled_skills = catalog.list_skill_codes(db)
+            skill_catalog = [
+                {"code": item.code, "label": item.label} for item in enabled_skills
+            ]
+            allowed_skill_codes = {item.code for item in enabled_skills}
         finally:
             db.close()
 
@@ -338,7 +343,9 @@ class JobWorker:
             kind=kind,
             role_id=role_id,
             level=level,
+            skill_catalog=skill_catalog,
         )
+        removed_tags = sanitize_profile_skill_codes(profile, allowed_skill_codes)
         validate_profile(
             profile,
             kind,
@@ -361,6 +368,21 @@ class JobWorker:
             if draft.revision != job.input_revision or draft.profile is not None:
                 jobs_service.supersede_job(fenced)
             else:
+                latest_allowed = catalog.allowed_skill_codes(db)
+                removed_tags += sanitize_profile_skill_codes(profile, latest_allowed)
+                validate_profile(
+                    profile,
+                    kind,
+                    text,
+                    allow_user_confirmed=False,
+                    allowed_skill_codes=latest_allowed,
+                )
+                if removed_tags > 0:
+                    LOG.info(
+                        "parse sanitized skill tags job=%s removed=%d",
+                        job.id,
+                        removed_tags,
+                    )
                 draft.profile = profile
                 draft.state = "parsed"
                 draft.updated_at = _now()
@@ -919,9 +941,8 @@ class JobWorker:
             for question in questions:
                 if question.status != "answered":
                     continue
-                question_turns = sorted(
-                    [t for t in turns if t.question_id == question.id],
-                    key=lambda t: (t.kind != "main", str(t.id)),
+                question_turns = interviews_service._ordered_question_turns(
+                    [t for t in turns if t.question_id == question.id]
                 )
                 question_answers = {
                     t.id: answers[t.id] for t in question_turns if t.id in answers
@@ -943,6 +964,7 @@ class JobWorker:
                 {
                     "answer_id": str(question_answers[t.id].id),
                     "kind": t.kind,
+                    "prompt": t.prompt,
                     "text": question_answers[t.id].text,
                 }
                 for t in question_turns

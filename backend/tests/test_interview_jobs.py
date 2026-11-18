@@ -48,6 +48,7 @@ class StubProvider:
             "usage": None,
         }
         self.score_calls: list[str] = []
+        self.score_arguments: list[tuple[dict, list[dict], list[dict]]] = []
 
     def decide_follow_up(self, *, question, answer_text, context=None):
         self.last_call = {**self.last_call, "request_id": "stub-decide"}
@@ -56,6 +57,7 @@ class StubProvider:
     def score_interview_question(self, *, question, answers, dimensions):
         self.last_call = {**self.last_call, "request_id": f"stub-score-{question['id']}"}
         self.score_calls.append(question["id"])
+        self.score_arguments.append((question, answers, dimensions))
         return self._score(question=question, answers=answers, dimensions=dimensions)
 
 
@@ -181,7 +183,10 @@ def test_report_scoring_quote_validation_and_dimension_contract(
     )
     assert len(validated) == len(dims)
     assert all(dim.verdict == "uncertain" for dim in validated)
-    assert all(dim.score is None and dim.evidence == [] for dim in validated)
+    assert all(
+        dim.score is None and dim.evidence == [] and dim.improvement == ""
+        for dim in validated
+    )
 
     fake_quote = {
         "question_id": str(q1.id),
@@ -203,6 +208,10 @@ def test_report_scoring_quote_validation_and_dimension_contract(
         q1, q1_turns, q1_answers, fake_quote
     )
     assert all(dim.verdict == "uncertain" for dim in downgraded)
+    assert all(
+        dim.score is None and dim.evidence == [] and dim.improvement == ""
+        for dim in downgraded
+    )
 
     missing = {
         "question_id": str(q1.id),
@@ -384,3 +393,184 @@ def test_late_follow_up_after_early_finish_is_not_applied(
     assert all(turn["kind"] == "main" for turn in after["transcript"])
     job = client.get(f"/v1/jobs/{job_id}", headers=auth(token)).json()
     assert job["state"] == "superseded"
+
+
+def test_score_input_carries_each_turn_prompt_and_hash_is_versioned(
+    client: TestClient, worker, monkeypatch, db
+) -> None:
+    _, token = issue_token(client)
+    _prep, plan = create_confirmed_plan(client, token, worker, count=2)
+    session_id = start_interview(client, token, plan)["session_id"]
+    final = complete_six_question_interview(client, token, worker, session_id)
+    assert final["status"] == "ended"
+    assert final["report_job"] is not None
+
+    session_uuid = uuid.UUID(session_id)
+    questions = db.scalars(
+        select(InterviewQuestion)
+        .where(InterviewQuestion.session_id == session_uuid)
+        .order_by(InterviewQuestion.position)
+    ).all()
+    turns = db.scalars(
+        select(InterviewTurn).where(
+            InterviewTurn.question_id.in_([q.id for q in questions])
+        )
+    ).all()
+    answers = {
+        row.turn_id: row
+        for row in db.scalars(
+            select(InterviewAnswer).where(
+                InterviewAnswer.turn_id.in_([t.id for t in turns])
+            )
+        ).all()
+    }
+    expected: dict[str, list[tuple[str, str, str, str]]] = {}
+    for question in questions:
+        ordered = interviews_service._ordered_question_turns(
+            [t for t in turns if t.question_id == question.id]
+        )
+        expected[str(question.id)] = [
+            (str(answers[t.id].id), t.kind, t.prompt, answers[t.id].text)
+            for t in ordered
+            if t.id in answers
+        ]
+
+    base = TestProvider()
+    capturing = StubProvider(
+        score=lambda *, question, answers, dimensions: base.score_interview_question(
+            question=question, answers=answers, dimensions=dimensions
+        )
+    )
+    monkeypatch.setattr("app.workers.runner.get_provider", lambda _settings: capturing)
+    job = wait_job(client, token, final["report_job"]["id"], worker, attempts=4)
+    assert job["state"] == "succeeded", job
+
+    captured = {question["id"]: answers for question, answers, _ in capturing.score_arguments}
+    for question_id, rows in expected.items():
+        assert captured[question_id] == [
+            {
+                "answer_id": answer_id,
+                "kind": kind,
+                "prompt": prompt,
+                "text": text,
+            }
+            for answer_id, kind, prompt, text in rows
+        ]
+
+    followed = [
+        rows for rows in expected.values() if any(kind == "follow_up" for _, kind, _, _ in rows)
+    ]
+    assert followed, "test provider 应至少为两类来源各产生一次追问"
+    for rows in followed:
+        main_prompt = next(prompt for _, kind, prompt, _ in rows if kind == "main")
+        follow_prompt = next(prompt for _, kind, prompt, _ in rows if kind == "follow_up")
+        assert main_prompt != follow_prompt
+
+    q1 = questions[0]
+    q1_turns = [t for t in turns if t.question_id == q1.id]
+    q1_answers = {t.id: answers[t.id] for t in q1_turns if t.id in answers}
+    first = interviews_service.question_slot_hash(q1, q1_turns, q1_answers)
+    again = interviews_service.question_slot_hash(q1, list(reversed(q1_turns)), q1_answers)
+    assert first == again
+    monkeypatch.setattr(
+        interviews_service, "SCORE_PROMPT_VERSION", "m2-score-v1"
+    )
+    old_version = interviews_service.question_slot_hash(q1, q1_turns, q1_answers)
+    assert old_version != first
+
+
+def test_legacy_score_slot_is_not_reused_after_prompt_version_change(
+    client: TestClient, worker, monkeypatch, db
+) -> None:
+    _, token = issue_token(client)
+    _prep, plan = create_confirmed_plan(client, token, worker, count=2)
+    session_id = start_interview(client, token, plan)["session_id"]
+    final = complete_six_question_interview(client, token, worker, session_id)
+    report_job_id = uuid.UUID(final["report_job"]["id"])
+    q1 = db.scalars(
+        select(InterviewQuestion)
+        .where(
+            InterviewQuestion.session_id == uuid.UUID(session_id),
+            InterviewQuestion.position == 1,
+        )
+    ).one()
+    db.add(
+        JobWorkItem(
+            job_id=report_job_id,
+            slot_key=str(q1.id),
+            payload={"dimensions": []},
+            content_hash="legacy-m2-score-v1-hash",
+            validated=True,
+        )
+    )
+    db.commit()
+
+    base = TestProvider()
+    capturing = StubProvider(
+        score=lambda *, question, answers, dimensions: base.score_interview_question(
+            question=question, answers=answers, dimensions=dimensions
+        )
+    )
+    monkeypatch.setattr("app.workers.runner.get_provider", lambda _settings: capturing)
+    job = wait_job(client, token, str(report_job_id), worker, attempts=4)
+    assert job["state"] == "succeeded", job
+    assert str(q1.id) in capturing.score_calls
+    item = db.scalars(
+        select(JobWorkItem).where(
+            JobWorkItem.job_id == report_job_id, JobWorkItem.slot_key == str(q1.id)
+        )
+    ).one()
+    assert item.content_hash != "legacy-m2-score-v1-hash"
+    report = client.get(f"/v1/interviews/{session_id}/report", headers=auth(token))
+    assert report.status_code == 200, report.text
+    assert report.json()["quality"] == "full"
+
+
+def test_invalid_evidence_clears_improvement_and_overview_finding(
+    client: TestClient, worker, monkeypatch, db
+) -> None:
+    _, token = issue_token(client)
+    _prep, plan = create_confirmed_plan(client, token, worker, count=2)
+    session_id = start_interview(client, token, plan)["session_id"]
+    final = complete_six_question_interview(client, token, worker, session_id)
+    assert final["report_job"] is not None
+
+    base = TestProvider()
+    bad_improvement = "用户应使用未在回答中出现的 React 框架"
+
+    def score_with_bad_quote(*, question, answers, dimensions):
+        output = base.score_interview_question(
+            question=question, answers=answers, dimensions=dimensions
+        )
+        output["dimensions"][0]["verdict"] = "scored"
+        output["dimensions"][0]["score"] = 3
+        output["dimensions"][0]["evidence"] = [
+            {
+                "answer_id": answers[0]["answer_id"],
+                "quote": "这段引文完全没有出现在原回答中",
+            }
+        ]
+        output["dimensions"][0]["explanation"] = "基于失效引文的结论"
+        output["dimensions"][0]["improvement"] = bad_improvement
+        return output
+
+    stub = StubProvider(score=score_with_bad_quote)
+    monkeypatch.setattr("app.workers.runner.get_provider", lambda _settings: stub)
+    job = wait_job(client, token, final["report_job"]["id"], worker, attempts=4)
+    assert job["state"] == "succeeded", job
+
+    report_response = client.get(f"/v1/interviews/{session_id}/report", headers=auth(token))
+    assert report_response.status_code == 200, report_response.text
+    report = report_response.json()
+    invalid_dimension = report["questions"][0]["dimensions"][0]
+    assert invalid_dimension["verdict"] == "uncertain"
+    assert invalid_dimension["score"] is None
+    assert invalid_dimension["evidence"] == []
+    assert invalid_dimension["improvement"] == ""
+    assert "引文" in invalid_dimension["explanation"] or "定位" in invalid_dimension["explanation"]
+    assert any(
+        dim["verdict"] == "scored" and dim["improvement"]
+        for dim in report["questions"][0]["dimensions"][1:]
+    )
+    assert bad_improvement not in str(report["strengths"])
+    assert bad_improvement not in str(report["improvements"])

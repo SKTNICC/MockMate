@@ -129,10 +129,14 @@ def get_interview(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> InterviewDetail:
+    # 鉴权链与本路由共享 FastAPI 默认缓存的同一个 Session；先捕获纯值并回滚只读鉴权事务，
+    # 立刻归还连接，避免详情内部建立 REPEATABLE READ 快照时同一请求同时占用两条池连接。
+    parsed_session_id = _uuid(session_id, "面试不存在")
+    owner_id = user.id
+    db.rollback()
     return interviews_service.get_detail(
-        db,
-        owner_id=user.id,
-        session_id=_uuid(session_id, "面试不存在"),
+        owner_id=owner_id,
+        session_id=parsed_session_id,
         max_attempts=get_settings().max_job_attempts,
     )
 

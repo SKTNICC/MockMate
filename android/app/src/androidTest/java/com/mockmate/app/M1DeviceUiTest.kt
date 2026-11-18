@@ -136,7 +136,7 @@ class M1DeviceUiTest {
 
         composeRule.onNodeWithText("添加技能").performScrollTo().performClick()
         composeRule.waitUntil(timeoutMillis = 10_000) {
-            composeRule.onAllNodes(hasSetTextAction()).fetchSemanticsNodes().size >= 6
+            composeRule.onAllNodes(hasSetTextAction()).fetchSemanticsNodes().size >= 5
         }
         composeRule.onAllNodes(hasSetTextAction())[3].performTextInput("Java")
 

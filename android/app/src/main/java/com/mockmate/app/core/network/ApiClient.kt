@@ -224,6 +224,8 @@ class MockMateApi(
 
     suspend fun roles(): RolesResponse = getJson("/roles")
 
+    suspend fun skillCodes(): SkillCodesResponse = getJson("/skill-codes")
+
     suspend fun jdTemplates(): JdTemplatesResponse = getJson("/jd-templates")
 
     suspend fun jdTemplate(id: String): JdTemplateDto = getJson("/jd-templates/$id")

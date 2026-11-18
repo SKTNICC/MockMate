@@ -342,10 +342,11 @@ def build_schema():
                               "expires_at": date, "user": ref("User")})
     s["Role"] = obj({"id": string(), "name": string(), "levels": array(level, 1),
                      "enabled": {"type": "boolean"}, "sample_only": {"type": "boolean"}})
+    s["SkillCode"] = obj({"code": string(), "label": string()})
     s["JdTemplate"] = obj({"id": string(), "version": revision, "role_id": string(), "level": level,
                            "title": string(), "label": {"const": "内置练习岗位"},
                            "text": text, "profile": ref("JdProfile")})
-    for name, item in [("Roles", "Role"), ("JdTemplates", "JdTemplate"),
+    for name, item in [("Roles", "Role"), ("SkillCodes", "SkillCode"), ("JdTemplates", "JdTemplate"),
                        ("Materials", "MaterialDraft"), ("Preparations", "Preparation"),
                        ("Snapshots", "Snapshot")]:
         s[name] = obj({"items": array(ref(item))})
@@ -407,6 +408,7 @@ def build_openapi(schema):
     endpoint("/auth/logout", "post", "logout", "撤销当前会话", status=204, idempotent=False)
     endpoint("/me", "get", "getMe", "本人", "User")
     endpoint("/roles", "get", "listRoles", "可用岗位", "Roles")
+    endpoint("/skill-codes", "get", "listSkillCodes", "可用技能词表", "SkillCodes")
     endpoint("/jd-templates", "get", "listJdTemplates", "内置JD模板", "JdTemplates")
     endpoint("/jd-templates/{template_id}", "get", "getJdTemplate", "读取模板当前版本", "JdTemplate")
     endpoint("/materials", "get", "listMaterials", "本人材料", "Materials")
@@ -580,6 +582,11 @@ def build_content(materials):
                "roles": [{"id": "java-backend", "name": "Java 后端（开发样板）",
                           "levels": ["intern", "junior"], "enabled": False, "sample_only": True}],
                "skill_codes": ["java.core", "java.concurrency", "test.junit"],
+               "skill_code_labels": {
+                   "java.core": "Java 基础",
+                   "java.concurrency": "Java 并发",
+                   "test.junit": "JUnit 测试",
+               },
                "jd_templates": [{"id": "java-backend-intern-v1", "version": 1, "role_id": "java-backend",
                                  "level": "intern", "title": "Java 后端实习开发样板", "label": "内置练习岗位",
                                  "text": template_snapshot["text"], "profile": template_snapshot["profile"]}],

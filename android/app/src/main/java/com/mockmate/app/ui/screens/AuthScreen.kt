@@ -32,7 +32,6 @@ import com.mockmate.app.ui.AppState
 import com.mockmate.app.ui.AppViewModel
 import com.mockmate.app.ui.components.ConsentDialog
 import com.mockmate.app.ui.components.InfoCard
-import com.mockmate.app.ui.components.MessageBanner
 import com.mockmate.app.ui.components.PrimaryAction
 import com.mockmate.app.ui.components.SecondaryAction
 

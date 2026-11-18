@@ -183,6 +183,7 @@ data class PendingOperation(
     /** v2：类型化 payload；旧记录为 null。 */
     val payload: OperationPayload? = null,
     val preparationId: String? = null,
+    val interviewSessionId: String? = null,
     val fileName: String? = null,
     val fileSha256: String? = null,
     val fileMime: String? = null,
@@ -329,6 +330,7 @@ class OperationCoordinator(
         payload: OperationPayload? = null,
         legacyBody: String? = null,
         preparationId: String? = null,
+        interviewSessionId: String? = null,
         fileName: String? = null,
         fileSha256: String? = null,
         fileMime: String? = null,
@@ -342,6 +344,7 @@ class OperationCoordinator(
                 payload = payload,
                 legacyBody = legacyBody,
                 preparationId = preparationId,
+                interviewSessionId = interviewSessionId,
                 fileName = fileName,
                 fileSha256 = fileSha256,
                 fileMime = fileMime,
@@ -357,6 +360,7 @@ class OperationCoordinator(
         payload: OperationPayload?,
         legacyBody: String?,
         preparationId: String?,
+        interviewSessionId: String?,
         fileName: String?,
         fileSha256: String?,
         fileMime: String?,
@@ -391,7 +395,19 @@ class OperationCoordinator(
                 it.fileSha256 == fileSha256 &&
                 it.fileMime == fileMime
         }
-        if (existing != null) return PrepareResult.Prepared(existing)
+        if (existing != null) {
+            if (interviewSessionId != null && existing.interviewSessionId == null) {
+                val updated = existing.copy(interviewSessionId = interviewSessionId)
+                val patched = operations.pending.map {
+                    if (it.operationKey == existing.operationKey) updated else it
+                }
+                return when (val saved = store.save(accountId, operations.copy(pending = patched))) {
+                    is OperationSave.Failed -> PrepareResult.Rejected("STORAGE_UNAVAILABLE", saved.message)
+                    OperationSave.Ok -> PrepareResult.Prepared(updated)
+                }
+            }
+            return PrepareResult.Prepared(existing)
+        }
 
         val pending = PendingOperation(
             operationKey = keyFactory(),
@@ -402,6 +418,7 @@ class OperationCoordinator(
             bodyJson = if (payload == null) legacyBody else null,
             payload = payload,
             preparationId = preparationId,
+            interviewSessionId = interviewSessionId,
             fileName = fileName,
             fileSha256 = fileSha256,
             fileMime = fileMime,
@@ -535,6 +552,7 @@ data class ReplayReport(
     val stopped: Boolean = false,
     val storageError: String? = null,
     val userMessage: String? = null,
+    val rejected: List<ApiResult.Err> = emptyList(),
 )
 
 /**
@@ -547,6 +565,8 @@ class PendingOperationReplayer(
 ) {
     suspend fun replay(
         accountId: String,
+        filter: ((PendingOperation) -> Boolean)? = null,
+        onCompleted: (suspend (PendingOperation, Any?) -> Unit)? = null,
         isCurrent: () -> Boolean,
     ): ReplayReport {
         val loaded = coordinator.pending(accountId)
@@ -556,11 +576,14 @@ class PendingOperationReplayer(
             OperationLoad.Empty -> return ReplayReport()
             is OperationLoad.Loaded -> Unit
         }
-        val operations = (loaded as OperationLoad.Loaded).operations.pending
+        val pending = (loaded as OperationLoad.Loaded).operations.pending
+        val operations = if (filter == null) pending else pending.filter(filter)
+        if (operations.isEmpty()) return ReplayReport()
         var completed = 0
         var retained = 0
         var attempted = 0
         var userMessage: String? = null
+        val rejected = mutableListOf<ApiResult.Err>()
         for (op in operations) {
             if (!isCurrent()) {
                 return ReplayReport(
@@ -569,6 +592,7 @@ class PendingOperationReplayer(
                     retained = retained + (operations.size - attempted),
                     stopped = true,
                     userMessage = userMessage,
+                    rejected = rejected,
                 )
             }
             attempted += 1
@@ -607,11 +631,23 @@ class PendingOperationReplayer(
                             userMessage = "恢复成功但清理本地记录失败：${cleared.message}"
                             retained += 1
                         }
-                        OperationSave.Ok -> completed += 1
+                        OperationSave.Ok -> {
+                            completed += 1
+                            if (onCompleted != null) {
+                                try {
+                                    onCompleted(op, value)
+                                } catch (e: CancellationException) {
+                                    throw e
+                                } catch (e: Exception) {
+                                    userMessage = "恢复结果已返回，但收尾处理失败：${e.message ?: e.javaClass.simpleName}"
+                                }
+                            }
+                        }
                     }
                 }
                 is ReplayExecution.Uncertain -> retained += 1
                 is ReplayExecution.DefiniteError -> {
+                    rejected += execution.error
                     when (val cleared = coordinator.complete(accountId, op.operationKey)) {
                         is OperationSave.Failed -> {
                             userMessage = cleared.message
@@ -632,6 +668,7 @@ class PendingOperationReplayer(
             retained = retained,
             stopped = false,
             userMessage = userMessage,
+            rejected = rejected,
         )
     }
 }

@@ -36,7 +36,6 @@ import com.mockmate.app.ui.components.EmptyHint
 import com.mockmate.app.ui.components.InfoCard
 import com.mockmate.app.ui.components.JobRecoveryActions
 import com.mockmate.app.ui.components.KeyValueRow
-import com.mockmate.app.ui.components.MessageBanner
 import com.mockmate.app.ui.components.PrimaryAction
 import com.mockmate.app.ui.components.SecondaryAction
 import com.mockmate.app.ui.components.StatusChip
@@ -210,6 +209,51 @@ fun PlanHubScreen(vm: AppViewModel, state: AppState, preparationId: String) {
                         onRetry = { vm.retryCurrentJob() },
                     )
                 }
+                state.planError?.let { planError ->
+                    Spacer(Modifier.height(10.dp))
+                    val insufficient = if (planError.code == "BANK_INSUFFICIENT") {
+                        PlanErrorFormatter.parseBankInsufficient(planError.details)
+                    } else {
+                        null
+                    }
+                    InfoCard(
+                        title = if (insufficient != null) "题库覆盖不足" else "无法生成计划",
+                        subtitle = if (insufficient != null) "题库与 AI 主问题需严格各半" else planError.code,
+                    ) {
+                        if (insufficient != null) {
+                            Text(
+                                insufficient.summary,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                            Spacer(Modifier.height(4.dp))
+                            Text(insufficient.guidance, style = MaterialTheme.typography.bodySmall)
+                            Spacer(Modifier.height(10.dp))
+                            SecondaryAction(
+                                text = "回到准备检查材料关联",
+                                onClick = { vm.returnToSetup(preparationId) },
+                            )
+                            if (insufficient.feasibleCounts.isNotEmpty()) {
+                                Spacer(Modifier.height(6.dp))
+                                PrimaryAction(
+                                    text = "回到设置选择较少主问题（可选 ${insufficient.feasibleCounts.joinToString("/")} 题）",
+                                    onClick = { vm.returnToSetup(preparationId) },
+                                )
+                            }
+                        } else {
+                            Text(
+                                planError.message,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                            Spacer(Modifier.height(8.dp))
+                            SecondaryAction(
+                                text = "回到准备检查材料或设置",
+                                onClick = { vm.returnToSetup(preparationId) },
+                            )
+                        }
+                    }
+                }
             } else {
                 PlanSummaryCard(plan)
                 Spacer(Modifier.height(10.dp))
@@ -233,7 +277,7 @@ fun PlanHubScreen(vm: AppViewModel, state: AppState, preparationId: String) {
                         if (state.plan?.limitations?.any { it.startsWith("测试数据流程") } == true) {
                             Spacer(Modifier.height(6.dp))
                             Text(
-                                "合成环境：本场使用测试样板岗位与测试 provider，不代表真实 AI 或人工审核结果。",
+                                "合成环境：本场使用开发样板岗位与题库，仅用于联调；是否使用真实模型以服务端任务记录为准。",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.error,
                             )

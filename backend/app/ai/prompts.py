@@ -16,7 +16,32 @@ SYSTEM_BASE = """你是 MockMate 的面试准备助手，服务对象是校招/�
 4. 所有 quote 必须是材料原文中逐字出现的连续片段。"""
 
 
-def parse_prompt(*, text: str, kind: str, role_id: str, level: str) -> tuple[str, str]:
+def parse_prompt(
+    *,
+    text: str,
+    kind: str,
+    role_id: str,
+    level: str,
+    skill_catalog: list[dict[str, str]] | None = None,
+) -> tuple[str, str]:
+    catalog_items = [
+        {"code": str(item["code"]), "label": str(item.get("label") or item["code"])}
+        for item in (skill_catalog or [])
+        if item.get("code")
+    ]
+    if catalog_items:
+        catalog_instruction = (
+            "可用技能词表如下（只能输出其中存在的 code；无法从原文可靠关联时，"
+            "skills[].code 设为 null，projects[].skill_codes 或 requirements[].skill_codes 设为空数组 []；"
+            "严禁自造词表外的技能编码）：\n"
+            f"{json.dumps(catalog_items, ensure_ascii=False)}"
+        )
+    else:
+        catalog_instruction = (
+            "当前可用技能词表为空：skills[].code 必须为 null，"
+            "projects[].skill_codes 与 requirements[].skill_codes 必须为空数组 []，严禁自造技能编码。"
+        )
+
     if kind == "resume":
         schema = {
             "kind": "resume",
@@ -34,7 +59,7 @@ def parse_prompt(*, text: str, kind: str, role_id: str, level: str) -> tuple[str
                     "item_id": "project-1",
                     "name": "项目名",
                     "description": "原文中的项目描述",
-                    "skill_codes": ["java.core"],
+                    "skill_codes": [],
                     "evidence": {"quote": "原文逐字片段", "origin": "extracted"},
                 }
             ],
@@ -42,7 +67,7 @@ def parse_prompt(*, text: str, kind: str, role_id: str, level: str) -> tuple[str
                 {
                     "item_id": "skill-1",
                     "name": "Java 集合",
-                    "code": "java.core",
+                    "code": None,
                     "evidence": {"quote": "原文逐字片段", "origin": "extracted"},
                 }
             ],
@@ -50,7 +75,7 @@ def parse_prompt(*, text: str, kind: str, role_id: str, level: str) -> tuple[str
         instruction = (
             "把简历原文结构化。没有工作经历时 work_experience 输出空数组，这完全合法；"
             "没有项目时 projects 为空数组。education/work/projects/skills 至少保留一项。"
-            f"本次目标岗位 {role_id}，级别 {level}；该信息只用于技能码命名，不得据此补充材料中没有的事实。"
+            f"本次目标岗位 {role_id}，级别 {level}；该信息只用于从词表中关联技能，不得据此补充材料中没有的事实。"
         )
     else:
         schema = {
@@ -69,7 +94,7 @@ def parse_prompt(*, text: str, kind: str, role_id: str, level: str) -> tuple[str
                 {
                     "item_id": "req-1",
                     "text": "要求正文",
-                    "skill_codes": ["java.core"],
+                    "skill_codes": [],
                     "importance": "must",
                     "evidence": {"quote": "原文逐字片段", "origin": "extracted"},
                 }
@@ -82,6 +107,8 @@ def parse_prompt(*, text: str, kind: str, role_id: str, level: str) -> tuple[str
             "保留原文事实，系统会给出受控冲突并请用户修改。"
         )
     user = f"""{instruction}
+
+{catalog_instruction}
 
 请只输出如下形状的 JSON：
 {json.dumps(schema, ensure_ascii=False)}
@@ -282,7 +309,9 @@ SCORE_SYSTEM = SYSTEM_BASE + """
 5. 你按给定量表逐维度评分；每个 scored 维度必须引用候选人本题原回答中的逐字片段。
 6. evidence 的 answer_id 必须来自本题回答列表；不得跨题、跨场、转述或拼接引文。
 7. 没有足够原话证据时用 insufficient_evidence；口径存在技术争议时用 uncertain，分数为 null。
-8. 不输出整场总分、录用概率或人格判断。"""
+8. 不输出整场总分、录用概率或人格判断。
+9. 每条回答都带有 kind 与 prompt（该回答实际看到的题干）。必须结合该回答自己的题干理解内容，
+   不得把主问题题意套到追问回答上；引文必须来自这条回答自身。"""
 
 
 def follow_up_prompt(
@@ -343,6 +372,12 @@ def score_prompt(
 3 能解释原因或步骤；4 达到高档锚点并说明边界。
 缺证据用 insufficient_evidence，口径有争议用 uncertain，两者 score 都为 null 且 evidence 为空。
 只对下面列出的维度逐一输出，不得增加、遗漏或重复维度。
+
+评分输入说明：
+- 本题的主问和至多一次追问合并在一个请求中评一次；skipped 的追问不会出现在有效回答里。
+- answers 每项包含 answer_id、kind（main 或 follow_up）、prompt（该回答实际看到的题干）和 text。
+- 必须按每项自己的 prompt 理解其回答；追问的短答可能只有借助追问题干才能判断，不得套用主问题题意。
+- evidence 的 answer_id 必须与引文来自同一个回答项，引文必须逐字出现在该项的 text 中。
 
 题目与评分目标：
 {json.dumps(question, ensure_ascii=False)}

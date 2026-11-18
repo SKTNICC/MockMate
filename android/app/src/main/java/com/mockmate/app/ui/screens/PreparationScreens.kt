@@ -43,11 +43,9 @@ import com.mockmate.app.core.network.SnapshotDto
 import com.mockmate.app.ui.AppState
 import com.mockmate.app.ui.AppViewModel
 import com.mockmate.app.ui.Screen
-import com.mockmate.app.ui.UiMessage
 import com.mockmate.app.ui.components.EmptyHint
 import com.mockmate.app.ui.components.InfoCard
 import com.mockmate.app.ui.components.KeyValueRow
-import com.mockmate.app.ui.components.MessageBanner
 import com.mockmate.app.ui.components.PrimaryAction
 import com.mockmate.app.ui.components.SecondaryAction
 import com.mockmate.app.ui.components.StatusChip

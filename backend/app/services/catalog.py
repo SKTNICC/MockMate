@@ -9,6 +9,7 @@ from app.core.errors import AppError
 from app.models import JdTemplate, Role, SkillCode
 from app.schemas import JdTemplate as JdTemplateSchema
 from app.schemas import Role as RoleSchema
+from app.schemas import SkillCode as SkillCodeSchema
 
 
 def role_to_schema(role: Role) -> RoleSchema:
@@ -25,11 +26,19 @@ def get_role(db: Session, role_id: str) -> Role | None:
     return db.get(Role, role_id)
 
 
+def _enabled_skill_codes_stmt():
+    return select(SkillCode).where(SkillCode.enabled.is_(True)).order_by(SkillCode.code)
+
+
+def list_skill_codes(db: Session) -> list[SkillCodeSchema]:
+    """返回当前启用的技能目录（稳定排序）。"""
+    rows = db.scalars(_enabled_skill_codes_stmt()).all()
+    return [SkillCodeSchema(code=row.code, label=(row.label or "").strip() or row.code) for row in rows]
+
+
 def allowed_skill_codes(db: Session) -> set[str]:
     """已启用的技能编码词表；模型自创编码不得进入材料或计划。"""
-    return set(
-        db.scalars(select(SkillCode.code).where(SkillCode.enabled.is_(True))).all()
-    )
+    return {item.code for item in list_skill_codes(db)}
 
 
 def require_role_level(db: Session, role_id: str, level: str, *, require_enabled: bool) -> Role:

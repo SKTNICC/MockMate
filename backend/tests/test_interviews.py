@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import json
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
+from fastapi import Depends, Request
 from fastapi.testclient import TestClient
-from sqlalchemy import func, select
+from sqlalchemy import create_engine, func, select
+from sqlalchemy.orm import sessionmaker
 
 from app.models import InterviewAnswer, InterviewQuestion, InterviewSession, InterviewTurn, Job
 from tests.conftest import auth, issue_token, new_key, wait_job
@@ -19,6 +23,35 @@ from tests.m2_helpers import (
     skip,
     start_interview,
 )
+
+
+class _AskingProvider:
+    name = "stub"
+    model_id = "stub-model"
+    prompt_version = "stub"
+    test_only = True
+
+    def __init__(self) -> None:
+        self.last_call = {
+            "provider": self.name,
+            "model": self.model_id,
+            "request_id": "stub-request",
+            "usage": None,
+        }
+
+    def decide_follow_up(self, *, question, answer_text, context=None):
+        quote = answer_text[:12]
+        self.last_call = {**self.last_call, "request_id": "stub-decide"}
+        return {
+            "decision": "ask",
+            "prompt": f"你提到「{quote}」，能补充判断依据和适用边界吗？",
+            "answer_quote": quote,
+            "target": "依据与边界",
+        }
+
+    def score_interview_question(self, *, question, answers, dimensions):
+        raise AssertionError("本用例不触发评分")
+
 
 
 def test_start_opens_same_session_and_hides_future_questions(
@@ -550,3 +583,170 @@ def test_pause_worker_advance_keeps_paused(client: TestClient, worker, db) -> No
     assert after["current_turn"]["kind"] in ("follow_up", "main")
     assert "resume" in after["allowed_actions"]
     assert "answer" not in after["allowed_actions"]
+
+
+def test_detail_uses_one_read_snapshot_when_worker_commits_mid_read(
+    client: TestClient, worker, monkeypatch
+) -> None:
+    """详情读取期间 worker 提交追问：单次响应只能是旧或新版本，不能混读。"""
+    _, token = issue_token(client)
+    _prep, plan = create_confirmed_plan(client, token, worker, count=2)
+    session_id = start_interview(client, token, plan)["session_id"]
+    current = detail(client, token, session_id)
+    accepted = answer(
+        client,
+        token,
+        session_id,
+        revision=current["revision"],
+        turn_id=current["current_turn"]["turn_id"],
+        text=LONG_ANSWER,
+    )
+    assert accepted.status_code == 202, accepted.text
+
+    monkeypatch.setattr(
+        "app.workers.runner.get_provider", lambda _settings: _AskingProvider()
+    )
+    from app.services import interviews as interviews_service
+
+    original_lookup = interviews_service._session_for_owner
+    fired = {"count": 0}
+
+    def lookup_then_commit_worker(db_session, owner_id, session_uuid):
+        row = original_lookup(db_session, owner_id, session_uuid)
+        if fired["count"] == 0:
+            fired["count"] += 1
+            # 独立 DB 会话领取并提交追问任务；详情快照已经建立。
+            assert worker.run_once() is True
+        return row
+
+    monkeypatch.setattr(interviews_service, "_session_for_owner", lookup_then_commit_worker)
+
+    mixed = detail(client, token, session_id)
+    assert mixed["phase"] == "deciding_follow_up"
+    assert mixed["current_turn"] is None
+    assert mixed["follow_up_job"]["state"] == "queued"
+    assert [turn["kind"] for turn in mixed["transcript"]] == ["main"]
+
+    latest = detail(client, token, session_id)
+    assert latest["phase"] == "awaiting_answer"
+    assert latest["current_turn"]["kind"] == "follow_up"
+    assert latest["follow_up_job"]["state"] == "succeeded"
+    assert [turn["kind"] for turn in latest["transcript"]] == ["main", "follow_up"]
+
+
+def test_concurrent_detail_reads_do_not_exhaust_small_pool(
+    client: TestClient, worker, monkeypatch
+) -> None:
+    """鉴权释放连接后，小连接池并发读取详情不再自阻塞或池超时。"""
+    from app.api.deps import get_current_user
+    from app.core import db as db_module
+    from app.services import interviews as interviews_service
+    from tests.conftest import TEST_DATABASE_URL
+
+    _, token = issue_token(client)
+    _, other_token = issue_token(client)
+    _prep, plan = create_confirmed_plan(client, token, worker, count=2)
+    session_id = start_interview(client, token, plan)["session_id"]
+
+    # 1. pool_size=2、max_overflow=0：鉴权完成后在 get_detail 入口用有界屏障对齐两个并发读请求。
+    small_engine = create_engine(
+        TEST_DATABASE_URL,
+        pool_pre_ping=True,
+        pool_size=2,
+        max_overflow=0,
+        pool_timeout=0.5,
+        future=True,
+    )
+    SmallSessionLocal = sessionmaker(
+        bind=small_engine, autoflush=False, expire_on_commit=False, future=True
+    )
+    try:
+        monkeypatch.setattr(db_module, "SessionLocal", SmallSessionLocal)
+
+        # 验证单连接池（pool_size=1）串行读也不再自阻塞。
+        tiny_engine = create_engine(
+            TEST_DATABASE_URL,
+            pool_pre_ping=True,
+            pool_size=1,
+            max_overflow=0,
+            pool_timeout=0.5,
+            future=True,
+        )
+        TinySessionLocal = sessionmaker(
+            bind=tiny_engine, autoflush=False, expire_on_commit=False, future=True
+        )
+        try:
+            monkeypatch.setattr(db_module, "SessionLocal", TinySessionLocal)
+            single = client.get(f"/v1/interviews/{session_id}", headers=auth(token))
+            assert single.status_code == 200, single.text
+            assert tiny_engine.pool.checkedout() == 0
+        finally:
+            tiny_engine.dispose()
+
+        monkeypatch.setattr(db_module, "SessionLocal", SmallSessionLocal)
+
+        # 屏障放在鉴权后、get_detail 前：验证双并发到达详情入口时均可顺利取到快照连接。
+        barrier_detail = threading.Barrier(2, timeout=5.0)
+        original_get_detail = interviews_service.get_detail
+
+        def aligned_get_detail(*args, **kwargs):
+            barrier_detail.wait()
+            return original_get_detail(*args, **kwargs)
+
+        monkeypatch.setattr(interviews_service, "get_detail", aligned_get_detail)
+
+        def fetch_once():
+            return client.get(f"/v1/interviews/{session_id}", headers=auth(token))
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            f1 = pool.submit(fetch_once)
+            f2 = pool.submit(fetch_once)
+            r1, r2 = f1.result(timeout=10.0), f2.result(timeout=10.0)
+
+        assert r1.status_code == 200, r1.text
+        assert r2.status_code == 200, r2.text
+        assert r1.json()["session_id"] == session_id
+        assert r2.json()["session_id"] == session_id
+        assert small_engine.pool.checkedout() == 0
+
+        # 屏障放在鉴权刚结束（路由体执行 db.rollback 之前），同样可正常完成且归还连接。
+        monkeypatch.setattr(interviews_service, "get_detail", original_get_detail)
+        barrier_auth = threading.Barrier(2, timeout=5.0)
+        app_ref = client.app
+
+        from app.api.deps import get_current_session
+        from app.core.db import get_db
+
+        def wrapped_current_user(
+            request: Request,
+            db=Depends(get_db),
+            session=Depends(get_current_session),
+        ):
+            user = get_current_user(request=request, db=db, session=session)
+            barrier_auth.wait()
+            return user
+
+        app_ref.dependency_overrides[get_current_user] = wrapped_current_user
+        try:
+            for _ in range(2):
+                barrier_auth.reset()
+                with ThreadPoolExecutor(max_workers=2) as pool:
+                    f1 = pool.submit(fetch_once)
+                    f2 = pool.submit(fetch_once)
+                    r1, r2 = f1.result(timeout=10.0), f2.result(timeout=10.0)
+                assert r1.status_code == 200, r1.text
+                assert r2.status_code == 200, r2.text
+                assert small_engine.pool.checkedout() == 0
+        finally:
+            app_ref.dependency_overrides.pop(get_current_user, None)
+
+        # 补充无凭证、跨账号、非法 UUID 检查。
+        unauth = client.get(f"/v1/interviews/{session_id}")
+        assert unauth.status_code == 401
+        cross = client.get(f"/v1/interviews/{session_id}", headers=auth(other_token))
+        assert cross.status_code == 404
+        bad_uuid = client.get("/v1/interviews/not-a-uuid", headers=auth(token))
+        assert bad_uuid.status_code == 404
+        assert small_engine.pool.checkedout() == 0
+    finally:
+        small_engine.dispose()

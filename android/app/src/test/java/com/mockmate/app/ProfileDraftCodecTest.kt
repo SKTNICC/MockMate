@@ -2,6 +2,7 @@ package com.mockmate.app
 
 import com.mockmate.app.ui.screens.ItemDraft
 import com.mockmate.app.ui.screens.ProfileDraftCodec
+import com.mockmate.app.ui.screens.sanitizeSkillSelection
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
@@ -57,20 +58,39 @@ class ProfileDraftCodecTest {
                     ),
                 ),
             ),
-            "skills" to JsonArray(emptyList()),
+            "skills" to JsonArray(
+                listOf(
+                    JsonObject(
+                        mapOf(
+                            "item_id" to JsonPrimitive("skill-1"),
+                            "name" to JsonPrimitive("Java 集合"),
+                            "code" to JsonPrimitive("java.core"),
+                            "evidence" to JsonObject(
+                                mapOf(
+                                    "quote" to JsonPrimitive("学习过 Java 集合"),
+                                    "origin" to JsonPrimitive("extracted"),
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
         ),
     )
 
     @Test
     fun parseResumeProfileKeepsFieldsAndEvidence() {
         val items = ProfileDraftCodec.parse(resumeProfile, "resume")
-        assertEquals(2, items.size)
+        assertEquals(3, items.size)
         assertEquals("education", items[0].section)
         assertEquals("本科在读", items[0].fields["degree"])
         assertEquals("本科在读，计算机科学与技术专业。", items[0].quote)
         assertEquals("项目", com.mockmate.app.ui.screens.sectionLabel("projects"))
         assertEquals("图书借阅系统", items[1].fields["name"])
-        assertEquals("java.core, test.junit", items[1].skillCodes)
+        assertEquals(listOf("java.core", "test.junit"), items[1].skillCodes)
+        assertEquals("skills", items[2].section)
+        assertEquals("Java 集合", items[2].fields["name"])
+        assertEquals(listOf("java.core"), items[2].skillCodes)
     }
 
     @Test
@@ -84,11 +104,13 @@ class ProfileDraftCodecTest {
         val project = built["projects"]!!.jsonArray[0].jsonObject
         val codes = project["skill_codes"]!!.jsonArray.map { it.jsonPrimitive.content }
         assertEquals(listOf("java.core", "test.junit"), codes)
+        val skill = built["skills"]!!.jsonArray[0].jsonObject
+        assertEquals("java.core", skill["code"]?.jsonPrimitive?.content)
         assertNull(built["role_id"])
     }
 
     @Test
-    fun nullableFieldsBecomeJsonNull() {
+    fun nullableFieldsAndEmptySkillBecomeJsonNull() {
         val item = ItemDraft(
             section = "skills",
             itemId = "skill-1",
@@ -118,7 +140,7 @@ class ProfileDraftCodecTest {
                 fields = mapOf("text" to "理解集合边界"),
                 quote = "要求：理解集合边界",
                 origin = "extracted",
-                skillCodes = "java.core",
+                skillCodes = listOf("java.core", "java.core"),
                 importance = "must",
             ),
         )
@@ -134,6 +156,63 @@ class ProfileDraftCodecTest {
     }
 
     @Test
+    fun parseAndBuildPreservesOldJdIdsEvidenceImportanceAndEmptySkillCodes() {
+        val jdProfile = JsonObject(
+            mapOf(
+                "kind" to JsonPrimitive("jd"),
+                "role_id" to JsonPrimitive("java-backend"),
+                "level" to JsonPrimitive("intern"),
+                "title" to JsonPrimitive("后端实习"),
+                "responsibilities" to JsonArray(
+                    listOf(
+                        JsonObject(
+                            mapOf(
+                                "item_id" to JsonPrimitive("resp-custom"),
+                                "text" to JsonPrimitive("参与服务开发"),
+                                "evidence" to JsonObject(
+                                    mapOf(
+                                        "quote" to JsonPrimitive("职责：参与服务开发"),
+                                        "origin" to JsonPrimitive("extracted"),
+                                    ),
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+                "requirements" to JsonArray(
+                    listOf(
+                        JsonObject(
+                            mapOf(
+                                "item_id" to JsonPrimitive("req-custom"),
+                                "text" to JsonPrimitive("了解 Redis"),
+                                "skill_codes" to JsonArray(emptyList()),
+                                "importance" to JsonPrimitive("nice"),
+                                "evidence" to JsonObject(
+                                    mapOf(
+                                        "quote" to JsonPrimitive("要求：了解 Redis"),
+                                        "origin" to JsonPrimitive("extracted"),
+                                    ),
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+        val items = ProfileDraftCodec.parse(jdProfile, "jd")
+        assertEquals("resp-custom", items[0].itemId)
+        assertEquals("req-custom", items[1].itemId)
+        assertEquals("nice", items[1].importance)
+        assertEquals(emptyList<String>(), items[1].skillCodes)
+        val rebuilt = ProfileDraftCodec.build("jd", items, "java-backend", "intern", "后端实习")
+        val rebuiltReq = rebuilt["requirements"]!!.jsonArray[0].jsonObject
+        assertEquals("req-custom", rebuiltReq["item_id"]?.jsonPrimitive?.content)
+        assertEquals("nice", rebuiltReq["importance"]?.jsonPrimitive?.content)
+        assertEquals("要求：了解 Redis", rebuiltReq["evidence"]!!.jsonObject["quote"]?.jsonPrimitive?.content)
+        assertEquals(0, rebuiltReq["skill_codes"]!!.jsonArray.size)
+    }
+
+    @Test
     fun validateRejectsMissingRequiredFieldQuoteAndSections() {
         val base = ItemDraft(
             section = "education",
@@ -143,6 +222,15 @@ class ProfileDraftCodecTest {
             origin = "user_confirmed",
         )
         assertNull(ProfileDraftCodec.validate("resume", listOf(base), ""))
+        val skillWithoutCode = ItemDraft(
+            section = "skills",
+            itemId = "",
+            fields = mapOf("name" to "Redis"),
+            quote = "熟悉 Redis",
+            origin = "user_confirmed",
+            skillCodes = emptyList(),
+        )
+        assertNull(ProfileDraftCodec.validate("resume", listOf(skillWithoutCode), ""))
         val projectWithBlankName = ItemDraft(
             section = "projects",
             itemId = "",
@@ -173,11 +261,54 @@ class ProfileDraftCodecTest {
     }
 
     @Test
-    fun skillCodeParsingAcceptsChineseAndEnglishSeparators() {
+    fun sanitizeSkillSelectionDropsUnavailableCodesPreservesOrderAndSingleSelectRule() {
+        val available = setOf("java.core", "java.concurrency", "test.junit")
         assertEquals(
-            listOf("java.core", "test.junit", "java.concurrency"),
-            ProfileDraftCodec.parseSkillCodes("java.core，test.junit java.concurrency"),
+            listOf("java.core", "test.junit"),
+            sanitizeSkillSelection(
+                selectedCodes = listOf("legacy.removed", "java.core", "java.core", " ", "test.junit", "other.gone"),
+                availableCodes = available,
+                multiSelect = true,
+            ),
         )
-        assertEquals(emptyList<String>(), ProfileDraftCodec.parseSkillCodes("  ,  "))
+        assertEquals(
+            listOf("java.core"),
+            sanitizeSkillSelection(
+                selectedCodes = listOf("legacy.removed", "java.core", "java.concurrency"),
+                availableCodes = available,
+                multiSelect = false,
+            ),
+        )
+        assertEquals(
+            emptyList<String>(),
+            sanitizeSkillSelection(
+                selectedCodes = listOf("legacy.removed"),
+                availableCodes = available,
+                multiSelect = false,
+            ),
+        )
+        assertEquals(
+            emptyList<String>(),
+            sanitizeSkillSelection(
+                selectedCodes = listOf("java.core"),
+                availableCodes = emptySet(),
+                multiSelect = true,
+            ),
+        )
+    }
+
+    @Test
+    fun emptyProjectSkillCodesSerializesAsEmptyArray() {
+        val projectWithoutSkills = ItemDraft(
+            section = "projects",
+            itemId = "project-1",
+            fields = mapOf("name" to "图书系统", "description" to "Java"),
+            quote = "图书系统",
+            origin = "user_confirmed",
+            skillCodes = emptyList(),
+        )
+        val built = ProfileDraftCodec.build("resume", listOf(projectWithoutSkills), "r", "intern", "简历")
+        val project = built["projects"]!!.jsonArray[0].jsonObject
+        assertEquals(0, project["skill_codes"]!!.jsonArray.size)
     }
 }

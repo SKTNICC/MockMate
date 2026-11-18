@@ -156,6 +156,67 @@ def test_role_listing_and_templates(client: TestClient) -> None:
     assert single.json()["version"] == 1
 
 
+def test_skill_codes_catalog_and_seed_rules(client: TestClient, db) -> None:
+    from app.cli import seed_catalog
+    from app.models import SkillCode
+    from app.services import catalog
+
+    _, token = issue_token(client)
+    resp = client.get("/v1/skill-codes", headers=auth(token))
+    assert resp.status_code == 200
+    items = resp.json()["items"]
+    assert items == [
+        {"code": "java.concurrency", "label": "Java 并发"},
+        {"code": "java.core", "label": "Java 基础"},
+        {"code": "test.junit", "label": "JUnit 测试"},
+    ]
+    assert catalog.allowed_skill_codes(db) == {"java.core", "java.concurrency", "test.junit"}
+
+    # 停用某项后，目录接口与允许集合同步变化；重复执行 seed 保留自定义名与停用状态
+    row_junit = db.get(SkillCode, "test.junit")
+    row_core = db.get(SkillCode, "java.core")
+    row_conc = db.get(SkillCode, "java.concurrency")
+    assert row_junit and row_core and row_conc
+    try:
+        row_junit.enabled = False
+        row_junit.label = "自定义 JUnit"
+        row_core.label = "java.core"  # 旧占位名应被补全
+        row_conc.label = ""  # 空值应被补全
+        db.commit()
+
+        seed_catalog(db, sample_enabled=True)
+        db.expire_all()
+        assert db.get(SkillCode, "java.core").label == "Java 基础"
+        assert db.get(SkillCode, "java.concurrency").label == "Java 并发"
+        assert db.get(SkillCode, "test.junit").label == "自定义 JUnit"
+        assert db.get(SkillCode, "test.junit").enabled is False
+
+        filtered = client.get("/v1/skill-codes", headers=auth(token))
+        assert filtered.status_code == 200
+        assert [item["code"] for item in filtered.json()["items"]] == [
+            "java.concurrency",
+            "java.core",
+        ]
+        assert catalog.allowed_skill_codes(db) == {"java.concurrency", "java.core"}
+
+        # 全部停用时返回 200 与空数组
+        for row in (row_core, row_conc, row_junit):
+            row.enabled = False
+        db.commit()
+        empty = client.get("/v1/skill-codes", headers=auth(token))
+        assert empty.status_code == 200
+        assert empty.json() == {"items": []}
+        assert catalog.allowed_skill_codes(db) == set()
+    finally:
+        row_core.label = "Java 基础"
+        row_core.enabled = True
+        row_conc.label = "Java 并发"
+        row_conc.enabled = True
+        row_junit.label = "JUnit 测试"
+        row_junit.enabled = True
+        db.commit()
+
+
 def test_preparation_list_and_delete(client: TestClient) -> None:
     _, token = issue_token(client)
     prep = _prep(client, token, count=2).json()

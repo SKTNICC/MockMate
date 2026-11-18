@@ -57,6 +57,56 @@ def _iter_profile_items(profile: dict):
         raise AppError("PROFILE_INVALID", "缺少合法的 profile.kind")
 
 
+def sanitize_profile_skill_codes(
+    profile: dict | None,
+    allowed_skill_codes: set[str],
+) -> int:
+    """清理材料解析结果中不在启用词表内的技能编码，返回移除的标签数。
+
+    只触及简历 `skills[].code`、`projects[].skill_codes` 和 JD `requirements[].skill_codes`；
+    多选项去重并保留首个顺序，保留条目 ID、名称、描述、引用与必需程度。
+    """
+    if not isinstance(profile, dict):
+        return 0
+    kind = profile.get("kind")
+    removed = 0
+
+    def _filter_codes(raw_codes: object) -> list[str] | None:
+        nonlocal removed
+        if not isinstance(raw_codes, list):
+            return None
+        filtered: list[str] = []
+        seen: set[str] = set()
+        for code in raw_codes:
+            if isinstance(code, str) and code in allowed_skill_codes:
+                if code not in seen:
+                    seen.add(code)
+                    filtered.append(code)
+            else:
+                removed += 1
+        return filtered
+
+    if kind == "resume":
+        for project in profile.get("projects") or []:
+            if isinstance(project, dict) and "skill_codes" in project:
+                filtered = _filter_codes(project.get("skill_codes"))
+                if filtered is not None:
+                    project["skill_codes"] = filtered
+        for skill in profile.get("skills") or []:
+            if isinstance(skill, dict) and "code" in skill:
+                code = skill.get("code")
+                if isinstance(code, str) and code not in allowed_skill_codes:
+                    skill["code"] = None
+                    removed += 1
+    elif kind == "jd":
+        for req in profile.get("requirements") or []:
+            if isinstance(req, dict) and "skill_codes" in req:
+                filtered = _filter_codes(req.get("skill_codes"))
+                if filtered is not None:
+                    req["skill_codes"] = filtered
+    return removed
+
+
 def validate_profile(
     profile: dict | None,
     kind: str,
@@ -122,10 +172,16 @@ def validate_profile(
                 codes = [code] if code else []
             unknown = [code for code in codes if code not in allowed_skill_codes]
             if unknown:
+                field_name = "code" if section == "skills" else "skill_codes"
                 raise AppError(
                     "PROFILE_INVALID",
                     "技能编码不在已启用词表中",
-                    details=unknown[:5],
+                    details=[
+                        f"section={section}",
+                        f"item_id={item_id}",
+                        f"field={field_name}",
+                        *unknown[:5],
+                    ],
                 )
 
     if kind == "resume" and item_count == 0:

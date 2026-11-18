@@ -20,14 +20,14 @@ internal data class ItemDraft(
     val fields: Map<String, String>,
     val quote: String,
     val origin: String,
-    val skillCodes: String = "",
+    val skillCodes: List<String> = emptyList(),
     val importance: String = "must",
 )
 
 internal val SECTION_ORDER_RESUME = listOf("education", "work_experience", "projects", "skills")
 internal val SECTION_ORDER_JD = listOf("responsibilities", "requirements")
 
-internal val NULLABLE_FIELDS = setOf("degree", "major", "code")
+internal val NULLABLE_FIELDS = setOf("degree", "major")
 
 internal fun sectionLabel(section: String): String = when (section) {
     "education" -> "教育"
@@ -47,8 +47,26 @@ internal fun fieldSpecs(kind: String, section: String): List<FieldSpec> = when (
         FieldSpec("description", "描述"),
     )
     "projects" -> listOf(FieldSpec("name", "项目名"), FieldSpec("description", "描述"))
-    "skills" -> listOf(FieldSpec("name", "技能名"), FieldSpec("code", "技能码（可空）"))
+    "skills" -> listOf(FieldSpec("name", "技能名"))
     else -> if (kind == "jd") listOf(FieldSpec("text", "内容")) else emptyList()
+}
+
+internal fun supportsSkillSelection(section: String): Boolean =
+    section == "skills" || section == "projects" || section == "requirements"
+
+internal fun allowsMultipleSkills(section: String): Boolean =
+    section == "projects" || section == "requirements"
+
+internal fun sanitizeSkillSelection(
+    selectedCodes: List<String>,
+    availableCodes: Set<String>,
+    multiSelect: Boolean,
+): List<String> {
+    val sanitized = selectedCodes
+        .map { it.trim() }
+        .filter { it.isNotEmpty() && it in availableCodes }
+        .distinct()
+    return if (multiSelect) sanitized else sanitized.take(1)
 }
 
 /**
@@ -71,15 +89,29 @@ internal object ProfileDraftCodec {
                 val evidence = obj["evidence"] as? JsonObject
                 val quote = (evidence?.get("quote") as? JsonPrimitive)?.contentOrNull ?: ""
                 val origin = (evidence?.get("origin") as? JsonPrimitive)?.contentOrNull ?: "extracted"
-                val codes = (obj["skill_codes"] as? JsonArray)
-                    ?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }
-                    ?.joinToString(", ") ?: ""
+                val codes = when (section) {
+                    "skills" -> listOfNotNull(
+                        (obj["code"] as? JsonPrimitive)?.contentOrNull?.trim()?.takeIf { it.isNotEmpty() },
+                    )
+                    "projects", "requirements" -> (obj["skill_codes"] as? JsonArray)
+                        ?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull?.trim()?.takeIf { s -> s.isNotEmpty() } }
+                        ?.distinct()
+                        ?: emptyList()
+                    else -> emptyList()
+                }
                 val itemId = (obj["item_id"] as? JsonPrimitive)?.contentOrNull ?: ""
                 val importance = (obj["importance"] as? JsonPrimitive)?.contentOrNull ?: "must"
                 result.add(ItemDraft(section, itemId, fields, quote, origin, codes, importance))
             }
         }
         return result
+    }
+
+    fun resolvedItemId(item: ItemDraft, items: List<ItemDraft>): String {
+        if (item.itemId.isNotBlank()) return item.itemId
+        val sectionItems = items.filter { it.section == item.section }
+        val index = sectionItems.indexOf(item).let { if (it >= 0) it else 0 }
+        return "${item.section}-${index + 1}"
     }
 
     fun build(
@@ -110,9 +142,23 @@ internal object ProfileDraftCodec {
                                     put(spec.key, value)
                                 }
                             }
+                            if (section == "skills") {
+                                val selectedCode = item.skillCodes
+                                    .map { it.trim() }
+                                    .firstOrNull { it.isNotEmpty() }
+                                if (selectedCode == null) {
+                                    put("code", JsonNull)
+                                } else {
+                                    put("code", selectedCode)
+                                }
+                            }
                             if (section == "projects" || section == "requirements") {
                                 putJsonArray("skill_codes") {
-                                    parseSkillCodes(item.skillCodes).forEach { add(it) }
+                                    item.skillCodes
+                                        .map { it.trim() }
+                                        .filter { it.isNotEmpty() }
+                                        .distinct()
+                                        .forEach { add(it) }
                                 }
                             }
                             if (section == "requirements") {
@@ -128,11 +174,6 @@ internal object ProfileDraftCodec {
             }
         }
     }
-
-    fun parseSkillCodes(raw: String): List<String> =
-        raw.split(',', '，', ' ')
-            .map { it.trim() }
-            .filter { it.isNotEmpty() }
 
     fun validate(kind: String, items: List<ItemDraft>, jdTitle: String): String? {
         if (kind == "jd" && jdTitle.isBlank()) return "JD 需要岗位标题"

@@ -451,3 +451,276 @@ def test_unsupported_kind_and_bad_ids(client: TestClient) -> None:
     bad = _post_text(client, token, kind="jd", title="x", text="内容", template_id="nope", template_version=9)
     assert bad.status_code == 404
     assert bad.json()["error"]["code"] == "NOT_FOUND"
+
+
+def test_parse_sanitizes_unknown_and_disabled_skill_codes_for_resume_and_jd(
+    client: TestClient, worker, db, monkeypatch
+) -> None:
+    import json
+    import httpx
+    import app.workers.runner as runner
+    from app.ai.provider import DeepSeekProvider
+    from app.core.config import Settings
+    from app.models import SkillCode
+
+    row_conc = db.get(SkillCode, "java.concurrency")
+    row_junit = db.get(SkillCode, "test.junit")
+    row_core = db.get(SkillCode, "java.core")
+    assert row_conc and row_junit and row_core
+
+    captured_prompts: list[str] = []
+    resume_text = (
+        "本科在读，计算机科学与技术专业。\n"
+        "项目：商品缓存系统，使用 Java 集合与 Redis 缓存热点数据。\n"
+        "技能：熟悉 Redis 缓存与 Java 集合。"
+    )
+    jd_text = (
+        "Java 后端实习生\n"
+        "职责：参与后端接口开发。\n"
+        "要求：熟悉 Redis 缓存设计与失效策略。\n"
+        "要求：掌握 Java 集合与基础并发。\n"
+        "要求：具备良好的沟通能力。"
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        user_prompt = body["messages"][-1]["content"]
+        captured_prompts.append(user_prompt)
+        if "把简历原文结构化" in user_prompt:
+            payload = {
+                "kind": "resume",
+                "education": [
+                    {
+                        "item_id": "edu-1",
+                        "degree": "本科在读",
+                        "major": "计算机科学与技术",
+                        "evidence": {"quote": "本科在读，计算机科学与技术专业。", "origin": "extracted"},
+                    }
+                ],
+                "work_experience": [],
+                "projects": [
+                    {
+                        "item_id": "project-1",
+                        "name": "商品缓存系统",
+                        "description": "使用 Java 集合与 Redis 缓存热点数据。",
+                        "skill_codes": ["redis.cache", "java.core", "java.concurrency", "java.core"],
+                        "evidence": {
+                            "quote": "项目：商品缓存系统，使用 Java 集合与 Redis 缓存热点数据。",
+                            "origin": "extracted",
+                        },
+                    }
+                ],
+                "skills": [
+                    {
+                        "item_id": "skill-1",
+                        "name": "Redis 缓存",
+                        "code": "redis.cache",
+                        "evidence": {"quote": "技能：熟悉 Redis 缓存与 Java 集合。", "origin": "extracted"},
+                    },
+                    {
+                        "item_id": "skill-2",
+                        "name": "Java 集合",
+                        "code": "java.core",
+                        "evidence": {"quote": "技能：熟悉 Redis 缓存与 Java 集合。", "origin": "extracted"},
+                    },
+                ],
+            }
+        else:
+            payload = {
+                "kind": "jd",
+                "role_id": "java-backend",
+                "level": "intern",
+                "title": "Java 后端实习生",
+                "responsibilities": [
+                    {
+                        "item_id": "responsibility-1",
+                        "text": "参与后端接口开发",
+                        "evidence": {"quote": "职责：参与后端接口开发。", "origin": "extracted"},
+                    }
+                ],
+                "requirements": [
+                    {
+                        "item_id": "req-1",
+                        "text": "熟悉 Redis 缓存设计与失效策略",
+                        "skill_codes": ["redis.cache"],
+                        "importance": "must",
+                        "evidence": {"quote": "要求：熟悉 Redis 缓存设计与失效策略。", "origin": "extracted"},
+                    },
+                    {
+                        "item_id": "req-2",
+                        "text": "掌握 Java 集合与基础并发",
+                        "skill_codes": ["redis.cache", "java.core", "java.concurrency", "java.core"],
+                        "importance": "nice",
+                        "evidence": {"quote": "要求：掌握 Java 集合与基础并发。", "origin": "extracted"},
+                    },
+                    {
+                        "item_id": "req-3",
+                        "text": "具备良好的沟通能力",
+                        "skill_codes": [],
+                        "importance": "nice",
+                        "evidence": {"quote": "要求：具备良好的沟通能力。", "origin": "extracted"},
+                    },
+                ],
+            }
+        return httpx.Response(
+            200,
+            json={"id": "mock-req", "choices": [{"message": {"content": json.dumps(payload, ensure_ascii=False)}}]},
+        )
+
+    settings = Settings(
+        APP_ENV="test",
+        DATABASE_URL="postgresql+psycopg://mockmate@127.0.0.1:55432/mockmate_test",
+        PRIVATE_FILE_ROOT="runtime/test-private",
+        AI_PROVIDER="deepseek",
+        AI_MODEL="deepseek-mock",
+        AI_API_KEY="mock-key",
+        AI_BASE_URL="https://api.deepseek.test",
+        ALLOW_TEST_FIXTURES=True,
+    )
+    provider = DeepSeekProvider(settings, transport=httpx.MockTransport(handler))
+    monkeypatch.setattr(runner, "get_provider", lambda _: provider)
+
+    _, token = issue_token(client)
+    try:
+        # 测试词表只启用 java.core
+        row_conc.enabled = False
+        row_junit.enabled = False
+        row_core.enabled = True
+        db.commit()
+
+        resume = _post_text(client, token, kind="resume", title="Redis 简历", text=resume_text).json()
+        job_r = client.post(
+            f"/v1/materials/{resume['id']}/parse",
+            json={"revision": 1, "external_processing_consent": True, "role_id": "java-backend", "level": "intern"},
+            headers={**auth(token), "Idempotency-Key": new_key()},
+        )
+        assert job_r.status_code == 202
+        done_r = wait_job(client, token, job_r.json()["id"], worker)
+        assert done_r["state"] == "succeeded", done_r
+
+        parsed_r = client.get(f"/v1/materials/{resume['id']}", headers=auth(token)).json()
+        assert parsed_r["state"] == "parsed"
+        profile_r = parsed_r["profile"]
+        assert profile_r["skills"][0]["item_id"] == "skill-1"
+        assert profile_r["skills"][0]["name"] == "Redis 缓存"
+        assert profile_r["skills"][0]["code"] is None
+        assert profile_r["skills"][0]["evidence"]["quote"] == "技能：熟悉 Redis 缓存与 Java 集合。"
+        assert profile_r["skills"][1]["code"] == "java.core"
+        assert profile_r["projects"][0]["skill_codes"] == ["java.core"]
+
+        jd = _post_text(client, token, kind="jd", title="Redis JD", text=jd_text).json()
+        job_j = client.post(
+            f"/v1/materials/{jd['id']}/parse",
+            json={"revision": 1, "external_processing_consent": True, "role_id": "java-backend", "level": "intern"},
+            headers={**auth(token), "Idempotency-Key": new_key()},
+        )
+        assert job_j.status_code == 202
+        done_j = wait_job(client, token, job_j.json()["id"], worker)
+        assert done_j["state"] == "succeeded", done_j
+
+        parsed_j = client.get(f"/v1/materials/{jd['id']}", headers=auth(token)).json()
+        reqs = parsed_j["profile"]["requirements"]
+        assert reqs[0]["item_id"] == "req-1"
+        assert reqs[0]["skill_codes"] == []
+        assert reqs[0]["importance"] == "must"
+        assert reqs[1]["skill_codes"] == ["java.core"]
+        assert reqs[1]["importance"] == "nice"
+        assert reqs[2]["skill_codes"] == []
+
+        assert len(captured_prompts) == 2
+        for prompt in captured_prompts:
+            assert "java.core" in prompt
+            assert "Java 基础" in prompt
+            assert "java.concurrency" not in prompt
+            assert "test.junit" not in prompt
+
+        # 空词表时结构和证据有效仍解析成功
+        row_core.enabled = False
+        db.commit()
+        resume_empty = _post_text(client, token, kind="resume", title="空词表简历", text=resume_text).json()
+        job_empty = client.post(
+            f"/v1/materials/{resume_empty['id']}/parse",
+            json={"revision": 1, "external_processing_consent": True, "role_id": "java-backend", "level": "intern"},
+            headers={**auth(token), "Idempotency-Key": new_key()},
+        )
+        done_empty = wait_job(client, token, job_empty.json()["id"], worker)
+        assert done_empty["state"] == "succeeded", done_empty
+        parsed_empty = client.get(f"/v1/materials/{resume_empty['id']}", headers=auth(token)).json()["profile"]
+        assert parsed_empty["skills"][0]["code"] is None
+        assert parsed_empty["skills"][1]["code"] is None
+        assert parsed_empty["projects"][0]["skill_codes"] == []
+    finally:
+        row_core.enabled = True
+        row_conc.enabled = True
+        row_junit.enabled = True
+        db.commit()
+
+
+def test_parse_invalid_evidence_still_fails_and_manual_confirm_rejects_unknown_with_details(
+    client: TestClient, worker, monkeypatch
+) -> None:
+    import json
+    import httpx
+    import app.workers.runner as runner
+    from app.ai.provider import DeepSeekProvider
+    from app.core.config import Settings
+
+    bad_payload = {
+        "kind": "resume",
+        "education": [],
+        "work_experience": [],
+        "projects": [],
+        "skills": [
+            {
+                "item_id": "skill-1",
+                "name": "Redis",
+                "code": "redis.cache",
+                "evidence": {"quote": "原文里根本没有这一句", "origin": "extracted"},
+            }
+        ],
+    }
+    settings = Settings(
+        APP_ENV="test",
+        DATABASE_URL="postgresql+psycopg://mockmate@127.0.0.1:55432/mockmate_test",
+        PRIVATE_FILE_ROOT="runtime/test-private",
+        AI_PROVIDER="deepseek",
+        AI_MODEL="deepseek-mock",
+        AI_API_KEY="mock-key",
+        AI_BASE_URL="https://api.deepseek.test",
+        ALLOW_TEST_FIXTURES=True,
+    )
+    provider = DeepSeekProvider(
+        settings,
+        transport=httpx.MockTransport(
+            lambda _: httpx.Response(
+                200,
+                json={"id": "req", "choices": [{"message": {"content": json.dumps(bad_payload, ensure_ascii=False)}}]},
+            )
+        ),
+    )
+    monkeypatch.setattr(runner, "get_provider", lambda _: provider)
+
+    _, token = issue_token(client)
+    mat = _post_text(client, token, kind="resume", title="坏引用", text=REVIEWED_RESUME_TEXT).json()
+    job_r = client.post(
+        f"/v1/materials/{mat['id']}/parse",
+        json={"revision": 1, "external_processing_consent": True, "role_id": "java-backend", "level": "intern"},
+        headers={**auth(token), "Idempotency-Key": new_key()},
+    )
+    done = wait_job(client, token, job_r.json()["id"], worker)
+    assert done["state"] == "failed"
+    assert done["error"]["code"] == "EVIDENCE_INVALID"
+
+    # 人工确认带未知技能编码返回 PROFILE_INVALID 及机器可读字段详情
+    bad_confirm = dict(REVIEWED_RESUME_PROFILE)
+    bad_confirm["projects"] = [
+        {**REVIEWED_RESUME_PROFILE["projects"][0], "skill_codes": ["made.up.skill"]}
+    ]
+    res = _confirm(client, token, mat, bad_confirm)
+    assert res.status_code == 400
+    err = res.json()["error"]
+    assert err["code"] == "PROFILE_INVALID"
+    assert "section=projects" in err["details"]
+    assert "item_id=project-1" in err["details"]
+    assert "field=skill_codes" in err["details"]
+    assert "made.up.skill" in err["details"]

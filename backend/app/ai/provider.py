@@ -29,7 +29,15 @@ class AiProvider(ABC):
     test_only: bool = False
 
     @abstractmethod
-    def parse_material(self, *, text: str, kind: str, role_id: str, level: str) -> dict:
+    def parse_material(
+        self,
+        *,
+        text: str,
+        kind: str,
+        role_id: str,
+        level: str,
+        skill_catalog: list[dict[str, str]] | None = None,
+    ) -> dict:
         ...
 
     @abstractmethod
@@ -174,8 +182,28 @@ class TestProvider(AiProvider):
             "outcome": "success",
         }
 
-    def parse_material(self, *, text: str, kind: str, role_id: str, level: str) -> dict:
+    def parse_material(
+        self,
+        *,
+        text: str,
+        kind: str,
+        role_id: str,
+        level: str,
+        skill_catalog: list[dict[str, str]] | None = None,
+    ) -> dict:
         self._begin_call()
+        allowed_codes = (
+            {str(item["code"]) for item in skill_catalog if item.get("code")}
+            if skill_catalog is not None
+            else None
+        )
+
+        def _filtered_codes(raw_line: str) -> list[str]:
+            codes = _skill_codes(raw_line)
+            if allowed_codes is None:
+                return codes
+            return [code for code in codes if code in allowed_codes]
+
         lines = [line.strip() for line in text.split("\n") if line.strip()]
         if kind == "resume":
             education, projects, skills, works = [], [], [], []
@@ -205,7 +233,7 @@ class TestProvider(AiProvider):
                             "item_id": f"project-{len(projects) + 1}",
                             "name": name,
                             "description": description,
-                            "skill_codes": _skill_codes(line),
+                            "skill_codes": _filtered_codes(line),
                             "evidence": {"quote": line, "origin": "extracted"},
                         }
                     )
@@ -225,7 +253,7 @@ class TestProvider(AiProvider):
                         {
                             "item_id": f"skill-{len(skills) + 1}",
                             "name": line[:60],
-                            "code": (_skill_codes(line) or [None])[0],
+                            "code": (_filtered_codes(line) or [None])[0],
                             "evidence": {"quote": line, "origin": "extracted"},
                         }
                     )
@@ -260,7 +288,7 @@ class TestProvider(AiProvider):
                     {
                         "item_id": f"req-{len(requirements) + 1}",
                         "text": line,
-                        "skill_codes": _skill_codes(line),
+                        "skill_codes": _filtered_codes(line),
                         "importance": "must",
                         "evidence": {"quote": line, "origin": "extracted"},
                     }
@@ -282,7 +310,7 @@ class TestProvider(AiProvider):
                 {
                     "item_id": "req-1",
                     "text": lines[0],
-                    "skill_codes": _skill_codes(text),
+                    "skill_codes": _filtered_codes(text),
                     "importance": "must",
                     "evidence": {"quote": lines[0], "origin": "extracted"},
                 }
@@ -762,10 +790,24 @@ class DeepSeekProvider(AiProvider):
         self.last_call["outcome"] = "success"
         return parsed, request_id
 
-    def parse_material(self, *, text: str, kind: str, role_id: str, level: str) -> dict:
+    def parse_material(
+        self,
+        *,
+        text: str,
+        kind: str,
+        role_id: str,
+        level: str,
+        skill_catalog: list[dict[str, str]] | None = None,
+    ) -> dict:
         from app.ai.prompts import parse_prompt
 
-        system, user = parse_prompt(text=text, kind=kind, role_id=role_id, level=level)
+        system, user = parse_prompt(
+            text=text,
+            kind=kind,
+            role_id=role_id,
+            level=level,
+            skill_catalog=skill_catalog,
+        )
         parsed, _ = self._chat_json(system, user)
         if kind == "resume":
             return _validate(ResumeProfile, parsed).model_dump(mode="json")

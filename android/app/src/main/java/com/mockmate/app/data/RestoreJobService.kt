@@ -24,6 +24,8 @@ data class RestoreScope(
     val interviewSessionId: String? = null,
     /** 发起恢复查询的任务 ID；只用于取任务，不参与当前页面匹配。 */
     val jobId: String = "",
+    /** 面试间与报告页共享 job 匹配屏幕名，但写操作迟到时仍需区分具体页面。 */
+    val screenKey: String? = null,
 )
 
 interface RestorePorts {

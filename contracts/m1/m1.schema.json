@@ -3491,6 +3491,24 @@
         "sample_only"
       ]
     },
+    "SkillCode": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "type": "string",
+          "minLength": 1
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "code",
+        "label"
+      ]
+    },
     "JdTemplate": {
       "type": "object",
       "additionalProperties": false,
@@ -3549,6 +3567,22 @@
           "type": "array",
           "items": {
             "$ref": "#/$defs/Role"
+          },
+          "minItems": 0
+        }
+      },
+      "required": [
+        "items"
+      ]
+    },
+    "SkillCodes": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SkillCode"
           },
           "minItems": 0
         }

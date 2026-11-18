@@ -37,13 +37,15 @@ def _load(name: str) -> dict:
 
 def seed_catalog(db: Session, sample_enabled: bool) -> None:
     data = _load("catalog.json")
+    labels = data.get("skill_code_labels") or {}
     for code in data.get("skill_codes", []):
+        display_label = (labels.get(code) or "").strip() or code
         row = db.get(SkillCode, code)
         if row is None:
-            row = SkillCode(code=code)
+            row = SkillCode(code=code, label=display_label, enabled=True)
             db.add(row)
-        row.label = code
-        row.enabled = True
+        elif not (row.label or "").strip() or row.label.strip() == code:
+            row.label = display_label
     for role in data.get("roles", []):
         row = db.get(Role, role["id"])
         if row is None:

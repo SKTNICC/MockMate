@@ -183,7 +183,7 @@ class M1JourneyDeviceTest {
 
         click("添加技能")
         composeRule.waitUntil(10_000) {
-            composeRule.onAllNodes(hasSetTextAction()).fetchSemanticsNodes().size >= 6
+            composeRule.onAllNodes(hasSetTextAction()).fetchSemanticsNodes().size >= 5
         }
         composeRule.onAllNodes(hasSetTextAction())[3].performTextInput("Java")
 

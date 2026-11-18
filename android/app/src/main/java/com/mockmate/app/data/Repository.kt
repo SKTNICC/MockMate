@@ -15,6 +15,7 @@ import com.mockmate.app.core.network.ParseRequest
 import com.mockmate.app.core.network.PreparationDto
 import com.mockmate.app.core.network.PublicPlanDto
 import com.mockmate.app.core.network.RoleDto
+import com.mockmate.app.core.network.SkillCodeDto
 import com.mockmate.app.core.network.SnapshotDto
 import com.mockmate.app.core.network.TextMaterialRequest
 import com.mockmate.app.core.network.UserDto
@@ -82,6 +83,8 @@ class M1Repository(private val api: MockMateApi) {
     suspend fun me(): ApiResult<UserDto> = call { api.me() }
 
     suspend fun roles(): ApiResult<List<RoleDto>> = call { api.roles().items }
+
+    suspend fun skillCodes(): ApiResult<List<SkillCodeDto>> = call { api.skillCodes().items }
 
     suspend fun jdTemplates(): ApiResult<List<com.mockmate.app.core.network.JdTemplateDto>> =
         call { api.jdTemplates().items }

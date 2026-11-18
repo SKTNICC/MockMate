@@ -1,7 +1,9 @@
 package com.mockmate.app.ui.screens
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -9,8 +11,11 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
@@ -24,14 +29,23 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextLayoutResult
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import com.mockmate.app.core.network.InterviewDetailDto
 import com.mockmate.app.core.network.InterviewDimensionResultDto
@@ -41,6 +55,7 @@ import com.mockmate.app.core.network.InterviewReportQuestionDto
 import com.mockmate.app.core.network.InterviewTurnDto
 import com.mockmate.app.ui.AppState
 import com.mockmate.app.ui.AppViewModel
+import com.mockmate.app.ui.LocalInterviewDraft
 import com.mockmate.app.ui.components.ConsentDialog
 import com.mockmate.app.ui.components.EmptyHint
 import com.mockmate.app.ui.components.InfoCard
@@ -49,6 +64,7 @@ import com.mockmate.app.ui.components.PrimaryAction
 import com.mockmate.app.ui.components.SecondaryAction
 import com.mockmate.app.ui.components.StatusChip
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 private fun interviewStatusLabel(status: String): String = when (status) {
@@ -175,31 +191,46 @@ fun InterviewRoomScreen(vm: AppViewModel, state: AppState, sessionId: String) {
     val detail = state.interviewDetail?.takeIf { it.session_id == sessionId }
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
+    val clipboard = LocalClipboardManager.current
     var text by rememberSaveable(sessionId) { mutableStateOf("") }
     var loadedTurnId by rememberSaveable(sessionId) { mutableStateOf<String?>(null) }
     var showSkip by rememberSaveable { mutableStateOf(false) }
     var showFinish by rememberSaveable { mutableStateOf(false) }
 
     val turn = detail?.current_turn
+    val draftReady = turn != null && loadedTurnId == turn.turn_id
     LaunchedEffect(turn?.turn_id) {
         if (turn != null && loadedTurnId != turn.turn_id) {
             loadedTurnId = turn.turn_id
             text = vm.interviewDraft(sessionId, turn.turn_id) ?: ""
         }
     }
-    LaunchedEffect(text, turn?.turn_id) {
+    LaunchedEffect(text, turn?.turn_id, draftReady) {
         val current = turn ?: return@LaunchedEffect
-        if (text.isNotEmpty()) {
+        if (draftReady && text.isNotEmpty()) {
             delay(600)
             vm.saveInterviewDraft(sessionId, current.turn_id, text)
         }
     }
     val latestText by rememberUpdatedState(text)
-    DisposableEffect(turn?.turn_id) {
+    DisposableEffect(turn?.turn_id, draftReady) {
         onDispose {
-            turn?.let { vm.saveInterviewDraft(sessionId, it.turn_id, latestText) }
+            // ViewModel 会拒绝把已确认提交的回合重新写回草稿。
+            if (draftReady) {
+                turn?.let { vm.saveInterviewDraft(sessionId, it.turn_id, latestText) }
+            }
         }
     }
+
+    val pendingTurnId = state.pendingInterviewTurnId
+    val pendingNotCurrent = pendingTurnId != null && pendingTurnId != turn?.turn_id
+    val orphanDrafts = state.interviewOrphanDrafts
+    val showNotice = pendingNotCurrent || orphanDrafts.isNotEmpty()
+    val transcript = detail?.transcript.orEmpty()
+    val currentAnswerIndex = 1 +
+        (if (showNotice) 1 else 0) +
+        (if (transcript.isEmpty()) 1 else 0) +
+        transcript.size
 
     Scaffold(
         topBar = {
@@ -214,6 +245,18 @@ fun InterviewRoomScreen(vm: AppViewModel, state: AppState, sessionId: String) {
             Column(Modifier.fillMaxSize().padding(padding)) {
                 EmptyHint(if (state.loading) "正在加载面试…" else "面试尚未加载，请刷新")
                 SecondaryAction("重新加载", onClick = { vm.loadInterview(sessionId) })
+                if (pendingNotCurrent) {
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "有上一回合的提交结果未确认；重新加载会先用原 key 重放，不会新建重复操作。",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    SecondaryAction(
+                        "确认提交结果",
+                        onClick = { vm.confirmPendingInterviewAnswer(sessionId) },
+                    )
+                }
             }
             return@Scaffold
         }
@@ -232,7 +275,7 @@ fun InterviewRoomScreen(vm: AppViewModel, state: AppState, sessionId: String) {
                     if (detail.plan_summary.sample_only) {
                         Spacer(Modifier.height(6.dp))
                         Text(
-                            "测试样板：本场使用开发样板岗位与测试 provider，不代表真实 AI 或人工审核结果。",
+                            "测试样板：本场使用开发样板岗位与题库，仅用于联调；是否使用真实模型以服务端任务记录为准。",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.error,
                         )
@@ -248,6 +291,16 @@ fun InterviewRoomScreen(vm: AppViewModel, state: AppState, sessionId: String) {
                     }
                 }
             }
+            if (showNotice) {
+                item {
+                    InterviewRecoveryNotice(
+                        pendingNotCurrent = pendingNotCurrent,
+                        orphanDrafts = orphanDrafts,
+                        onConfirmPending = { vm.confirmPendingInterviewAnswer(sessionId) },
+                        onCopy = { clipboard.setText(AnnotatedString(it)) },
+                    )
+                }
+            }
             if (detail.transcript.isEmpty()) {
                 item { EmptyHint("还没有已曝光的回合。") }
             }
@@ -261,16 +314,20 @@ fun InterviewRoomScreen(vm: AppViewModel, state: AppState, sessionId: String) {
                     turn != null -> AnswerCard(
                         detail = detail,
                         turn = turn,
-                        text = text,
+                        text = if (draftReady) text else "",
+                        draftReady = draftReady,
                         pending = state.pendingInterviewTurnId == turn.turn_id,
                         onTextChange = { next ->
                             if (next.codePointCount(0, next.length) <= 4000) text = next
                         },
-                        onSubmit = { vm.submitInterviewAnswer(sessionId, text) },
+                        onSubmit = {
+                            if (draftReady) vm.submitInterviewAnswer(sessionId, text)
+                        },
+                        onConfirmPending = { vm.confirmPendingInterviewAnswer(sessionId) },
                         onReview = {
                             // 无写请求：滚动到当前题；当前题卡片同时保留完整题干。
                             scope.launch {
-                                listState.animateScrollToItem(1 + detail.transcript.size)
+                                listState.animateScrollToItem(currentAnswerIndex)
                             }
                         },
                     )
@@ -349,13 +406,47 @@ private fun TurnCard(turn: InterviewTurnDto) {
 }
 
 @Composable
+private fun InterviewRecoveryNotice(
+    pendingNotCurrent: Boolean,
+    orphanDrafts: List<LocalInterviewDraft>,
+    onConfirmPending: () -> Unit,
+    onCopy: (String) -> Unit,
+) {
+    InfoCard(
+        title = "待确认与未提交稿",
+        subtitle = "服务端状态以最新详情为准；本机原稿只在本场保留",
+    ) {
+        if (pendingNotCurrent) {
+            Text(
+                "上一回合的提交结果仍未确认；可用原请求手动重试，不会新建重复回答。",
+                style = MaterialTheme.typography.bodySmall,
+            )
+            Spacer(Modifier.height(6.dp))
+            SecondaryAction("确认提交结果", onClick = onConfirmPending)
+        }
+        orphanDrafts.forEach { draft ->
+            Spacer(Modifier.height(8.dp))
+            Text(
+                draft.prompt?.let { "原回合：$it" } ?: "原回合（已不在当前题）",
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Text(draft.text, style = MaterialTheme.typography.bodySmall)
+            TextButton(onClick = { onCopy(draft.text) }) { Text("复制本机原稿") }
+        }
+    }
+}
+
+@Composable
 private fun AnswerCard(
     detail: InterviewDetailDto,
     turn: InterviewTurnDto,
     text: String,
+    draftReady: Boolean,
     pending: Boolean,
     onTextChange: (String) -> Unit,
     onSubmit: () -> Unit,
+    onConfirmPending: () -> Unit,
     onReview: () -> Unit,
 ) {
     val active = detail.status == "active"
@@ -373,7 +464,7 @@ private fun AnswerCard(
             value = text,
             onValueChange = onTextChange,
             modifier = Modifier.fillMaxWidth(),
-            enabled = active && !pending,
+            enabled = active && draftReady && !pending,
             minLines = 5,
             maxLines = 12,
             keyboardOptions = KeyboardOptions(
@@ -391,9 +482,13 @@ private fun AnswerCard(
         Spacer(Modifier.height(8.dp))
         PrimaryAction(
             text = if (pending) "正在确认提交结果…" else "提交回答",
-            enabled = active && text.isNotBlank() && !pending,
+            enabled = active && draftReady && text.isNotBlank() && !pending,
             onClick = onSubmit,
         )
+        if (pending) {
+            Spacer(Modifier.height(6.dp))
+            SecondaryAction(text = "确认提交结果", onClick = onConfirmPending)
+        }
         Spacer(Modifier.height(6.dp))
         SecondaryAction(text = "重看本题（不写入）", onClick = onReview)
     }
@@ -502,11 +597,16 @@ private fun InterviewControls(
     }
 }
 
+private data class LaidOutAnswer(
+    val answerId: String,
+    val quote: String?,
+    val layout: TextLayoutResult,
+)
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun InterviewReportScreen(vm: AppViewModel, state: AppState, sessionId: String) {
     val report = state.interviewReport?.takeIf { it.session_id == sessionId }
-    var selectedAnswer by rememberSaveable(sessionId) { mutableStateOf<String?>(null) }
     Scaffold(
         topBar = {
             TopAppBar(
@@ -518,11 +618,11 @@ fun InterviewReportScreen(vm: AppViewModel, state: AppState, sessionId: String) 
             )
         },
     ) { padding ->
-        LazyColumn(
-            modifier = Modifier.fillMaxSize().padding(padding).padding(horizontal = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-            if (report == null) {
+        if (report == null) {
+            LazyColumn(
+                modifier = Modifier.fillMaxSize().padding(padding).padding(horizontal = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
                 item {
                     EmptyHint(state.interviewReportError ?: "报告尚未加载。")
                     SecondaryAction("重新加载", onClick = { vm.loadInterviewReport(sessionId) })
@@ -532,82 +632,183 @@ fun InterviewReportScreen(vm: AppViewModel, state: AppState, sessionId: String) 
                     item { UnavailableReportCard(vm, detail, sessionId) }
                     items(detail.transcript, key = { it.turn_id }) { turn -> TurnCard(turn) }
                 }
-                return@LazyColumn
             }
-            item {
-                Spacer(Modifier.height(4.dp))
-                InfoCard(
-                    title = "报告概览",
-                    subtitle = "报告 ${report.report_id.take(8)}… · ${report.created_at}",
-                ) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        StatusChip(qualityLabel(report.quality), MaterialTheme.colorScheme.primary)
-                        StatusChip(
-                            if (report.end_reason == "early_finish") "提前结束" else "正常收尾",
-                            MaterialTheme.colorScheme.secondary,
-                        )
-                        StatusChip("M2 无整场总分", MaterialTheme.colorScheme.tertiary)
-                    }
-                    Spacer(Modifier.height(8.dp))
-                    KeyValueRow("岗位", "${report.role_id} · ${levelLabel(report.level)}")
-                    report.material_versions.forEach {
-                        KeyValueRow("材料", "${it.kind} · ${it.title} · v${it.source_revision}")
-                    }
-                }
-            }
-            item {
-                InfoCard(title = "覆盖度", subtitle = "计数与来源统计由后端产出") {
-                    KeyValueRow("计划主问题", "${report.coverage.planned}")
-                    KeyValueRow("已曝光", "${report.coverage.presented}")
-                    KeyValueRow("已答", "${report.coverage.answered}")
-                    KeyValueRow("跳过", "${report.coverage.skipped}")
-                    KeyValueRow("未答", "${report.coverage.unanswered}")
-                    KeyValueRow("未触达", "${report.coverage.not_reached}")
-                    KeyValueRow("已评分", "${report.coverage.scored}")
-                    KeyValueRow(
-                        "来源",
-                        "题库 ${report.coverage.bank_answered}/${report.coverage.bank_planned} · " +
-                            "生成 ${report.coverage.generated_answered}/${report.coverage.generated_planned}",
-                    )
-                    KeyValueRow(
-                        "追问",
-                        "已曝光 ${report.coverage.follow_up_presented} · 已答 ${report.coverage.follow_up_answered}",
-                    )
-                }
-            }
-            if (report.strengths.isNotEmpty()) {
-                item {
-                    InfoCard(title = "优势（引用题目与原话）") {
-                        report.strengths.forEach { finding ->
-                            Text("• ${finding.text}", style = MaterialTheme.typography.bodySmall)
-                            finding.evidence.forEach { evidence ->
-                                TextButton(onClick = { selectedAnswer = evidence.answer_id }) {
-                                    Text("原话：${evidence.quote}")
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            if (report.improvements.isNotEmpty()) {
-                item {
-                    InfoCard(title = "待改进与练习方向") {
-                        report.improvements.forEach { finding ->
-                            Text("• ${finding.text}", style = MaterialTheme.typography.bodySmall)
-                            finding.evidence.forEach { evidence ->
-                                TextButton(onClick = { selectedAnswer = evidence.answer_id }) {
-                                    Text("原话：${evidence.quote}")
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            items(report.questions, key = { it.question_id }) { question ->
-                ReportQuestionCard(question, selectedAnswer) { selectedAnswer = it }
-            }
-            item { Spacer(Modifier.height(24.dp)) }
+        } else {
+            InterviewReportBody(
+                report = report,
+                sessionId = sessionId,
+                onNotify = { message, isError -> vm.notify(message, isError) },
+                contentPadding = padding,
+            )
         }
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+internal fun InterviewReportBody(
+    report: InterviewReportDto,
+    sessionId: String = report.session_id,
+    onNotify: (String, Boolean) -> Unit,
+    modifier: Modifier = Modifier,
+    contentPadding: PaddingValues = PaddingValues(0.dp),
+    listState: LazyListState = rememberLazyListState(),
+    answerTextStyle: TextStyle = MaterialTheme.typography.bodySmall,
+    onAnswerLayoutCaptured: ((String, TextLayoutResult) -> Unit)? = null,
+) {
+    val answerRequester = remember { BringIntoViewRequester() }
+    var selectedAnswer by rememberSaveable(sessionId) { mutableStateOf<String?>(null) }
+    var selectedQuote by rememberSaveable(sessionId) { mutableStateOf<String?>(null) }
+    var jumpQuestionIndex by rememberSaveable(sessionId) { mutableStateOf(-1) }
+    var jumpNonce by rememberSaveable(sessionId) { mutableStateOf(0) }
+    var activeAnswerLayout by remember { mutableStateOf<LaidOutAnswer?>(null) }
+    val layout = remember(report) { buildReportLayoutIndex(report) }
+
+    val jumpToEvidence: (String, String) -> Unit = { answerId, quote ->
+        val index = layout.answerQuestionItemIndex[answerId]
+        val body = layout.answerText[answerId]
+        if (index == null || body == null) {
+            onNotify("无法定位该原话：旧报告可能缺少对应回答或回答已不在当前报告中", true)
+        } else {
+            if (selectedAnswer != answerId || selectedQuote != quote) {
+                activeAnswerLayout = null
+            }
+            selectedAnswer = answerId
+            selectedQuote = quote
+            jumpQuestionIndex = index
+            jumpNonce += 1
+            if (quoteRange(body, quote) == null) {
+                onNotify("已定位到原回答，但引文未在当前报告原文中逐字出现", false)
+            }
+        }
+    }
+
+    LaunchedEffect(jumpNonce, report.report_id) {
+        val targetAnswer = selectedAnswer
+        val targetQuote = selectedQuote
+        if (jumpNonce <= 0 || jumpQuestionIndex < 0 || targetAnswer == null || targetQuote == null) {
+            return@LaunchedEffect
+        }
+        val targetBody = layout.answerText[targetAnswer] ?: return@LaunchedEffect
+        listState.animateScrollToItem(jumpQuestionIndex)
+        val laidOut = snapshotFlow { activeAnswerLayout }
+            .first { current ->
+                current != null &&
+                    current.answerId == targetAnswer &&
+                    current.quote == targetQuote &&
+                    current.layout.layoutInput.text.text == targetBody
+            }!!
+        val viewportHeight = listState.layoutInfo.viewportSize.height.toFloat()
+        val quoteRect = quoteLineBounds(laidOut.layout, targetBody, targetQuote, viewportHeight)
+        runCatching {
+            if (quoteRect != null) {
+                answerRequester.bringIntoView(quoteRect)
+            } else {
+                answerRequester.bringIntoView()
+            }
+        }
+    }
+
+    LazyColumn(
+        state = listState,
+        modifier = modifier.fillMaxSize().padding(contentPadding).padding(horizontal = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        item {
+            Spacer(Modifier.height(4.dp))
+            InfoCard(
+                title = "报告概览",
+                subtitle = "报告 ${report.report_id.take(8)}… · ${report.created_at}",
+            ) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    StatusChip(qualityLabel(report.quality), MaterialTheme.colorScheme.primary)
+                    StatusChip(
+                        if (report.end_reason == "early_finish") "提前结束" else "正常收尾",
+                        MaterialTheme.colorScheme.secondary,
+                    )
+                    StatusChip("M2 无整场总分", MaterialTheme.colorScheme.tertiary)
+                }
+                Spacer(Modifier.height(8.dp))
+                KeyValueRow("岗位", "${report.role_id} · ${levelLabel(report.level)}")
+                report.material_versions.forEach {
+                    KeyValueRow("材料", "${it.kind} · ${it.title} · v${it.source_revision}")
+                }
+            }
+        }
+        item {
+            InfoCard(title = "覆盖度", subtitle = "计数与来源统计由后端产出") {
+                KeyValueRow("计划主问题", "${report.coverage.planned}")
+                KeyValueRow("已曝光", "${report.coverage.presented}")
+                KeyValueRow("已答", "${report.coverage.answered}")
+                KeyValueRow("跳过", "${report.coverage.skipped}")
+                KeyValueRow("未答", "${report.coverage.unanswered}")
+                KeyValueRow("未触达", "${report.coverage.not_reached}")
+                KeyValueRow("已评分", "${report.coverage.scored}")
+                KeyValueRow(
+                    "来源",
+                    "题库 ${report.coverage.bank_answered}/${report.coverage.bank_planned} · " +
+                        "生成 ${report.coverage.generated_answered}/${report.coverage.generated_planned}",
+                )
+                KeyValueRow(
+                    "追问",
+                    "已曝光 ${report.coverage.follow_up_presented} · 已答 ${report.coverage.follow_up_answered}",
+                )
+            }
+        }
+        if (report.strengths.isNotEmpty()) {
+            item {
+                InfoCard(title = "优势（引用题目与原话）") {
+                    report.strengths.forEach { finding ->
+                        Text("• ${finding.text}", style = MaterialTheme.typography.bodySmall)
+                        finding.evidence.forEach { evidence ->
+                            TextButton(
+                                onClick = { jumpToEvidence(evidence.answer_id, evidence.quote) }
+                            ) {
+                                Text("原话：${evidence.quote}")
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if (report.improvements.isNotEmpty()) {
+            item {
+                InfoCard(title = "待改进与练习方向") {
+                    report.improvements.forEach { finding ->
+                        Text("• ${finding.text}", style = MaterialTheme.typography.bodySmall)
+                        finding.evidence.forEach { evidence ->
+                            TextButton(
+                                onClick = { jumpToEvidence(evidence.answer_id, evidence.quote) }
+                            ) {
+                                Text("原话：${evidence.quote}")
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        items(report.questions, key = { it.question_id }) { question ->
+            ReportQuestionCard(
+                question = question,
+                selectedAnswer = selectedAnswer,
+                selectedQuote = selectedQuote,
+                answerRequester = answerRequester,
+                answerTextStyle = answerTextStyle,
+                onSelectedAnswerLayout = { answerId, quote, textLayout ->
+                    if (answerId == selectedAnswer && quote == selectedQuote) {
+                        activeAnswerLayout = LaidOutAnswer(answerId, quote, textLayout)
+                        onAnswerLayoutCaptured?.invoke(answerId, textLayout)
+                    }
+                },
+                onSelectedAnswerDisposed = { answerId ->
+                    if (activeAnswerLayout?.answerId == answerId) {
+                        activeAnswerLayout = null
+                    }
+                },
+                onJump = jumpToEvidence,
+            )
+        }
+        item { Spacer(Modifier.height(24.dp)) }
     }
 }
 
@@ -647,11 +848,17 @@ private fun UnavailableReportCard(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun ReportQuestionCard(
     question: InterviewReportQuestionDto,
     selectedAnswer: String?,
-    onSelectAnswer: (String) -> Unit,
+    selectedQuote: String?,
+    answerRequester: BringIntoViewRequester,
+    answerTextStyle: TextStyle,
+    onSelectedAnswerLayout: (String, String?, TextLayoutResult) -> Unit,
+    onSelectedAnswerDisposed: (String) -> Unit,
+    onJump: (String, String) -> Unit,
 ) {
     InfoCard(
         title = "第 ${question.position} 题 · ${if (question.source == "bank") "题库" else "生成"} · ${outcomeLabel(question.outcome)}",
@@ -670,13 +877,19 @@ private fun ReportQuestionCard(
                     style = MaterialTheme.typography.bodySmall,
                 )
                 turn.answer?.let { answer ->
-                    val highlighted = answer.answer_id == selectedAnswer
-                    Text(
-                        answer.text,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = if (highlighted) MaterialTheme.colorScheme.primary
-                        else MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+                    val selected = answer.answer_id == selectedAnswer
+                    Column(Modifier.fillMaxWidth()) {
+                        AnswerText(
+                            answerId = answer.answer_id,
+                            text = answer.text,
+                            quote = if (selected) selectedQuote else null,
+                            selected = selected,
+                            requester = answerRequester,
+                            style = answerTextStyle,
+                            onSelectedAnswerLayout = onSelectedAnswerLayout,
+                            onSelectedAnswerDisposed = onSelectedAnswerDisposed,
+                        )
+                    }
                 }
                 Spacer(Modifier.height(4.dp))
             }
@@ -684,7 +897,7 @@ private fun ReportQuestionCard(
         if (question.dimensions.isNotEmpty()) {
             Spacer(Modifier.height(6.dp))
             Text("维度结果", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
-            question.dimensions.forEach { dim -> DimensionRow(dim, onSelectAnswer) }
+            question.dimensions.forEach { dim -> DimensionRow(dim, onJump) }
         }
         question.follow_up_outcome?.let {
             Spacer(Modifier.height(4.dp))
@@ -693,10 +906,74 @@ private fun ReportQuestionCard(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun AnswerText(
+    answerId: String,
+    text: String,
+    quote: String?,
+    selected: Boolean,
+    requester: BringIntoViewRequester,
+    style: TextStyle,
+    onSelectedAnswerLayout: (String, String?, TextLayoutResult) -> Unit,
+    onSelectedAnswerDisposed: (String) -> Unit,
+) {
+    val color = if (selected) MaterialTheme.colorScheme.primary
+    else MaterialTheme.colorScheme.onSurfaceVariant
+    val range = remember(text, quote, selected) {
+        if (selected) quoteRange(text, quote.orEmpty()) else null
+    }
+    val highlightColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.22f)
+    val displayText = remember(text, range, highlightColor) {
+        if (range == null) {
+            AnnotatedString(text)
+        } else {
+            buildAnnotatedString {
+                append(text.substring(0, range.first))
+                withStyle(
+                    SpanStyle(
+                        background = highlightColor,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                ) {
+                    append(text.substring(range.first, range.last + 1))
+                }
+                append(text.substring(range.last + 1))
+            }
+        }
+    }
+    var localLayout by remember(answerId, text) { mutableStateOf<TextLayoutResult?>(null) }
+
+    LaunchedEffect(selected, quote, displayText, localLayout) {
+        val current = localLayout
+        if (selected && current != null && current.layoutInput.text == displayText) {
+            onSelectedAnswerLayout(answerId, quote, current)
+        }
+    }
+    if (selected) {
+        DisposableEffect(answerId) {
+            onDispose { onSelectedAnswerDisposed(answerId) }
+        }
+    }
+
+    val textModifier = if (selected) {
+        Modifier.fillMaxWidth().bringIntoViewRequester(requester)
+    } else {
+        Modifier.fillMaxWidth()
+    }
+    Text(
+        text = displayText,
+        style = style,
+        color = color,
+        modifier = textModifier,
+        onTextLayout = { localLayout = it },
+    )
+}
+
 @Composable
 private fun DimensionRow(
     dim: InterviewDimensionResultDto,
-    onSelectAnswer: (String) -> Unit,
+    onJump: (String, String) -> Unit,
 ) {
     Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -719,7 +996,7 @@ private fun DimensionRow(
             )
         }
         dim.evidence.forEach { evidence ->
-            TextButton(onClick = { onSelectAnswer(evidence.answer_id) }) {
+            TextButton(onClick = { onJump(evidence.answer_id, evidence.quote) }) {
                 Text("证据：${evidence.quote}")
             }
         }

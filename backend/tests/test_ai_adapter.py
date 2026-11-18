@@ -63,13 +63,44 @@ def test_parse_material_happy_path_sends_expected_request() -> None:
         return chat_response(json.dumps(RESUME_PROFILE, ensure_ascii=False))
 
     provider = provider_with(handler)
-    profile = provider.parse_material(text="本科在读", kind="resume", role_id="java-backend", level="intern")
+    profile = provider.parse_material(
+        text="本科在读",
+        kind="resume",
+        role_id="java-backend",
+        level="intern",
+        skill_catalog=[{"code": "java.core", "label": "Java 基础"}],
+    )
     assert profile["kind"] == "resume"
     assert captured["path"].endswith("/chat/completions")
     assert captured["auth"] == "Bearer test-key-not-real"
     assert captured["body"]["model"] == "deepseek-test-model"
     assert captured["body"]["response_format"] == {"type": "json_object"}
-    assert "本科在读" in captured["body"]["messages"][-1]["content"]
+    user_prompt = captured["body"]["messages"][-1]["content"]
+    assert "本科在读" in user_prompt
+    assert "java.core" in user_prompt
+    assert "Java 基础" in user_prompt
+    assert "用于从词表中关联技能" in user_prompt
+    assert "java.concurrency" not in user_prompt
+
+
+def test_parse_material_empty_catalog_forbids_invented_codes() -> None:
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return chat_response(json.dumps(RESUME_PROFILE, ensure_ascii=False))
+
+    provider = provider_with(handler)
+    provider.parse_material(
+        text="本科在读",
+        kind="resume",
+        role_id="java-backend",
+        level="intern",
+        skill_catalog=[],
+    )
+    user_prompt = captured["body"]["messages"][-1]["content"]
+    assert "当前可用技能词表为空" in user_prompt
+    assert "java.core" not in user_prompt
 
 
 def test_schema_mismatch_is_ai_invalid_output() -> None:
