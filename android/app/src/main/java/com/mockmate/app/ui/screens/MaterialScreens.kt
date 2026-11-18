@@ -1,5 +1,6 @@
 package com.mockmate.app.ui.screens
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -20,6 +21,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.relocation.BringIntoViewRequester
 import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
@@ -34,6 +36,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -47,6 +50,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import com.mockmate.app.core.network.JdTemplateDto
@@ -61,26 +65,16 @@ import com.mockmate.app.ui.components.EmptyHint
 import com.mockmate.app.ui.components.InfoCard
 import com.mockmate.app.ui.components.JobRecoveryActions
 import com.mockmate.app.ui.components.KeyValueRow
+import com.mockmate.app.ui.components.PreparationStepHeader
 import com.mockmate.app.ui.components.PrimaryAction
 import com.mockmate.app.ui.components.SecondaryAction
 import com.mockmate.app.ui.components.StatusChip
-import kotlinx.serialization.json.JsonArray
-import kotlinx.serialization.json.JsonNull
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.add
-import kotlinx.serialization.json.addJsonObject
-import kotlinx.serialization.json.buildJsonArray
-import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.put
-import kotlinx.serialization.json.putJsonArray
-import kotlinx.serialization.json.putJsonObject
 
 private fun materialStateLabel(state: String): String = when (state) {
     "uploaded" -> "待提取文本"
     "text_ready" -> "文本待核对"
     "parsed" -> "已有结构化结果"
+    "confirmed" -> "已核对确认"
     else -> state
 }
 
@@ -96,14 +90,17 @@ fun LibraryScreen(vm: AppViewModel, state: AppState, kind: String, preparationId
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text(title) },
+                title = { Text(title, fontWeight = FontWeight.SemiBold) },
                 navigationIcon = { TextButton(onClick = { vm.back() }) { Text("返回") } },
                 actions = { TextButton(onClick = { vm.refreshMaterials() }) { Text("刷新") } },
             )
         },
     ) { padding ->
         LazyColumn(
-            modifier = Modifier.fillMaxSize().padding(padding).padding(horizontal = 16.dp),
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .padding(horizontal = 16.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             item {
@@ -111,6 +108,7 @@ fun LibraryScreen(vm: AppViewModel, state: AppState, kind: String, preparationId
                 InfoCard(
                     title = "只能选择已确认版本",
                     subtitle = "解析成功不等于已确认；未确认材料不能用于匹配或生成",
+                    accentColor = MaterialTheme.colorScheme.primary,
                 ) {
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         AssistChip(
@@ -148,12 +146,15 @@ private fun MaterialListCard(
     onOpen: () -> Unit,
     onEdit: () -> Unit,
 ) {
-    InfoCard(title = material.title, subtitle = "revision ${material.revision} · 更新于 ${material.updated_at}") {
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            StatusChip(materialStateLabel(material.state))
-            if (material.template_id != null) StatusChip("内置模板 v${material.template_version}", MaterialTheme.colorScheme.tertiary)
+    InfoCard(
+        title = material.title,
+        subtitle = "revision ${material.revision} · 更新于 ${material.updated_at}",
+        headerTrailing = { StatusChip(materialStateLabel(material.state)) },
+    ) {
+        if (material.template_id != null) {
+            StatusChip("内置模板 v${material.template_version}", MaterialTheme.colorScheme.tertiary)
+            Spacer(Modifier.height(6.dp))
         }
-        Spacer(Modifier.height(8.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             AssistChip(onClick = onOpen, label = { Text("查看/核对") })
             AssistChip(onClick = onEdit, label = { Text("编辑原文") })
@@ -194,7 +195,7 @@ fun EditorScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text(if (materialId == null) "新建$kindLabel" else "编辑$kindLabel") },
+                title = { Text(if (materialId == null) "新建$kindLabel" else "编辑$kindLabel", fontWeight = FontWeight.SemiBold) },
                 navigationIcon = { TextButton(onClick = { vm.back() }) { Text("返回") } },
             )
         },
@@ -207,54 +208,56 @@ fun EditorScreen(
                 .verticalScroll(rememberScrollState())
                 .padding(horizontal = 16.dp),
         ) {
-            Text(
-                "扩展名、类型与提取结果会共同校验；支持 PDF/DOCX/TXT 与粘贴文本。保存后请到核对页确认结构。",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Spacer(Modifier.height(8.dp))
-            OutlinedTextField(
-                value = title,
-                onValueChange = {
-                    title = it.take(120)
-                    vm.saveDraft("editor-title-$kind", title)
-                },
-                label = { Text("标题（1–120 字符）") },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
-            )
-            Spacer(Modifier.height(8.dp))
-            OutlinedTextField(
-                value = text,
-                onValueChange = {
-                    text = it
-                    vm.saveDraft("editor-$kind", it)
-                },
-                label = { Text("原文（中文输入可直接使用）") },
-                modifier = Modifier.fillMaxWidth().heightIn(min = 220.dp, max = 420.dp),
-                supportingText = {
-                    Text(
-                        "$codePoints / 20000 字符" + if (overLimit) " · 超出上限" else "",
-                        color = if (overLimit) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                },
-            )
-            Spacer(Modifier.height(12.dp))
-            PrimaryAction(
-                text = "保存原文",
-                enabled = !state.loading && title.isNotBlank() && text.isNotBlank() && !overLimit,
-                onClick = {
-                    vm.saveTextMaterial(kind, materialId, title, text, preparationId)
-                },
-            )
-            if (materialId != null) {
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    "修改原文会清除旧解析结果并提升版本；旧任务不会覆盖新版本。",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+            Spacer(Modifier.height(4.dp))
+            InfoCard(
+                title = "填写${kindLabel}原文",
+                subtitle = "扩展名、类型与提取结果会共同校验；支持 PDF/DOCX/TXT 与粘贴文本。保存后请到核对页确认结构。",
+            ) {
+                OutlinedTextField(
+                    value = title,
+                    onValueChange = {
+                        title = it.take(120)
+                        vm.saveDraft("editor-title-$kind", title)
+                    },
+                    label = { Text("标题（1–120 字符）") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
                 )
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = text,
+                    onValueChange = {
+                        text = it
+                        vm.saveDraft("editor-$kind", it)
+                    },
+                    label = { Text("原文（中文输入可直接使用）") },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 220.dp, max = 420.dp),
+                    supportingText = {
+                        Text(
+                            "$codePoints / 20000 字符" + if (overLimit) " · 超出上限" else "",
+                            color = if (overLimit) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    },
+                )
+                Spacer(Modifier.height(12.dp))
+                PrimaryAction(
+                    text = "保存原文",
+                    enabled = !state.loading && title.isNotBlank() && text.isNotBlank() && !overLimit,
+                    onClick = {
+                        vm.saveTextMaterial(kind, materialId, title, text, preparationId)
+                    },
+                )
+                if (materialId != null) {
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "修改原文会清除旧解析结果并提升版本；旧任务不会覆盖新版本。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
             Spacer(Modifier.height(24.dp))
         }
@@ -267,13 +270,16 @@ fun TemplatesScreen(vm: AppViewModel, state: AppState, preparationId: String) {
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("内置练习 JD") },
+                title = { Text("内置练习 JD", fontWeight = FontWeight.SemiBold) },
                 navigationIcon = { TextButton(onClick = { vm.back() }) { Text("返回") } },
             )
         },
     ) { padding ->
         LazyColumn(
-            modifier = Modifier.fillMaxSize().padding(padding).padding(horizontal = 16.dp),
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .padding(horizontal = 16.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             item {
@@ -301,8 +307,19 @@ private fun TemplateCard(template: JdTemplateDto, onUse: () -> Unit) {
         title = template.title,
         subtitle = "${template.label} · ${template.role_id} · ${levelLabel(template.level)} · v${template.version}",
     ) {
-        Box(Modifier.heightIn(max = 160.dp)) {
-            Column(Modifier.verticalScroll(rememberScrollState())) {
+        Surface(
+            shape = RoundedCornerShape(8.dp),
+            color = MaterialTheme.colorScheme.background,
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(max = 160.dp),
+        ) {
+            Column(
+                Modifier
+                    .padding(10.dp)
+                    .verticalScroll(rememberScrollState()),
+            ) {
                 Text(template.text, style = MaterialTheme.typography.bodySmall)
             }
         }
@@ -352,7 +369,7 @@ fun ReviewScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("核对${if (kind == "resume") "简历" else "JD"}") },
+                title = { Text("核对${if (kind == "resume") "简历" else "JD"}", fontWeight = FontWeight.SemiBold) },
                 navigationIcon = { TextButton(onClick = { vm.back() }) { Text("返回") } },
             )
         },
@@ -368,12 +385,43 @@ fun ReviewScreen(
             if (material == null) {
                 EmptyHint("材料加载中…")
             } else {
+                Spacer(Modifier.height(4.dp))
+                if (prep != null) {
+                    PreparationStepHeader(
+                        currentStep = 1,
+                        materialsReady = prep.resume_snapshot_id != null && prep.jd_snapshot_id != null,
+                        matchReady = prep.match_report_id != null,
+                        planConfirmed = prep.current_plan_id != null,
+                    )
+                    Spacer(Modifier.height(10.dp))
+                }
                 InfoCard(
                     title = material.title,
                     subtitle = "revision ${material.revision} · ${materialStateLabel(material.state)}",
+                    headerTrailing = {
+                        StatusChip(
+                            text = materialStateLabel(material.state),
+                            color = if (material.state == "confirmed" || material.state == "parsed") {
+                                MaterialTheme.colorScheme.secondary
+                            } else {
+                                MaterialTheme.colorScheme.primary
+                            },
+                        )
+                    },
                 ) {
-                    Box(Modifier.heightIn(max = 200.dp)) {
-                        Column(Modifier.verticalScroll(rememberScrollState())) {
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = MaterialTheme.colorScheme.background,
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 180.dp),
+                    ) {
+                        Column(
+                            Modifier
+                                .padding(10.dp)
+                                .verticalScroll(rememberScrollState()),
+                        ) {
                             Text(material.text ?: "（尚未提取文本）", style = MaterialTheme.typography.bodySmall)
                         }
                     }
@@ -381,6 +429,22 @@ fun ReviewScreen(
                         Spacer(Modifier.height(8.dp))
                         SecondaryAction(text = "提取文件文本", onClick = { vm.extractMaterial(materialId) })
                     }
+                }
+                Spacer(Modifier.height(10.dp))
+                // 置顶 AI 解析入口：让用户一进页面就能看到一键解析，无需滑到底部
+                InfoCard(
+                    title = "AI 解析（可选）",
+                    subtitle = "解析会把你确认发送的材料文本交给服务端配置的外部模型",
+                    accentColor = MaterialTheme.colorScheme.primary,
+                    headerTrailing = { StatusChip("推荐第一步", MaterialTheme.colorScheme.primary) },
+                ) {
+                    Text(
+                        "可先点击下方「AI 解析并生成结构」自动填充条目与原文引用，再在下方核对确认；也可以直接手动填写。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    SecondaryAction(text = "AI 解析并生成结构", onClick = { showParseConsent = true })
                 }
                 Spacer(Modifier.height(8.dp))
                 JobRecoveryActions(
@@ -392,6 +456,9 @@ fun ReviewScreen(
                 InfoCard(
                     title = "结构化核对",
                     subtitle = "引用必须逐字来自上方原文；手动补充的事实请标为“我手动确认”",
+                    headerTrailing = {
+                        StatusChip("共 ${items.size} 条", MaterialTheme.colorScheme.secondary)
+                    },
                 ) {
                     if (kind == "jd") {
                         OutlinedTextField(
@@ -404,13 +471,21 @@ fun ReviewScreen(
                     }
                     val sections = if (kind == "resume") SECTION_ORDER_RESUME else SECTION_ORDER_JD
                     sections.forEach { section ->
-                        Text(
-                            sectionLabel(section),
-                            style = MaterialTheme.typography.labelLarge,
-                            modifier = Modifier.padding(top = 10.dp),
-                        )
                         val sectionItems = items.withIndex().filter { it.value.section == section }
-                        sectionItems.forEach { indexed ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 12.dp, bottom = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                        ) {
+                            Text(
+                                "${sectionLabel(section)}（${sectionItems.size}）",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                        }
+                        sectionItems.forEachIndexed { localIdx, indexed ->
                             val item = indexed.value
                             val resolvedId = ProfileDraftCodec.resolvedItemId(item, items)
                             val isFlaggedInvalid = state.invalidSkillItemId != null &&
@@ -423,7 +498,9 @@ fun ReviewScreen(
                             }
                             ProfileItemEditor(
                                 item = item,
+                                itemNumber = localIdx + 1,
                                 kind = kind,
+                                sourceText = material.text,
                                 availableSkills = state.skillCodes,
                                 skillCatalogMap = skillCatalogMap,
                                 catalogStatus = state.skillCatalogStatus,
@@ -465,7 +542,7 @@ fun ReviewScreen(
                             label = { Text("添加${sectionLabel(section)}") },
                         )
                     }
-                    Spacer(Modifier.height(10.dp))
+                    Spacer(Modifier.height(12.dp))
                     PrimaryAction(
                         text = "确认并保存为不可变版本",
                         enabled = !state.loading,
@@ -495,18 +572,12 @@ fun ReviewScreen(
                     }
                 }
                 Spacer(Modifier.height(10.dp))
-                InfoCard(title = "AI 解析（可选）", subtitle = "解析会把你确认发送的材料文本交给服务端配置的外部模型") {
-                    Text(
-                        "不解析也可以直接手动填写并确认。解析成功不代表事实已确认，仍需你核对。",
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                    Spacer(Modifier.height(8.dp))
-                    SecondaryAction(text = "AI 解析并生成结构", onClick = { showParseConsent = true })
-                }
-                Spacer(Modifier.height(10.dp))
-                InfoCard(title = "已确认版本", subtitle = "可以复用一个已确认版本；新版本不会覆盖旧版本") {
+                InfoCard(
+                    title = "已确认版本",
+                    subtitle = "确认保存后点击「用于本次准备」即可绑定并返回准备页；新版本不会覆盖旧版本",
+                ) {
                     if (state.snapshots.isEmpty()) {
-                        EmptyHint("还没有已确认版本。")
+                        EmptyHint("还没有已确认版本。请在上方核对后点击「确认并保存为不可变版本」。")
                     } else {
                         state.snapshots.forEach { snapshot ->
                             SnapshotRow(snapshot) { vm.bindSnapshot(kind, snapshot, preparationId) }
@@ -541,7 +612,9 @@ fun ReviewScreen(
 @Composable
 private fun ProfileItemEditor(
     item: ItemDraft,
+    itemNumber: Int,
     kind: String,
+    sourceText: String?,
     availableSkills: List<SkillCodeDto>,
     skillCatalogMap: Map<String, SkillCodeDto>,
     catalogStatus: SkillCatalogStatus,
@@ -554,68 +627,111 @@ private fun ProfileItemEditor(
     modifier: Modifier = Modifier,
 ) {
     var showSkillPicker by remember { mutableStateOf(false) }
+    val trimmedQuote = item.quote.trim()
+    val quoteMatched = trimmedQuote.isNotEmpty() && sourceText != null && sourceText.contains(trimmedQuote)
+    val quoteMismatchWarn = trimmedQuote.isNotEmpty() && sourceText != null && !quoteMatched && item.origin == "extracted"
 
-    Column(
-        modifier
+    Surface(
+        modifier = modifier
             .fillMaxWidth()
             .padding(vertical = 6.dp),
+        shape = RoundedCornerShape(10.dp),
+        color = MaterialTheme.colorScheme.background,
+        border = BorderStroke(
+            width = if (isFlaggedInvalid || quoteMismatchWarn) 1.5.dp else 1.dp,
+            color = when {
+                isFlaggedInvalid || quoteMismatchWarn -> MaterialTheme.colorScheme.error
+                else -> MaterialTheme.colorScheme.outlineVariant
+            },
+        ),
     ) {
-        if (isFlaggedInvalid) {
-            Text(
-                "此条目包含已失效或未启用的技能标签，请移除或替换后重新确认。",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.error,
-            )
-            Spacer(Modifier.height(4.dp))
-        }
-        fieldSpecs(kind, item.section).forEach { spec ->
-            OutlinedTextField(
-                value = item.fields[spec.key].orEmpty(),
-                onValueChange = { value ->
-                    onChange(item.copy(fields = item.fields + (spec.key to value)))
-                },
-                label = { Text(spec.label) },
-                singleLine = true,
+        Column(Modifier.padding(12.dp)) {
+            Row(
                 modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Text(
+                    text = "${sectionLabel(item.section)} #$itemNumber",
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                StatusChip(
+                    text = when {
+                        quoteMatched -> "✓ 原文引用一致"
+                        quoteMismatchWarn -> "⚠ 引用未逐字匹配"
+                        item.origin == "user_confirmed" -> "手动确认"
+                        else -> "待填写引用"
+                    },
+                    color = when {
+                        quoteMatched -> MaterialTheme.colorScheme.secondary
+                        quoteMismatchWarn -> MaterialTheme.colorScheme.error
+                        else -> MaterialTheme.colorScheme.primary
+                    },
+                )
+            }
+            Spacer(Modifier.height(6.dp))
+            if (isFlaggedInvalid) {
+                Text(
+                    "此条目包含已失效或未启用的技能标签，请移除或替换后重新确认。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+                Spacer(Modifier.height(4.dp))
+            }
+            fieldSpecs(kind, item.section).forEach { spec ->
+                OutlinedTextField(
+                    value = item.fields[spec.key].orEmpty(),
+                    onValueChange = { value ->
+                        onChange(item.copy(fields = item.fields + (spec.key to value)))
+                    },
+                    label = { Text(spec.label) },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(Modifier.height(4.dp))
+            }
+            if (supportsSkillSelection(item.section)) {
+                SkillAssociationEditor(
+                    selectedCodes = item.skillCodes,
+                    multiSelect = allowsMultipleSkills(item.section),
+                    availableSkills = availableSkills,
+                    skillCatalogMap = skillCatalogMap,
+                    catalogStatus = catalogStatus,
+                    catalogError = catalogError,
+                    onReloadCatalog = onReloadCatalog,
+                    onOpenPicker = { showSkillPicker = true },
+                    onRemoveCode = { code ->
+                        onChange(item.copy(skillCodes = item.skillCodes.filterNot { it == code }))
+                    },
+                    onClearAll = { onChange(item.copy(skillCodes = emptyList())) },
+                )
+                Spacer(Modifier.height(4.dp))
+            }
+            OutlinedTextField(
+                value = item.quote,
+                onValueChange = { onChange(item.copy(quote = it)) },
+                label = { Text("引用原文（必须与原文逐字一致）") },
+                modifier = Modifier.fillMaxWidth(),
+                supportingText = { Text("示例：${defaultQuote.take(40)}") },
             )
-            Spacer(Modifier.height(4.dp))
-        }
-        if (supportsSkillSelection(item.section)) {
-            SkillAssociationEditor(
-                selectedCodes = item.skillCodes,
-                multiSelect = allowsMultipleSkills(item.section),
-                availableSkills = availableSkills,
-                skillCatalogMap = skillCatalogMap,
-                catalogStatus = catalogStatus,
-                catalogError = catalogError,
-                onReloadCatalog = onReloadCatalog,
-                onOpenPicker = { showSkillPicker = true },
-                onRemoveCode = { code ->
-                    onChange(item.copy(skillCodes = item.skillCodes.filterNot { it == code }))
-                },
-                onClearAll = { onChange(item.copy(skillCodes = emptyList())) },
-            )
-            Spacer(Modifier.height(4.dp))
-        }
-        OutlinedTextField(
-            value = item.quote,
-            onValueChange = { onChange(item.copy(quote = it)) },
-            label = { Text("引用原文（必须与原文逐字一致）") },
-            modifier = Modifier.fillMaxWidth(),
-            supportingText = { Text("示例：${defaultQuote.take(40)}") },
-        )
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            FilterChip(
-                selected = item.origin == "extracted",
-                onClick = { onChange(item.copy(origin = "extracted")) },
-                label = { Text("自动提取") },
-            )
-            FilterChip(
-                selected = item.origin == "user_confirmed",
-                onClick = { onChange(item.copy(origin = "user_confirmed")) },
-                label = { Text("我手动确认") },
-            )
-            TextButton(onClick = onRemove) { Text("删除") }
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                FilterChip(
+                    selected = item.origin == "extracted",
+                    onClick = { onChange(item.copy(origin = "extracted")) },
+                    label = { Text("自动提取") },
+                )
+                FilterChip(
+                    selected = item.origin == "user_confirmed",
+                    onClick = { onChange(item.copy(origin = "user_confirmed")) },
+                    label = { Text("我手动确认") },
+                )
+                Spacer(Modifier.weight(1f))
+                TextButton(onClick = onRemove) { Text("删除") }
+            }
         }
     }
 
@@ -834,11 +950,20 @@ private fun SkillPickerDialog(
 
 @Composable
 private fun SnapshotRow(snapshot: SnapshotDto, onUse: () -> Unit) {
-    Column(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
-        KeyValueRow("版本", "revision ${snapshot.source_revision}")
-        KeyValueRow("确认时间", snapshot.confirmed_at)
-        KeyValueRow("标题", snapshot.title)
-        Spacer(Modifier.height(4.dp))
-        AssistChip(onClick = onUse, label = { Text("用于本次准备") })
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp),
+        shape = RoundedCornerShape(10.dp),
+        color = MaterialTheme.colorScheme.background,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+    ) {
+        Column(Modifier.padding(10.dp)) {
+            KeyValueRow("版本", "revision ${snapshot.source_revision}")
+            KeyValueRow("确认时间", snapshot.confirmed_at)
+            KeyValueRow("标题", snapshot.title)
+            Spacer(Modifier.height(6.dp))
+            AssistChip(onClick = onUse, label = { Text("用于本次准备") })
+        }
     }
 }

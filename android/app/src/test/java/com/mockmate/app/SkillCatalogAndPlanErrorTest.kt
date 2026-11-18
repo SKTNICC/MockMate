@@ -16,8 +16,10 @@ import com.mockmate.app.core.session.InMemoryDraftStorage
 import com.mockmate.app.core.session.InMemoryInterviewDraftStorage
 import com.mockmate.app.core.session.InMemorySessionStore
 import com.mockmate.app.ui.AppViewModel
+import com.mockmate.app.ui.ErrorDiagnosticsMapper
 import com.mockmate.app.ui.Screen
 import com.mockmate.app.ui.SkillCatalogStatus
+import com.mockmate.app.ui.UiMessage
 import com.mockmate.app.ui.screens.PlanErrorFormatter
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.MockRequestHandleScope
@@ -134,6 +136,36 @@ class SkillCatalogAndPlanErrorTest {
         created_at = "2026-11-18T00:00:00Z",
         updated_at = "2026-11-18T00:00:00Z",
     )
+
+    @Test
+    fun errorDiagnosticsMapperTranslatesUserExplanationAndPreservesDeveloperDetails() {
+        val aiInvalid = ErrorDiagnosticsMapper.resolve(
+            code = "AI_INVALID_OUTPUT",
+            rawMessage = "生成槽位在有限纠正后仍不合法",
+            details = listOf("slot=2", "last_code=EVALUATION_INVALID"),
+            httpStatus = 502,
+            retryable = true,
+            diagnosticContext = "jobId=job-1 · kind=plan",
+        )
+        assertEquals("AI 生成结果未通过质量校验", aiInvalid.userTitle)
+        assertTrue(aiInvalid.userExplanation.contains("第 2 个出题槽位"))
+        assertTrue(aiInvalid.formatDiagnosticText().contains("slot=2"))
+        assertTrue(aiInvalid.formatDiagnosticText().contains("HTTP 502"))
+
+        val quoteErr = ErrorDiagnosticsMapper.fromMessage(
+            UiMessage(
+                text = "evidence.quote 必须逐字出现在原文中",
+                isError = true,
+                code = "EVIDENCE_INVALID",
+                details = listOf("section=projects", "item_id=projects-1", "field=evidence.quote"),
+                httpStatus = 409,
+            )
+        )
+        assertEquals("材料核对内容需要调整", quoteErr.userTitle)
+        assertTrue(quoteErr.userExplanation.contains("项目经历（projects-1）"))
+        assertTrue(quoteErr.userExplanation.contains("引用原文"))
+        assertTrue(quoteErr.formatDiagnosticText().contains("item_id=projects-1"))
+    }
 
     @Test
     fun planErrorFormatterFormatsCountsAndFeasibleOptions() {

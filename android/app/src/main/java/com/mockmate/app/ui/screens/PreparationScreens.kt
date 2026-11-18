@@ -5,8 +5,11 @@ import android.net.Uri
 import android.provider.OpenableColumns
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -15,15 +18,15 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -33,24 +36,33 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.input.ImeAction
-import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.mockmate.app.core.network.PreparationDto
+import com.mockmate.app.core.network.RoleDto
 import com.mockmate.app.core.network.SnapshotDto
 import com.mockmate.app.ui.AppState
 import com.mockmate.app.ui.AppViewModel
-import com.mockmate.app.ui.Screen
 import com.mockmate.app.ui.components.EmptyHint
 import com.mockmate.app.ui.components.InfoCard
 import com.mockmate.app.ui.components.KeyValueRow
+import com.mockmate.app.ui.components.PreparationStepHeader
 import com.mockmate.app.ui.components.PrimaryAction
 import com.mockmate.app.ui.components.SecondaryAction
 import com.mockmate.app.ui.components.StatusChip
 
 fun levelLabel(level: String): String = if (level == "intern") "实习" else "校招"
+
+fun roleDisplayName(roleId: String, roles: List<RoleDto> = emptyList()): String {
+    roles.firstOrNull { it.id == roleId }?.name?.takeIf { it.isNotBlank() }?.let { return it }
+    return when (roleId) {
+        "java-backend" -> "Java 后端开发"
+        else -> roleId
+    }
+}
 
 fun planStateLabel(state: String?): String = when (state) {
     null, "" -> "尚无计划"
@@ -99,7 +111,7 @@ fun PreparationListScreen(vm: AppViewModel, state: AppState) {
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("MockMate 准备列表") },
+                title = { Text("MockMate 准备列表", fontWeight = FontWeight.SemiBold) },
                 actions = {
                     TextButton(onClick = { vm.refreshPreparations() }) { Text("刷新") }
                     TextButton(onClick = { vm.logout() }) { Text("退出") }
@@ -108,34 +120,63 @@ fun PreparationListScreen(vm: AppViewModel, state: AppState) {
         },
     ) { padding ->
         LazyColumn(
-            modifier = Modifier.fillMaxSize().padding(padding).padding(horizontal = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .padding(horizontal = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             item {
                 Spacer(Modifier.height(4.dp))
-                Text(
-                    "当前账号：${state.account?.username ?: ""}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Spacer(Modifier.height(8.dp))
-                PrimaryAction("新建面试准备", onClick = { vm.startNewPreparation() })
-                Spacer(Modifier.height(8.dp))
-                SecondaryAction("面试记录", onClick = { vm.openInterviewHistory() })
-                Spacer(Modifier.height(8.dp))
+                Surface(
+                    shape = RoundedCornerShape(14.dp),
+                    color = MaterialTheme.colorScheme.surface,
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Column(Modifier.padding(14.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Column {
+                                Text(
+                                    "欢迎回来，${state.account?.username ?: "候选人"}",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.SemiBold,
+                                )
+                                Text(
+                                    "当前账号：${state.account?.username ?: ""}",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            StatusChip("4 步完成模拟面试", MaterialTheme.colorScheme.primary)
+                        }
+                        Spacer(Modifier.height(10.dp))
+                        PrimaryAction("新建面试准备", onClick = { vm.startNewPreparation() })
+                        Spacer(Modifier.height(8.dp))
+                        SecondaryAction("面试记录", onClick = { vm.openInterviewHistory() })
+                    }
+                }
             }
             if (state.preparations.isEmpty()) {
                 item { EmptyHint("还没有准备。点击上方按钮创建第一份准备。") }
             }
             items(state.preparations, key = { it.id }) { prep ->
-                PreparationCard(prep = prep, onOpen = { vm.openPreparation(prep.id) })
+                PreparationCard(
+                    prep = prep,
+                    roles = state.roles,
+                    onOpen = { vm.openPreparation(prep.id) },
+                )
             }
             item {
                 Text(
                     "计划保存后，退出或杀进程再登录仍可从本列表读回同一计划；本页不展示题干与答案。",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.outline,
-                    modifier = Modifier.padding(vertical = 16.dp),
+                    modifier = Modifier.padding(vertical = 12.dp),
                 )
                 Spacer(Modifier.height(24.dp))
             }
@@ -143,28 +184,54 @@ fun PreparationListScreen(vm: AppViewModel, state: AppState) {
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun PreparationCard(prep: PreparationDto, onOpen: () -> Unit) {
+private fun PreparationCard(
+    prep: PreparationDto,
+    roles: List<RoleDto>,
+    onOpen: () -> Unit,
+) {
+    val resumeOk = prep.resume_snapshot_id != null
+    val jdOk = prep.jd_snapshot_id != null
+    val planOk = prep.current_plan_id != null
+    val nextStepHint = when {
+        planOk -> "✓ 已生成面试计划，打开后可直接开始模拟面试"
+        resumeOk && jdOk && prep.match_report_id != null -> "下一步：生成 3+3 面试计划"
+        resumeOk && jdOk -> "下一步：执行岗位匹配度分析"
+        !resumeOk && !jdOk -> "下一步：上传并确认简历与岗位 JD"
+        !resumeOk -> "下一步：补充并确认个人简历"
+        else -> "下一步：补充并确认目标岗位 JD"
+    }
+
     InfoCard(
-        title = "${prep.role_id} · ${levelLabel(prep.level)} · ${prep.main_question_count} 题",
-        subtitle = "更新于 ${prep.updated_at}",
+        title = "${roleDisplayName(prep.role_id, roles)} · ${levelLabel(prep.level)} · ${prep.main_question_count} 题",
+        subtitle = "${prep.role_id} · 更新于 ${prep.updated_at}",
     ) {
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
             StatusChip(
-                text = if (prep.resume_snapshot_id != null) "简历已确认" else "缺简历",
-                color = if (prep.resume_snapshot_id != null) MaterialTheme.colorScheme.primary
+                text = if (resumeOk) "简历已确认" else "缺简历",
+                color = if (resumeOk) MaterialTheme.colorScheme.secondary
                 else MaterialTheme.colorScheme.error,
             )
             StatusChip(
-                text = if (prep.jd_snapshot_id != null) "JD 已确认" else "缺 JD",
-                color = if (prep.jd_snapshot_id != null) MaterialTheme.colorScheme.primary
+                text = if (jdOk) "JD 已确认" else "缺 JD",
+                color = if (jdOk) MaterialTheme.colorScheme.secondary
                 else MaterialTheme.colorScheme.error,
             )
             StatusChip(
-                text = planStateLabel(if (prep.current_plan_id != null) "ready" else null),
-                color = MaterialTheme.colorScheme.tertiary,
+                text = planStateLabel(if (planOk) "ready" else null),
+                color = if (planOk) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.tertiary,
             )
         }
+        Spacer(Modifier.height(8.dp))
+        Text(
+            text = nextStepHint,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
         Spacer(Modifier.height(8.dp))
         SecondaryAction("打开", onClick = onOpen)
     }
@@ -176,7 +243,12 @@ fun SetupScreen(vm: AppViewModel, state: AppState, preparationId: String?) {
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text(if (preparationId == null) "新建面试准备" else "准备设置与材料") },
+                title = {
+                    Text(
+                        if (preparationId == null) "新建面试准备" else "准备设置与材料",
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                },
                 navigationIcon = { TextButton(onClick = { vm.back() }) { Text("返回") } },
             )
         },
@@ -213,13 +285,23 @@ private fun NewPreparationPanel(vm: AppViewModel, state: AppState, modifier: Mod
     }
 
     LazyColumn(
-        modifier = modifier.fillMaxSize().padding(horizontal = 16.dp),
+        modifier = modifier
+            .fillMaxSize()
+            .padding(horizontal = 16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         item {
             Spacer(Modifier.height(4.dp))
+            PreparationStepHeader(
+                currentStep = 1,
+                materialsReady = false,
+                matchReady = false,
+                planConfirmed = false,
+            )
+        }
+        item {
             if (enabledRoles.isEmpty()) {
-                InfoCard(title = "当前没有启用岗位") {
+                InfoCard(title = "当前没有启用岗位", accentColor = MaterialTheme.colorScheme.error) {
                     Text(
                         "服务端未启用任何岗位，无法创建准备。请联系负责人启用岗位；" +
                             "本轮不伪装多岗位支持。",
@@ -227,9 +309,14 @@ private fun NewPreparationPanel(vm: AppViewModel, state: AppState, modifier: Mod
                     )
                 }
             } else {
-                InfoCard(title = "选择岗位与级别") {
+                InfoCard(
+                    title = "选择岗位与级别",
+                    subtitle = "设定本场模拟面试的目标岗位、招聘级别与主问题数量",
+                ) {
+                    Text("目标岗位", style = MaterialTheme.typography.labelMedium)
+                    Spacer(Modifier.height(4.dp))
                     enabledRoles.forEach { item ->
-                        Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
                             FilterChip(
                                 selected = roleId == item.id,
                                 onClick = { roleId = item.id },
@@ -242,7 +329,7 @@ private fun NewPreparationPanel(vm: AppViewModel, state: AppState, modifier: Mod
                         }
                     }
                     Spacer(Modifier.height(8.dp))
-                    Text("级别", style = MaterialTheme.typography.labelMedium)
+                    Text("招聘级别", style = MaterialTheme.typography.labelMedium)
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         levels.forEach { item ->
                             FilterChip(
@@ -273,10 +360,12 @@ private fun NewPreparationPanel(vm: AppViewModel, state: AppState, modifier: Mod
             }
         }
         item {
-            InfoCard(title = "接下来") {
+            InfoCard(title = "接下来做什么？") {
                 Text(
-                    "创建后选择并核对简历与 JD；两者都确认后才能匹配和生成计划。",
+                    "1. 创建后添加个人简历与目标岗位 JD（支持上传文件、粘贴文本或使用内置练习 JD）。\n" +
+                        "2. 在核对页可通过「AI 解析」一键提取结构，两份材料都确认后即可开始匹配分析与生成计划。",
                     style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
         }
@@ -298,6 +387,8 @@ private fun ExistingPreparationPanel(
     val resume = state.resumeSnapshot
     val jd = state.jdSnapshot
     val ready = prep.resume_snapshot_id != null && prep.jd_snapshot_id != null
+    val matchDone = prep.match_report_id != null
+    val planDone = prep.current_plan_id != null
 
     val resumePicker = rememberFilePicker { uri, name, mime ->
         vm.uploadFile("resume", name.take(120), prep.id, uri, name, mime)
@@ -307,14 +398,41 @@ private fun ExistingPreparationPanel(
     }
 
     LazyColumn(
-        modifier = modifier.fillMaxSize().padding(horizontal = 16.dp),
+        modifier = modifier
+            .fillMaxSize()
+            .padding(horizontal = 16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         item {
-            InfoCard(title = "本次准备", subtitle = "修改岗位/级别/题量或材料会提升版本并使旧匹配、旧计划失效") {
+            Spacer(Modifier.height(4.dp))
+            PreparationStepHeader(
+                currentStep = 1,
+                materialsReady = ready,
+                matchReady = matchDone,
+                planConfirmed = planDone,
+                onSelectStep = { step ->
+                    when (step) {
+                        2 -> if (ready) vm.openMatch(prep.id)
+                        3 -> if (ready) vm.openPlan(prep.id)
+                    }
+                },
+            )
+        }
+        item {
+            InfoCard(
+                title = "本次准备",
+                subtitle = "修改岗位/级别/题量或材料会提升版本并使旧匹配、旧计划失效",
+                headerTrailing = {
+                    StatusChip(
+                        "${roleDisplayName(roleId, state.roles)} · ${levelLabel(level)} · $count 题",
+                        MaterialTheme.colorScheme.primary,
+                    )
+                },
+            ) {
                 if (enabledRoles.isEmpty()) {
                     Text("没有启用岗位，请返回列表。", style = MaterialTheme.typography.bodySmall)
                 } else {
+                    Text("目标岗位", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         enabledRoles.forEach { item ->
                             FilterChip(
@@ -325,6 +443,7 @@ private fun ExistingPreparationPanel(
                         }
                     }
                     val levels = enabledRoles.firstOrNull { it.id == roleId }?.levels ?: listOf("intern")
+                    Text("级别与主问题题量（题库题 + AI 题各半）", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         levels.forEach { item ->
                             FilterChip(
@@ -333,8 +452,6 @@ private fun ExistingPreparationPanel(
                                 label = { Text(levelLabel(item)) },
                             )
                         }
-                    }
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         listOf(2, 4, 6).forEach { value ->
                             FilterChip(
                                 selected = count == value,
@@ -344,7 +461,7 @@ private fun ExistingPreparationPanel(
                         }
                     }
                     val changed = roleId != prep.role_id || level != prep.level || count != prep.main_question_count
-                    Spacer(Modifier.height(8.dp))
+                    Spacer(Modifier.height(6.dp))
                     PrimaryAction(
                         text = if (changed) "保存设置（会使旧计划失效）" else "设置已保存",
                         onClick = { vm.updatePreparation(roleId, level, count) },
@@ -355,12 +472,11 @@ private fun ExistingPreparationPanel(
         }
         item {
             MaterialSlotCard(
+                stepLabel = "①",
                 kind = "resume",
                 title = "简历",
                 snapshot = resume,
                 materialId = prep.resume_snapshot_id,
-                vm = vm,
-                preparationId = prep.id,
                 onPickExisting = { vm.openLibrary("resume", prep.id) },
                 onNewText = { vm.openEditor("resume", null, prep.id) },
                 onUpload = resumePicker,
@@ -370,12 +486,11 @@ private fun ExistingPreparationPanel(
         }
         item {
             MaterialSlotCard(
+                stepLabel = "②",
                 kind = "jd",
                 title = "岗位 JD",
                 snapshot = jd,
                 materialId = prep.jd_snapshot_id,
-                vm = vm,
-                preparationId = prep.id,
                 onPickExisting = { vm.openLibrary("jd", prep.id) },
                 onNewText = { vm.openEditor("jd", null, prep.id) },
                 onUpload = jdPicker,
@@ -386,11 +501,37 @@ private fun ExistingPreparationPanel(
             )
         }
         item {
-            InfoCard(title = "下一步") {
+            InfoCard(
+                title = "下一步",
+                accentColor = if (ready) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.tertiary,
+            ) {
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = MaterialTheme.colorScheme.background,
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(
+                            text = if (prep.resume_snapshot_id != null) "✓ 1. 个人简历已核对并绑定" else "○ 1. 待添加并核对确认「个人简历」",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (prep.resume_snapshot_id != null) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.error,
+                            fontWeight = FontWeight.Medium,
+                        )
+                        Text(
+                            text = if (prep.jd_snapshot_id != null) "✓ 2. 岗位 JD 已核对并绑定" else "○ 2. 待添加并核对确认「岗位 JD」",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (prep.jd_snapshot_id != null) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.error,
+                            fontWeight = FontWeight.Medium,
+                        )
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
                 if (!ready) {
                     Text(
                         "简历与 JD 都确认后才可匹配与生成。缺失时服务端也会独立拒绝（MATERIALS_REQUIRED）。",
                         style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 } else {
                     Text(
@@ -402,7 +543,7 @@ private fun ExistingPreparationPanel(
                     Spacer(Modifier.height(8.dp))
                     PrimaryAction("查看/生成计划", onClick = { vm.openPlan(prep.id) })
                 }
-                Spacer(Modifier.height(12.dp))
+                Spacer(Modifier.height(10.dp))
                 TextButton(onClick = { showDelete = true }) { Text("删除该准备") }
             }
         }
@@ -425,14 +566,14 @@ private fun ExistingPreparationPanel(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun MaterialSlotCard(
+    stepLabel: String,
     kind: String,
     title: String,
     snapshot: SnapshotDto?,
     materialId: String?,
-    vm: AppViewModel,
-    preparationId: String,
     onPickExisting: () -> Unit,
     onNewText: () -> Unit,
     onUpload: () -> Unit,
@@ -441,14 +582,31 @@ private fun MaterialSlotCard(
     showTemplateAction: Boolean = false,
     onUseTemplate: () -> Unit = {},
 ) {
+    val isBound = materialId != null
     InfoCard(
         title = title,
-        subtitle = if (materialId != null) "已绑定版本" else "尚未绑定已确认版本",
+        subtitle = if (isBound) "$stepLabel 已绑定版本" else "$stepLabel 尚未绑定已确认版本",
+        accentColor = if (isBound) MaterialTheme.colorScheme.secondary else null,
+        headerTrailing = {
+            StatusChip(
+                text = if (isBound) "✓ 已确认就绪" else "待添加确认",
+                color = if (isBound) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.tertiary,
+            )
+        },
     ) {
         if (snapshot != null) {
-            KeyValueRow("标题", snapshot.title)
-            KeyValueRow("版本", "revision ${snapshot.source_revision}")
-            KeyValueRow("确认时间", snapshot.confirmed_at)
+            Surface(
+                shape = RoundedCornerShape(10.dp),
+                color = MaterialTheme.colorScheme.background,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Column(Modifier.padding(10.dp)) {
+                    KeyValueRow("标题", snapshot.title)
+                    KeyValueRow("版本", "revision ${snapshot.source_revision}")
+                    KeyValueRow("确认时间", snapshot.confirmed_at)
+                }
+            }
             Spacer(Modifier.height(8.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 AssistChip(
@@ -465,7 +623,16 @@ private fun MaterialSlotCard(
             )
         }
         Spacer(Modifier.height(8.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(
+            text = if (isBound) "更换或新建${title}：" else "添加${title}方式：",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(4.dp))
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
             AssistChip(onClick = onPickExisting, label = { Text("材料库") })
             AssistChip(onClick = onNewText, label = { Text("粘贴新建") })
             AssistChip(onClick = onUpload, label = { Text("上传文件") })

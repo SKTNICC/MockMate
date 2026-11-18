@@ -1,7 +1,10 @@
 package com.mockmate.app.ui.screens
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -11,17 +14,19 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.AssistChip
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
@@ -31,11 +36,14 @@ import com.mockmate.app.core.network.MatchRowDto
 import com.mockmate.app.core.network.PublicPlanDto
 import com.mockmate.app.ui.AppState
 import com.mockmate.app.ui.AppViewModel
+import com.mockmate.app.ui.ErrorDiagnosticsMapper
 import com.mockmate.app.ui.components.ConsentDialog
+import com.mockmate.app.ui.components.DeveloperDiagnosticPanel
 import com.mockmate.app.ui.components.EmptyHint
 import com.mockmate.app.ui.components.InfoCard
 import com.mockmate.app.ui.components.JobRecoveryActions
 import com.mockmate.app.ui.components.KeyValueRow
+import com.mockmate.app.ui.components.PreparationStepHeader
 import com.mockmate.app.ui.components.PrimaryAction
 import com.mockmate.app.ui.components.SecondaryAction
 import com.mockmate.app.ui.components.StatusChip
@@ -47,7 +55,7 @@ private fun matchStatusLabel(status: String): String = when (status) {
     else -> status
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun MatchScreen(vm: AppViewModel, state: AppState, preparationId: String) {
     var showConsent by rememberSaveable { mutableStateOf(false) }
@@ -58,20 +66,38 @@ fun MatchScreen(vm: AppViewModel, state: AppState, preparationId: String) {
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("匹配分析") },
+                title = { Text("匹配分析", fontWeight = FontWeight.SemiBold) },
                 navigationIcon = { TextButton(onClick = { vm.back() }) { Text("返回") } },
             )
         },
     ) { padding ->
         LazyColumn(
-            modifier = Modifier.fillMaxSize().padding(padding).padding(horizontal = 16.dp),
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .padding(horizontal = 16.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             item {
                 Spacer(Modifier.height(4.dp))
+                PreparationStepHeader(
+                    currentStep = 2,
+                    materialsReady = ready,
+                    matchReady = report != null || prep?.match_report_id != null,
+                    planConfirmed = prep?.current_plan_id != null,
+                    onSelectStep = { step ->
+                        when (step) {
+                            1 -> vm.returnToSetup(preparationId)
+                            3 -> if (ready) vm.openPlan(preparationId)
+                        }
+                    },
+                )
+            }
+            item {
                 InfoCard(
                     title = "要求 → 支持原文 → 待验证/未体现",
                     subtitle = "结论只基于已确认材料；不预测录用概率，不使用百分比",
+                    accentColor = MaterialTheme.colorScheme.primary,
                 ) {
                     Text(
                         if (ready) "匹配只读取当前已确认的简历与 JD 版本。" else "请先绑定并确认简历与 JD。",
@@ -85,6 +111,18 @@ fun MatchScreen(vm: AppViewModel, state: AppState, preparationId: String) {
                     )
                     if (report != null) {
                         Spacer(Modifier.height(8.dp))
+                        val supportedCount = report.rows.count { it.status == "supported" }
+                        val verifyCount = report.rows.count { it.status == "to_verify" }
+                        val missingCount = report.rows.count { it.status == "not_evidenced" }
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp),
+                        ) {
+                            StatusChip("有原文支持 $supportedCount", MaterialTheme.colorScheme.secondary)
+                            StatusChip("待验证 $verifyCount", MaterialTheme.colorScheme.tertiary)
+                            StatusChip("未体现 $missingCount", MaterialTheme.colorScheme.error)
+                        }
+                        Spacer(Modifier.height(6.dp))
                         Text(
                             "本报告对应准备版本 revision ${report.input_revision}；" +
                                 "如果材料或设置变化，需要重新分析。",
@@ -102,14 +140,14 @@ fun MatchScreen(vm: AppViewModel, state: AppState, preparationId: String) {
                 )
             }
             if (report == null) {
-                item { EmptyHint("还没有匹配结果。") }
+                item { EmptyHint("还没有匹配结果。点击上方「开始匹配分析」逐项比对 JD 要求与简历证据。") }
             } else {
                 items(report.rows, key = { it.requirement_id }) { row -> MatchRowCard(row) }
             }
-            item { Spacer(Modifier.height(12.dp)) }
+            item { Spacer(Modifier.height(8.dp)) }
             item {
                 if (report != null) {
-                    SecondaryAction(text = "查看/生成计划", onClick = { vm.openPlan(preparationId) })
+                    PrimaryAction(text = "查看/生成计划", onClick = { vm.openPlan(preparationId) })
                 }
                 Spacer(Modifier.height(24.dp))
             }
@@ -132,26 +170,42 @@ fun MatchScreen(vm: AppViewModel, state: AppState, preparationId: String) {
 @Composable
 private fun MatchRowCard(row: MatchRowDto) {
     val color = when (row.status) {
-        "supported" -> MaterialTheme.colorScheme.primary
+        "supported" -> MaterialTheme.colorScheme.secondary
         "to_verify" -> MaterialTheme.colorScheme.tertiary
         else -> MaterialTheme.colorScheme.error
     }
-    InfoCard(title = "要求：${row.requirement_id}") {
-        StatusChip(matchStatusLabel(row.status), color)
-        Spacer(Modifier.height(6.dp))
+    InfoCard(
+        title = "要求：${row.requirement_id}",
+        accentColor = color,
+        headerTrailing = { StatusChip(matchStatusLabel(row.status), color) },
+    ) {
         Text(row.explanation, style = MaterialTheme.typography.bodySmall)
         if (row.resume_evidence.isNotEmpty()) {
             Spacer(Modifier.height(6.dp))
-            row.resume_evidence.forEach { anchor ->
-                Text(
-                    "原文：${anchor.quote}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+            Surface(
+                shape = RoundedCornerShape(8.dp),
+                color = MaterialTheme.colorScheme.background,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Column(Modifier.padding(8.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    row.resume_evidence.forEach { anchor ->
+                        Text(
+                            "原文：${anchor.quote}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
             }
         }
         Spacer(Modifier.height(6.dp))
-        Text("准备建议：${row.suggested_focus}", style = MaterialTheme.typography.bodySmall)
+        Text(
+            "💡 准备建议：${row.suggested_focus}",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.primary,
+            fontWeight = FontWeight.Medium,
+        )
     }
 }
 
@@ -162,12 +216,14 @@ fun PlanHubScreen(vm: AppViewModel, state: AppState, preparationId: String) {
     var showInterviewConsent by rememberSaveable { mutableStateOf(false) }
     val prep = state.preparation
     val plan = state.plan
-    val ready = prep != null && prep.resume_snapshot_id != null && prep.jd_snapshot_id != null && prep.match_report_id != null
+    val materialsReady = prep != null && prep.resume_snapshot_id != null && prep.jd_snapshot_id != null
+    val matchReady = prep != null && prep.match_report_id != null
+    val ready = materialsReady && matchReady
 
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("计划") },
+                title = { Text("计划", fontWeight = FontWeight.SemiBold) },
                 navigationIcon = { TextButton(onClick = { vm.back() }) { Text("返回") } },
             )
         },
@@ -180,22 +236,63 @@ fun PlanHubScreen(vm: AppViewModel, state: AppState, preparationId: String) {
                 .padding(horizontal = 16.dp),
         ) {
             Spacer(Modifier.height(4.dp))
+            PreparationStepHeader(
+                currentStep = 3,
+                materialsReady = materialsReady,
+                matchReady = matchReady,
+                planConfirmed = plan?.state == "confirmed",
+                onSelectStep = { step ->
+                    when (step) {
+                        1 -> vm.returnToSetup(preparationId)
+                        2 -> if (materialsReady) vm.openMatch(preparationId)
+                    }
+                },
+            )
+            Spacer(Modifier.height(10.dp))
             if (plan == null) {
                 InfoCard(
                     title = "生成个性化计划",
                     subtitle = "题库与 AI 主问题严格各半（${(prep?.main_question_count ?: 6) / 2}+${(prep?.main_question_count ?: 6) / 2}）",
+                    accentColor = MaterialTheme.colorScheme.primary,
                 ) {
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = MaterialTheme.colorScheme.background,
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text(
+                                text = if (materialsReady) {
+                                    "✓ 1. 简历与 JD 已确认（简历 ${prep?.resume_snapshot_id?.take(8)}… / JD ${prep?.jd_snapshot_id?.take(8)}…）"
+                                } else {
+                                    "○ 1. 待确认简历与岗位 JD"
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = if (materialsReady) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.error,
+                            )
+                            Text(
+                                text = if (matchReady) "✓ 2. 已完成当前版本的匹配分析" else "○ 2. 待完成当前版本的匹配分析",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = if (matchReady) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.error,
+                            )
+                        }
+                    }
+                    Spacer(Modifier.height(8.dp))
                     if (!ready) {
                         Text(
                             "生成前提：已确认简历与 JD，并完成一次当前版本的匹配分析。",
                             style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
+                        if (materialsReady && !matchReady) {
+                            Spacer(Modifier.height(8.dp))
+                            SecondaryAction(
+                                text = "前往匹配分析",
+                                onClick = { vm.openMatch(preparationId) },
+                            )
+                        }
                     } else {
-                        Text(
-                            "材料版本：简历 ${prep?.resume_snapshot_id?.take(8)}… / JD ${prep?.jd_snapshot_id?.take(8)}…",
-                            style = MaterialTheme.typography.bodySmall,
-                        )
-                        Spacer(Modifier.height(8.dp))
                         PrimaryAction(
                             text = "生成计划",
                             enabled = !state.loading,
@@ -216,14 +313,26 @@ fun PlanHubScreen(vm: AppViewModel, state: AppState, preparationId: String) {
                     } else {
                         null
                     }
+                    val friendly = remember(planError) {
+                        ErrorDiagnosticsMapper.resolve(
+                            code = planError.code,
+                            rawMessage = planError.rawServerMessage ?: planError.message,
+                            details = planError.details,
+                            httpStatus = planError.httpStatus,
+                            retryable = planError.retryable,
+                            diagnosticContext = planError.diagnosticContext,
+                        )
+                    }
                     InfoCard(
-                        title = if (insufficient != null) "题库覆盖不足" else "无法生成计划",
-                        subtitle = if (insufficient != null) "题库与 AI 主问题需严格各半" else planError.code,
+                        title = if (insufficient != null) "题库覆盖不足" else "无法生成计划：${friendly.userTitle}",
+                        subtitle = if (insufficient != null) "题库与 AI 主问题需严格各半" else (planError.code ?: "PLAN_ERROR"),
+                        accentColor = MaterialTheme.colorScheme.error,
                     ) {
                         if (insufficient != null) {
                             Text(
                                 insufficient.summary,
                                 style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.SemiBold,
                                 color = MaterialTheme.colorScheme.error,
                             )
                             Spacer(Modifier.height(4.dp))
@@ -241,17 +350,35 @@ fun PlanHubScreen(vm: AppViewModel, state: AppState, preparationId: String) {
                                 )
                             }
                         } else {
+                            if (friendly.userExplanation != planError.message) {
+                                Text(
+                                    friendly.userExplanation,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                )
+                                Spacer(Modifier.height(4.dp))
+                            }
                             Text(
                                 planError.message,
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.error,
                             )
+                            friendly.suggestion?.let { hint ->
+                                Spacer(Modifier.height(4.dp))
+                                Text(
+                                    "💡 $hint",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.primary,
+                                )
+                            }
                             Spacer(Modifier.height(8.dp))
                             SecondaryAction(
                                 text = "回到准备检查材料或设置",
                                 onClick = { vm.returnToSetup(preparationId) },
                             )
                         }
+                        Spacer(Modifier.height(6.dp))
+                        DeveloperDiagnosticPanel(info = friendly)
                     }
                 }
             } else {
@@ -264,7 +391,12 @@ fun PlanHubScreen(vm: AppViewModel, state: AppState, preparationId: String) {
                         onClick = { vm.confirmPlan(plan.id) },
                     )
                 } else {
-                    InfoCard(title = "已保存", subtitle = "该计划已确认，可开始一场正式文字面试") {
+                    InfoCard(
+                        title = "已保存",
+                        subtitle = "该计划已确认，可开始一场正式文字面试",
+                        accentColor = MaterialTheme.colorScheme.secondary,
+                        headerTrailing = { StatusChip("第 4 步已解锁", MaterialTheme.colorScheme.secondary) },
+                    ) {
                         val existing = state.interviewForPlan
                         Text(
                             if (existing == null) {
@@ -349,18 +481,28 @@ private fun PlanSummaryCard(plan: PublicPlanDto) {
     InfoCard(
         title = "计划摘要",
         subtitle = "计划 ${plan.id.take(8)}… · revision ${plan.revision}",
+        accentColor = if (plan.state == "confirmed") MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.primary,
     ) {
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             StatusChip(if (plan.state == "confirmed") "已确认" else "待确认", MaterialTheme.colorScheme.primary)
             StatusChip("题库 ${plan.source_counts.bank} + 生成 ${plan.source_counts.generated}", MaterialTheme.colorScheme.secondary)
         }
         Spacer(Modifier.height(8.dp))
-        KeyValueRow("岗位", plan.role_id)
-        KeyValueRow("级别", levelLabel(plan.level))
-        KeyValueRow("题量", "${plan.main_question_count} 题")
-        KeyValueRow("准备版本", "revision ${plan.input_revision}")
-        KeyValueRow("创建时间", plan.created_at)
-        KeyValueRow("确认时间", plan.confirmed_at ?: "尚未确认")
+        Surface(
+            shape = RoundedCornerShape(10.dp),
+            color = MaterialTheme.colorScheme.background,
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Column(Modifier.padding(10.dp)) {
+                KeyValueRow("岗位", "${roleDisplayName(plan.role_id)} (${plan.role_id})")
+                KeyValueRow("级别", levelLabel(plan.level))
+                KeyValueRow("题量", "${plan.main_question_count} 题")
+                KeyValueRow("准备版本", "revision ${plan.input_revision}")
+                KeyValueRow("创建时间", plan.created_at)
+                KeyValueRow("确认时间", plan.confirmed_at ?: "尚未确认")
+            }
+        }
         if (plan.focus_areas.isNotEmpty()) {
             Spacer(Modifier.height(8.dp))
             Text("能力重点", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)

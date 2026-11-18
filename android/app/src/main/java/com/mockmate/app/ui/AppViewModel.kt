@@ -92,6 +92,10 @@ data class UiMessage(
     val text: String,
     val isError: Boolean = true,
     val code: String? = null,
+    val details: List<String> = emptyList(),
+    val httpStatus: Int? = null,
+    val retryable: Boolean = false,
+    val diagnosticContext: String? = null,
 )
 
 /** 已无法随当前回合提交、但仍属于本机的加密草稿；只用于查看或复制。 */
@@ -112,6 +116,10 @@ data class PlanErrorState(
     val code: String?,
     val message: String,
     val details: List<String> = emptyList(),
+    val rawServerMessage: String? = null,
+    val httpStatus: Int? = null,
+    val retryable: Boolean = false,
+    val diagnosticContext: String? = null,
 )
 
 sealed interface Screen {
@@ -315,6 +323,17 @@ class AppViewModel internal constructor(
         state.value = block(state.value)
     }
 
+    private fun buildDiagnosticContext(page: RestoreScope? = currentScope()): String? {
+        val s = page ?: return null
+        return buildString {
+            append("screen=${s.screenKey ?: s.screen}")
+            s.preparationId?.let { append(" · prep=$it") }
+            s.materialId?.let { append(" · material=$it") }
+            s.interviewSessionId?.let { append(" · session=$it") }
+            if (s.jobId.isNotBlank()) append(" · job=${s.jobId}")
+        }
+    }
+
     private fun showError(
         result: ApiResult.Err,
         ctx: RequestContext? = null,
@@ -331,7 +350,15 @@ class AppViewModel internal constructor(
                     it.copy(
                         loading = false,
                         busyLabel = null,
-                        message = UiMessage(result.message, isError = true, code = result.code),
+                        message = UiMessage(
+                            result.message,
+                            isError = true,
+                            code = result.code,
+                            details = result.details,
+                            httpStatus = result.httpStatus,
+                            retryable = result.retryable,
+                            diagnosticContext = "screen=auth",
+                        ),
                     )
                 }
                 return
@@ -344,7 +371,13 @@ class AppViewModel internal constructor(
                     stack = listOf(Screen.Auth),
                     loading = false,
                     busyLabel = null,
-                    message = UiMessage("登录已过期，请重新登录", isError = true, code = result.code),
+                    message = UiMessage(
+                        "登录已过期，请重新登录",
+                        isError = true,
+                        code = result.code,
+                        details = result.details,
+                        httpStatus = result.httpStatus,
+                    ),
                 )
             }
             return
@@ -356,7 +389,15 @@ class AppViewModel internal constructor(
             it.copy(
                 loading = false,
                 busyLabel = null,
-                message = UiMessage(result.message, isError = true, code = result.code),
+                message = UiMessage(
+                    result.message,
+                    isError = true,
+                    code = result.code,
+                    details = result.details,
+                    httpStatus = result.httpStatus,
+                    retryable = result.retryable,
+                    diagnosticContext = buildDiagnosticContext(page ?: currentScope()),
+                ),
             )
         }
     }
@@ -1543,6 +1584,10 @@ class AppViewModel internal constructor(
                                     code = job.code,
                                     message = formattedMessage,
                                     details = job.details,
+                                    rawServerMessage = job.message,
+                                    httpStatus = job.httpStatus,
+                                    retryable = job.retryable,
+                                    diagnosticContext = "POST /preparations/$preparationId/generate-plan · rev=${prep.revision}",
                                 ),
                             )
                         }
@@ -2845,6 +2890,9 @@ class AppViewModel internal constructor(
                                 outcome.message,
                                 isError = isError,
                                 code = outcome.job.error?.code,
+                                details = outcome.job.error?.details ?: emptyList(),
+                                retryable = outcome.job.retryable,
+                                diagnosticContext = "jobId=${outcome.job.id} · kind=${outcome.job.kind} · state=${outcome.job.state} · attempt=${outcome.job.attempt}",
                             ),
                         )
                     }
@@ -2863,11 +2911,19 @@ class AppViewModel internal constructor(
                 } else {
                     outcome.message
                 }
+                val jobCtx = "jobId=${outcome.job.id} · kind=${outcome.job.kind} · state=${outcome.job.state} · attempt=${outcome.job.attempt} · target=${outcome.job.target_id} (rev=${outcome.job.input_revision})"
                 update {
                     it.copy(
                         job = outcome.job,
                         planError = if (outcome.job.kind == "plan" && outcome.job.state == "failed" && planErr != null) {
-                            PlanErrorState(planErr.code, formattedOutcomeMsg, planErr.details)
+                            PlanErrorState(
+                                code = planErr.code,
+                                message = formattedOutcomeMsg,
+                                details = planErr.details,
+                                rawServerMessage = planErr.message,
+                                retryable = outcome.job.retryable,
+                                diagnosticContext = jobCtx,
+                            )
                         } else {
                             it.planError
                         },
@@ -2878,6 +2934,9 @@ class AppViewModel internal constructor(
                             isError = isError,
                             code = outcome.job.error?.code
                                 ?: if (outcome.job.state == "superseded") "SUPERSEDED" else null,
+                            details = outcome.job.error?.details ?: emptyList(),
+                            retryable = outcome.job.retryable,
+                            diagnosticContext = jobCtx,
                         ),
                     )
                 }

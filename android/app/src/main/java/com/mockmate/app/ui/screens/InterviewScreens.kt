@@ -1,5 +1,6 @@
 package com.mockmate.app.ui.screens
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -16,11 +17,13 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.relocation.BringIntoViewRequester
 import androidx.compose.foundation.relocation.bringIntoViewRequester
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -55,8 +58,10 @@ import com.mockmate.app.core.network.InterviewReportQuestionDto
 import com.mockmate.app.core.network.InterviewTurnDto
 import com.mockmate.app.ui.AppState
 import com.mockmate.app.ui.AppViewModel
+import com.mockmate.app.ui.ErrorDiagnosticsMapper
 import com.mockmate.app.ui.LocalInterviewDraft
 import com.mockmate.app.ui.components.ConsentDialog
+import com.mockmate.app.ui.components.DeveloperDiagnosticPanel
 import com.mockmate.app.ui.components.EmptyHint
 import com.mockmate.app.ui.components.InfoCard
 import com.mockmate.app.ui.components.KeyValueRow
@@ -379,28 +384,50 @@ fun InterviewRoomScreen(vm: AppViewModel, state: AppState, sessionId: String) {
 
 @Composable
 private fun TurnCard(turn: InterviewTurnDto) {
+    val statusText = when (turn.status) {
+        "pending" -> "当前待作答"
+        "answered" -> "已提交"
+        "skipped" -> "已跳过"
+        else -> "未答"
+    }
+    val statusColor = when (turn.status) {
+        "answered" -> MaterialTheme.colorScheme.secondary
+        "pending" -> MaterialTheme.colorScheme.primary
+        else -> MaterialTheme.colorScheme.tertiary
+    }
     InfoCard(
         title = if (turn.kind == "follow_up") {
             "追问 · 第 ${turn.position} 题"
         } else {
             "第 ${turn.position} 题"
         },
-        subtitle = when (turn.status) {
-            "pending" -> "当前待作答"
-            "answered" -> "已提交"
-            "skipped" -> "已跳过"
-            else -> "未答"
-        },
+        subtitle = statusText,
+        headerTrailing = { StatusChip(statusText, statusColor) },
     ) {
-        Text(turn.prompt, style = MaterialTheme.typography.bodyMedium)
+        Text(
+            text = turn.prompt,
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.Medium,
+        )
         turn.answer?.let { answer ->
             Spacer(Modifier.height(8.dp))
-            Text(
-                "我的回答",
-                style = MaterialTheme.typography.labelLarge,
-                fontWeight = FontWeight.SemiBold,
-            )
-            Text(answer.text, style = MaterialTheme.typography.bodySmall)
+            Surface(
+                shape = RoundedCornerShape(10.dp),
+                color = MaterialTheme.colorScheme.background,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Column(Modifier.padding(10.dp)) {
+                    Text(
+                        "我的回答",
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text(answer.text, style = MaterialTheme.typography.bodySmall)
+                }
+            }
         }
     }
 }
@@ -415,6 +442,7 @@ private fun InterviewRecoveryNotice(
     InfoCard(
         title = "待确认与未提交稿",
         subtitle = "服务端状态以最新详情为准；本机原稿只在本场保留",
+        accentColor = MaterialTheme.colorScheme.tertiary,
     ) {
         if (pendingNotCurrent) {
             Text(
@@ -457,8 +485,27 @@ private fun AnswerCard(
             active -> "提交后先保存回答，再准备下一步"
             else -> "面试已暂停，请先继续"
         },
+        accentColor = MaterialTheme.colorScheme.primary,
+        headerTrailing = {
+            StatusChip(
+                text = if (turn.kind == "follow_up") "面试官追问" else "主问题作答",
+                color = MaterialTheme.colorScheme.primary,
+            )
+        },
     ) {
-        Text(turn.prompt, style = MaterialTheme.typography.bodyMedium)
+        Surface(
+            shape = RoundedCornerShape(10.dp),
+            color = MaterialTheme.colorScheme.background,
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text(
+                text = turn.prompt,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Medium,
+                modifier = Modifier.padding(10.dp),
+            )
+        }
         Spacer(Modifier.height(8.dp))
         OutlinedTextField(
             value = text,
@@ -497,11 +544,33 @@ private fun AnswerCard(
 @Composable
 private fun DecidingCard(vm: AppViewModel, detail: InterviewDetailDto, sessionId: String) {
     val job = detail.follow_up_job
-    InfoCard(title = "回答已保存，正在准备下一步", subtitle = "追问判定中；不会重复提交回答") {
+    val hasError = job?.error_code != null || job?.state == "failed" || job?.state == "interrupted"
+    InfoCard(
+        title = "回答已保存，正在准备下一步",
+        subtitle = "追问判定中；不会重复提交回答",
+        accentColor = if (hasError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
+    ) {
         if (job != null) {
             KeyValueRow("任务", job.id.take(8) + "…")
             KeyValueRow("状态", job.state)
             job.error_code?.let { KeyValueRow("错误", it) }
+            if (hasError) {
+                val diag = remember(job, sessionId) {
+                    ErrorDiagnosticsMapper.resolve(
+                        code = job.error_code,
+                        rawMessage = "追问判定未完成（状态：${job.state}）",
+                        retryable = detail.allowed_actions.contains("retry_follow_up"),
+                        diagnosticContext = "session=$sessionId · followUpJob=${job.id} · attempt=${job.attempt} · state=${job.state}",
+                    )
+                }
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    text = diag.userExplanation,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+                DeveloperDiagnosticPanel(info = diag)
+            }
         }
         if (detail.status == "paused") {
             Spacer(Modifier.height(6.dp))
@@ -534,6 +603,11 @@ private fun EndedCard(vm: AppViewModel, detail: InterviewDetailDto, sessionId: S
     InfoCard(
         title = if (detail.end_reason == "early_finish") "已提前结束" else "面试已收尾",
         subtitle = "报告状态：${reportStateLabel(detail.report_state)}",
+        accentColor = when (detail.report_state) {
+            "ready" -> MaterialTheme.colorScheme.secondary
+            "failed" -> MaterialTheme.colorScheme.error
+            else -> MaterialTheme.colorScheme.primary
+        },
     ) {
         detail.closing_text?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
         Spacer(Modifier.height(8.dp))
@@ -550,6 +624,14 @@ private fun EndedCard(vm: AppViewModel, detail: InterviewDetailDto, sessionId: S
             "failed" -> {
                 Text("评分未完成。可重试评分任务，或生成保留原文与覆盖度的基础报告。", style = MaterialTheme.typography.bodySmall)
                 detail.report_job?.let { job ->
+                    val diag = remember(job, sessionId) {
+                        ErrorDiagnosticsMapper.resolve(
+                            code = job.error_code,
+                            rawMessage = "面试报告评分任务未完成（状态：${job.state}）",
+                            retryable = detail.allowed_actions.contains("retry_report"),
+                            diagnosticContext = "session=$sessionId · reportJob=${job.id} · attempt=${job.attempt} · state=${job.state}",
+                        )
+                    }
                     if (detail.allowed_actions.contains("retry_report")) {
                         Spacer(Modifier.height(6.dp))
                         SecondaryAction(
@@ -564,6 +646,8 @@ private fun EndedCard(vm: AppViewModel, detail: InterviewDetailDto, sessionId: S
                             onClick = { vm.createBasicInterviewReport(sessionId) },
                         )
                     }
+                    Spacer(Modifier.height(4.dp))
+                    DeveloperDiagnosticPanel(info = diag)
                 }
             }
             else -> Text("本场没有可用的报告。", style = MaterialTheme.typography.bodySmall)
@@ -830,6 +914,14 @@ private fun UnavailableReportCard(
         )
         val job = detail.report_job
         if (job != null && detail.report_state == "failed") {
+            val diag = remember(job, sessionId) {
+                ErrorDiagnosticsMapper.resolve(
+                    code = job.error_code,
+                    rawMessage = "面试报告生成失败（状态：${job.state}）",
+                    retryable = detail.allowed_actions.contains("retry_report"),
+                    diagnosticContext = "session=$sessionId · reportJob=${job.id} · attempt=${job.attempt} · state=${job.state}",
+                )
+            }
             if (detail.allowed_actions.contains("retry_report")) {
                 Spacer(Modifier.height(6.dp))
                 SecondaryAction(
@@ -844,6 +936,8 @@ private fun UnavailableReportCard(
                     onClick = { vm.createBasicInterviewReport(sessionId) },
                 )
             }
+            Spacer(Modifier.height(4.dp))
+            DeveloperDiagnosticPanel(info = diag)
         }
     }
 }
