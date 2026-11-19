@@ -22,6 +22,7 @@ class JobWatch(
     private val isVisible: () -> Boolean,
     private val onEffect: suspend (RestoreUiEffect) -> Unit,
     private val intervalMillis: Long = 900,
+    private val onStopped: (accountId: String, jobId: String) -> Unit = { _, _ -> },
 ) {
     private class Entry(
         val key: String,
@@ -52,11 +53,20 @@ class JobWatch(
 
     fun isWatching(accountId: String, jobId: String): Boolean = active.containsKey("$accountId/$jobId")
 
+    fun cancel(accountId: String, jobId: String) {
+        val removed = active.remove("$accountId/$jobId") ?: return
+        removed.handle?.cancel()
+        onStopped(removed.scope.accountId, removed.jobId)
+    }
+
     /** 账号切换、退出或回到后台时取消全部订阅；前后台切换不得叠加并行轮询。 */
     fun cancelAll() {
-        val snapshot = active.values.toList()
-        active.clear()
-        snapshot.forEach { it.handle?.cancel() }
+        val keys = active.keys.toList()
+        keys.forEach { key ->
+            val removed = active.remove(key) ?: return@forEach
+            removed.handle?.cancel()
+            onStopped(removed.scope.accountId, removed.jobId)
+        }
     }
 
     private fun isTerminal(outcome: RestoreOutcome): Boolean =
@@ -86,7 +96,9 @@ class JobWatch(
                 }
             }
         } finally {
-            active.remove(holder.key, holder)
+            if (active.remove(holder.key, holder)) {
+                onStopped(holder.scope.accountId, holder.jobId)
+            }
         }
     }
 }

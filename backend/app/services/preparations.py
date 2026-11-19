@@ -420,10 +420,64 @@ def build_generation_context(
         if stem and stem not in avoid_stems:
             avoid_stems.append(stem)
 
+    bank_summaries = [
+        {
+            "question_id": item.question.question_id,
+            "focus": str(item.content.get("focus") or "")[:60],
+            "topic_key": str(item.content.get("topic_key") or ""),
+        }
+        for item in bank_sources
+    ]
+    used_anchor_refs = {
+        str(ref)
+        for summary in (previous_summaries or [])
+        if isinstance(summary, dict)
+        for ref in (summary.get("anchor_refs") or [])
+        if ref
+    }
+    preferred_anchor_ids = [
+        anchor["item_id"]
+        for anchor in resume_anchors
+        if f"{anchor['snapshot_id']}/{anchor['item_id']}" not in used_anchor_refs
+    ]
+    if not preferred_anchor_ids:
+        preferred_anchor_ids = [
+            anchor["item_id"]
+            for anchor in jd_anchors
+            if f"{anchor['snapshot_id']}/{anchor['item_id']}" not in used_anchor_refs
+        ]
+
+    if question_type == "knowledge":
+        slot_angle = (
+            "技术机制与前提边界：结合本次可用依据卡与材料背景，考察底层机制、选型取舍或"
+            "不可依赖的隐含假设（如容量与增长倍率契约、双结构一致性或散列分布前提）；"
+            "严禁重复 bank_covered_topics 已考主题，也不要与前序槽位撞题。"
+        )
+    elif slot_index == 1:
+        slot_angle = (
+            "方案设计与实现拆解：优先围绕 preferred_anchor_ids 中的真实项目或实习经历，"
+            "考察需求拆解、数据结构/接口设计取舍或核心实现依据；"
+            "严禁照搬题库示例领域，也不要抢占题库已考的共享集合并发修改模板。"
+        )
+    elif slot_index >= 3:
+        slot_angle = (
+            "失败路径、排查定位与变更协同：优先切到 preferred_anchor_ids 中前序槽位未覆盖的材料条目或不同模块；"
+            "重点考察异常/失败路径验证、问题排查定位、回归验证或变更协同边界，"
+            "严禁复述前序槽位的假设场景或重问同一参数校验/并发边界题。"
+        )
+    else:
+        slot_angle = (
+            "边界验证与异常处理：优先围绕前序槽位未覆盖的材料条目或不同任务维度，"
+            "考察关键边界条件识别、异常处理与可检验验证方案。"
+        )
+
     context = {
         "slot_key": slot_key,
         "slot_index": slot_index,
         "question_type": question_type,
+        "slot_angle": slot_angle,
+        "preferred_anchor_ids": preferred_anchor_ids,
+        "bank_summaries": bank_summaries,
         "target_skill_codes": target_skill_codes,
         "match_focus": match_focus[:6],
         "prefer_jd_scenario": not (

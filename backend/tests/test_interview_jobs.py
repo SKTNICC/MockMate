@@ -574,3 +574,309 @@ def test_invalid_evidence_clears_improvement_and_overview_finding(
     )
     assert bad_improvement not in str(report["strengths"])
     assert bad_improvement not in str(report["improvements"])
+
+
+def test_follow_up_blank_fields_and_score_strict_types_and_corrupt_cache_recovery(
+    client: TestClient, worker, monkeypatch, db
+) -> None:
+    """追问拒绝空白引文/目标与非空 advance；评分拒绝 bool/str/float，接受 0/4，坏报告槽只重做该题。"""
+    _, token = issue_token(client)
+    _prep, plan = create_confirmed_plan(client, token, worker, count=4)
+    session_id = start_interview(client, token, plan)["session_id"]
+    current = detail(client, token, session_id)
+    accepted = answer(
+        client,
+        token,
+        session_id,
+        revision=current["revision"],
+        turn_id=current["current_turn"]["turn_id"],
+        text=LONG_ANSWER,
+    )
+    assert accepted.status_code == 202
+    follow_job_id = accepted.json()["job_id"]
+
+    # 追问：空白引文、空白目标、advance 携带非 null 字段均拒绝
+    bad_decisions = [
+        {"decision": "ask", "prompt": "你能说明这里的具体实现细节与边界条件吗？", "answer_quote": " ", "target": "细节"},
+        {"decision": "ask", "prompt": "你能说明这里的具体实现细节与边界条件吗？", "answer_quote": LONG_ANSWER[:10], "target": " "},
+        {"decision": "advance", "prompt": "", "answer_quote": None, "target": None},
+        {"decision": "advance", "prompt": None, "answer_quote": " ", "target": None},
+    ]
+    for idx, bad_dec in enumerate(bad_decisions):
+        # 直接测试 _validate_follow_up_decision
+        with pytest.raises(AppError) as err:
+            worker._validate_follow_up_decision(bad_dec, {"stem": "原主问题？"}, LONG_ANSWER)
+        assert err.value.code == "AI_INVALID_OUTPUT", (idx, bad_dec)
+
+    # 通过任务失败与合法恢复验证一次完整追问拒绝 -> 重试 -> advance（省略可空字段）
+    monkeypatch.setattr(
+        "app.workers.runner.get_provider",
+        lambda _settings: StubProvider(decide=lambda **_kw: bad_decisions[0]),
+    )
+    worker.run_once()
+    failed_fu = client.get(f"/v1/jobs/{follow_job_id}", headers=auth(token)).json()
+    assert failed_fu["state"] == "failed"
+    assert failed_fu["error"]["code"] == "AI_INVALID_OUTPUT"
+    assert failed_fu["retryable"] is True
+
+    assert (
+        client.post(
+            f"/v1/jobs/{follow_job_id}/retry",
+            json={"expected_attempt": 1},
+            headers={**auth(token), "Idempotency-Key": new_key()},
+        ).status_code
+        == 202
+    )
+    monkeypatch.setattr(
+        "app.workers.runner.get_provider",
+        lambda _settings: StubProvider(decide=lambda **_kw: {"decision": "advance"}),
+    )
+    assert wait_job(client, token, follow_job_id, worker, attempts=4)["state"] == "succeeded"
+
+    # 完成剩余面试并拿到 report_job
+    monkeypatch.setattr("app.workers.runner.get_provider", lambda _settings: TestProvider())
+    final = complete_six_question_interview(client, token, worker, session_id)
+    report_job_id = uuid.UUID(final["report_job"]["id"])
+
+    session_uuid = uuid.UUID(session_id)
+    questions = db.scalars(
+        select(InterviewQuestion)
+        .where(InterviewQuestion.session_id == session_uuid)
+        .order_by(InterviewQuestion.position)
+    ).all()
+    turns = db.scalars(
+        select(InterviewTurn).where(InterviewTurn.question_id.in_([q.id for q in questions]))
+    ).all()
+    answers = {
+        row.turn_id: row
+        for row in db.scalars(
+            select(InterviewAnswer).where(InterviewAnswer.turn_id.in_([t.id for t in turns]))
+        ).all()
+    }
+    q1, q2 = questions[0], questions[1]
+    q1_turns = interviews_service._ordered_question_turns([t for t in turns if t.question_id == q1.id])
+    q1_answers = {t.id: answers[t.id] for t in q1_turns if t.id in answers}
+    q2_turns = interviews_service._ordered_question_turns([t for t in turns if t.question_id == q2.id])
+    q2_answers = {t.id: answers[t.id] for t in q2_turns if t.id in answers}
+    dims_q1 = interviews_service._expected_dimensions(q1)
+    q1_ans = q1_answers[q1_turns[0].id]
+
+    # 评分严格整数：拒绝 True、"3"、3.0
+    for bad_score in (True, "3", 3.0):
+        bad_out = {
+            "question_id": str(q1.id),
+            "dimensions": [
+                {
+                    "dimension_id": dim["id"],
+                    "verdict": "scored",
+                    "score": bad_score,
+                    "evidence": [{"answer_id": str(q1_ans.id), "quote": q1_ans.text[:10]}],
+                    "explanation": "说明",
+                    "improvement": "改进",
+                }
+                for dim in dims_q1
+            ],
+        }
+        with pytest.raises(AppError) as score_err:
+            interviews_service.validate_question_score(q1, q1_turns, q1_answers, bad_out)
+        assert score_err.value.code == "AI_INVALID_OUTPUT", bad_score
+
+    # 合法 0 分和 4 分允许；纯空白引文降为 uncertain
+    mixed_out = {
+        "question_id": str(q1.id),
+        "dimensions": [
+            {
+                "dimension_id": dim["id"],
+                "verdict": "scored",
+                "score": 0 if idx == 0 else 4,
+                "evidence": [
+                    {
+                        "answer_id": str(q1_ans.id),
+                        "quote": " " if idx == len(dims_q1) - 1 else q1_ans.text[:10],
+                    }
+                ],
+                "explanation": "说明",
+                "improvement": "应被撤回的建议" if idx == len(dims_q1) - 1 else "改进",
+            }
+            for idx, dim in enumerate(dims_q1)
+        ],
+    }
+    validated_mixed = interviews_service.validate_question_score(
+        q1, q1_turns, q1_answers, mixed_out
+    )
+    assert validated_mixed[0].verdict == "scored" and validated_mixed[0].score == 0
+    if len(dims_q1) > 2:
+        assert validated_mixed[1].verdict == "scored" and validated_mixed[1].score == 4
+    assert validated_mixed[-1].verdict == "uncertain"
+    assert validated_mixed[-1].score is None
+    assert validated_mixed[-1].evidence == []
+    assert validated_mixed[-1].improvement == ""
+
+    # 造一个“哈希正确但载荷残缺（dimensions 元素为标量）”的 q1 坏槽，和有效的 q2 好槽
+    q1_hash = interviews_service.question_slot_hash(q1, q1_turns, q1_answers)
+    q2_hash = interviews_service.question_slot_hash(q2, q2_turns, q2_answers)
+    base = TestProvider()
+    q2_output = base.score_interview_question(
+        question={"id": str(q2.id)},
+        answers=[
+            {"answer_id": str(ans.id), "kind": t.kind, "prompt": t.prompt, "text": ans.text}
+            for t in q2_turns
+            if (ans := q2_answers.get(t.id)) is not None
+        ],
+        dimensions=interviews_service._expected_dimensions(q2),
+    )
+    q2_valid = interviews_service.validate_question_score(q2, q2_turns, q2_answers, q2_output)
+    db.add(
+        JobWorkItem(
+            job_id=report_job_id,
+            slot_key=str(q1.id),
+            payload={"question_id": str(q1.id), "content_hash": q1_hash, "dimensions": ["broken-scalar"]},
+            content_hash=q1_hash,
+            validated=True,
+        )
+    )
+    db.add(
+        JobWorkItem(
+            job_id=report_job_id,
+            slot_key=str(q2.id),
+            payload={
+                "question_id": str(q2.id),
+                "content_hash": q2_hash,
+                "dimensions": [d.model_dump(mode="json") for d in q2_valid],
+            },
+            content_hash=q2_hash,
+            validated=True,
+        )
+    )
+    db.commit()
+
+    score_calls: list[str] = []
+
+    def score_only_missing(*, question, answers, dimensions):
+        score_calls.append(question["id"])
+        return base.score_interview_question(
+            question=question, answers=answers, dimensions=dimensions
+        )
+
+    monkeypatch.setattr(
+        "app.workers.runner.get_provider",
+        lambda _settings: StubProvider(score=score_only_missing),
+    )
+    done_report = wait_job(client, token, str(report_job_id), worker, attempts=4)
+    assert done_report["state"] == "succeeded", done_report
+    # q2 有效缓存被复用，只补做了坏槽 q1（及任何其他未缓存的已答题目）
+    assert str(q1.id) in score_calls
+    assert str(q2.id) not in score_calls
+    rep = client.get(f"/v1/interviews/{session_id}/report", headers=auth(token))
+    assert rep.status_code == 200, rep.text
+    assert rep.json()["quality"] == "full"
+
+
+def test_score_unknown_dimension_id_redacts_marker_and_null_char_rejected_in_follow_up(
+    client: TestClient, worker, monkeypatch, db, caplog
+) -> None:
+    import json
+    import logging
+    import httpx
+    from app.ai.provider import DeepSeekProvider
+    from app.core.config import Settings
+
+    _, token = issue_token(client)
+    _prep, plan = create_confirmed_plan(client, token, worker, count=2)
+    session_id = start_interview(client, token, plan)["session_id"]
+
+    # 1) 追问共同入口 _chat_json 拦截 \u0000 并保留已提交主回答
+    current = detail(client, token, session_id)
+    turn = current["current_turn"]
+    settings = Settings(
+        APP_ENV="test",
+        DATABASE_URL="postgresql+psycopg://mockmate@127.0.0.1:55432/mockmate_test",
+        PRIVATE_FILE_ROOT="runtime/test-private",
+        AI_PROVIDER="deepseek",
+        AI_MODEL="deepseek-mock",
+        AI_API_KEY="mock-key",
+        AI_BASE_URL="https://api.deepseek.test",
+        ALLOW_TEST_FIXTURES=True,
+    )
+    null_fu_provider = DeepSeekProvider(
+        settings,
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                json={
+                    "id": "req-fu-null",
+                    "choices": [
+                        {
+                            "finish_reason": "stop",
+                            "message": {
+                                "content": (
+                                    '{"decision":"ask","prompt":"你在回答中提到\\u0000内容，能展开吗？",'
+                                    '"answer_quote":"先说明场景前提","target":"边界"}'
+                                )
+                            },
+                        }
+                    ],
+                },
+            )
+        ),
+    )
+    monkeypatch.setattr("app.workers.runner.get_provider", lambda _s: null_fu_provider)
+    ans_res = answer(
+        client,
+        token,
+        session_id,
+        revision=current["revision"],
+        turn_id=turn["turn_id"],
+        text=LONG_ANSWER,
+    ).json()
+    fu_job = wait_job(client, token, ans_res["job_id"], worker, attempts=4)
+    assert fu_job["state"] == "failed"
+    assert fu_job["retryable"] is True
+    assert fu_job["error"]["code"] == "AI_INVALID_OUTPUT"
+    assert "reason=invalid_json_text" in fu_job["error"]["details"]
+
+    after_fu_fail = detail(client, token, session_id)
+    assert after_fu_fail["transcript"][0]["answer"]["text"] == LONG_ANSWER
+
+    # 切回正常 provider 完成剩余面试，然后测评分未知 dimension_id 的脱敏
+    monkeypatch.setattr("app.workers.runner.get_provider", lambda _s: TestProvider())
+    cont = client.post(
+        f"/v1/interviews/{session_id}/continue-without-follow-up",
+        json={"revision": after_fu_fail["revision"], "job_id": ans_res["job_id"]},
+        headers={**auth(token), "Idempotency-Key": new_key()},
+    )
+    assert cont.status_code == 200
+    ended = complete_six_question_interview(client, token, worker, session_id)
+    report_job_id = ended["report_job"]["id"]
+
+    def bad_dimension_score(*, question, answers, dimensions):
+        return {
+            "question_id": question["id"],
+            "dimensions": [
+                {
+                    "dimension_id": "SYNTHETIC_DIM_5512",
+                    "verdict": "insufficient_evidence",
+                    "score": None,
+                    "evidence": [],
+                    "explanation": "x",
+                    "improvement": "y",
+                }
+            ],
+        }
+
+    monkeypatch.setattr(
+        "app.workers.runner.get_provider",
+        lambda _s: StubProvider(score=bad_dimension_score),
+    )
+    with caplog.at_level(logging.INFO):
+        failed_score = wait_job(client, token, report_job_id, worker, attempts=4)
+
+    assert failed_score["state"] == "failed"
+    assert failed_score["error"]["code"] == "AI_INVALID_OUTPUT"
+    assert "SYNTHETIC_DIM_5512" not in json.dumps(failed_score, ensure_ascii=False)
+    assert "field=dimension_id" in failed_score["error"]["details"]
+    assert "unknown_count=1" in failed_score["error"]["details"]
+    job_row = db.get(Job, uuid.UUID(report_job_id))
+    assert job_row is not None
+    assert "SYNTHETIC_DIM_5512" not in json.dumps(job_row.ai_call_records, ensure_ascii=False)
+    assert "SYNTHETIC_DIM_5512" not in caplog.text

@@ -13,10 +13,12 @@ import uuid
 from datetime import datetime, timezone
 from typing import Iterable
 
+from pydantic import ValidationError
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.core.db import read_snapshot_session
+from app.core.diagnostics import safe_validation_details, sanitize_job_error_code
 from app.core.errors import AppError
 from app.models import (
     InterviewAnswer,
@@ -32,6 +34,7 @@ from app.models import (
 )
 from app.schemas import (
     InterviewAnswerView,
+    CachedScoreSlotPayload,
     InterviewCoverage,
     InterviewDetail,
     InterviewDimensionResult,
@@ -197,7 +200,11 @@ def _job_summary(db: Session, job_id: uuid.UUID | None, max_attempts: int) -> In
         state=job.state,
         attempt=job.attempt,
         retryable=jobs_service.is_retryable(db, job, max_attempts),
-        error_code=job.error_code,
+        error_code=(
+            sanitize_job_error_code(job.error_code)
+            if job.error_code is not None
+            else None
+        ),
     )
 
 
@@ -1243,6 +1250,10 @@ def question_slot_hash(question: InterviewQuestion, turns: list[InterviewTurn], 
     return _sha256(canonical)
 
 
+class CachedScoreSlotError(AppError):
+    """仅表示已持久化的评分槽位载荷或哈希未通过确定性校验。"""
+
+
 def validate_question_score(
     question: InterviewQuestion,
     turns: list[InterviewTurn],
@@ -1251,11 +1262,21 @@ def validate_question_score(
 ) -> list[InterviewDimensionResult]:
     try:
         model = ScoreQuestionOutput.model_validate(output)
+    except ValidationError as exc:
+        raise AppError(
+            "AI_INVALID_OUTPUT",
+            "评分输出结构不符合契约",
+            details=[
+                "stage=interview_score",
+                "reason=invalid_score_schema",
+                *safe_validation_details(exc, ScoreQuestionOutput),
+            ],
+        ) from exc
     except Exception as exc:
         raise AppError(
             "AI_INVALID_OUTPUT",
             "评分输出结构不符合契约",
-            details=[type(exc).__name__],
+            details=["stage=interview_score", "reason=invalid_score_schema", type(exc).__name__],
         )
     if model.question_id != question.id:
         raise AppError("AI_INVALID_OUTPUT", "评分输出引用了其他题目")
@@ -1263,18 +1284,42 @@ def validate_question_score(
     seen: set[str] = set()
     results: list[InterviewDimensionResult] = []
     for item in model.dimensions:
-        if item.dimension_id in seen:
-            raise AppError("AI_INVALID_OUTPUT", "评分输出包含重复维度", [item.dimension_id])
-        seen.add(item.dimension_id)
         dim = expected.get(item.dimension_id)
         if dim is None:
-            raise AppError("AI_INVALID_OUTPUT", "评分输出包含未知维度", [item.dimension_id])
+            unknown_count = sum(
+                1 for candidate in model.dimensions if candidate.dimension_id not in expected
+            )
+            raise AppError(
+                "AI_INVALID_OUTPUT",
+                "评分输出包含未知维度",
+                [
+                    "stage=interview_score",
+                    "reason=unknown_dimension_id",
+                    "field=dimension_id",
+                    f"unknown_count={unknown_count}",
+                ],
+            )
+        if item.dimension_id in seen:
+            raise AppError(
+                "AI_INVALID_OUTPUT",
+                "评分输出包含重复维度",
+                ["stage=interview_score", f"dimension_id={item.dimension_id}"],
+            )
+        seen.add(item.dimension_id)
         evidence: list[InterviewEvidence] = []
         if item.verdict == "scored":
             if item.score is None:
-                raise AppError("AI_INVALID_OUTPUT", "scored 维度必须给出 0–4 分", [item.dimension_id])
+                raise AppError(
+                    "AI_INVALID_OUTPUT",
+                    "scored 维度必须给出 0–4 分",
+                    ["stage=interview_score", f"dimension_id={item.dimension_id}"],
+                )
             if not item.evidence:
-                raise AppError("AI_INVALID_OUTPUT", "scored 维度必须引用原话", [item.dimension_id])
+                raise AppError(
+                    "AI_INVALID_OUTPUT",
+                    "scored 维度必须引用原话",
+                    ["stage=interview_score", f"dimension_id={item.dimension_id}"],
+                )
             valid = True
             for anchor in item.evidence:
                 answer = None
@@ -1288,6 +1333,7 @@ def validate_question_score(
                     break
                 if (
                     not anchor.quote
+                    or not anchor.quote.strip()
                     or _codepoint_len(anchor.quote) > MAX_QUOTE_CODEPOINTS
                     or anchor.quote not in answer.text
                 ):
@@ -1316,13 +1362,13 @@ def validate_question_score(
                 raise AppError(
                     "AI_INVALID_OUTPUT",
                     "非 scored 维度不能携带分数",
-                    [item.dimension_id],
+                    ["stage=interview_score", f"dimension_id={item.dimension_id}"],
                 )
             if item.evidence:
                 raise AppError(
                     "AI_INVALID_OUTPUT",
                     "非 scored 维度不能携带引文",
-                    [item.dimension_id],
+                    ["stage=interview_score", f"dimension_id={item.dimension_id}"],
                 )
         results.append(
             InterviewDimensionResult(
@@ -1342,6 +1388,87 @@ def validate_question_score(
             "AI_INVALID_OUTPUT", "评分输出缺少维度", sorted(missing)
         )
     return results
+
+
+def validate_cached_question_score(
+    item: JobWorkItem | None,
+    question: InterviewQuestion,
+    turns: list[InterviewTurn],
+    answers: dict[uuid.UUID, InterviewAnswer],
+    expected_hash: str,
+) -> list[InterviewDimensionResult]:
+    """统一读取并严格校验报告槽位缓存；Worker 跳过与报告发布共用同一入口。"""
+    if item is None or not getattr(item, "validated", False):
+        raise CachedScoreSlotError(
+            "AI_INVALID_OUTPUT",
+            "已保存的评分结果无法通过校验",
+            details=["stage=interview_report", "reason=invalid_cached_score_slot", f"slot={question.id}"],
+        )
+    if item.content_hash != expected_hash or not isinstance(item.payload, dict):
+        raise CachedScoreSlotError(
+            "AI_INVALID_OUTPUT",
+            "已保存的评分结果无法通过校验",
+            details=["stage=interview_report", "reason=invalid_cached_score_slot", f"slot={question.id}"],
+        )
+    try:
+        slot_payload = CachedScoreSlotPayload.model_validate(item.payload)
+    except Exception as exc:
+        raise CachedScoreSlotError(
+            "AI_INVALID_OUTPUT",
+            "已保存的评分结果无法通过校验",
+            details=[
+                "stage=interview_report",
+                "reason=invalid_cached_score_slot",
+                f"slot={question.id}",
+                type(exc).__name__,
+            ],
+        ) from exc
+    if slot_payload.question_id != question.id or slot_payload.content_hash != expected_hash:
+        raise CachedScoreSlotError(
+            "AI_INVALID_OUTPUT",
+            "已保存的评分结果无法通过校验",
+            details=["stage=interview_report", "reason=invalid_cached_score_slot", f"slot={question.id}"],
+        )
+    expected_by_id = {dim["id"]: dim for dim in _expected_dimensions(question)}
+    for dim in slot_payload.dimensions:
+        expected_dim = expected_by_id.get(dim.dimension_id)
+        if (
+            expected_dim is None
+            or dim.name != expected_dim["name"]
+            or abs(dim.weight - expected_dim["weight"]) > 1e-6
+        ):
+            raise CachedScoreSlotError(
+                "AI_INVALID_OUTPUT",
+                "已保存的评分结果无法通过校验",
+                details=["stage=interview_report", "reason=invalid_cached_score_slot", f"slot={question.id}"],
+            )
+    raw_dimensions = [
+        {
+            "dimension_id": dim.dimension_id,
+            "verdict": dim.verdict,
+            "score": dim.score,
+            "evidence": [
+                {"answer_id": str(ev.answer_id), "quote": ev.quote}
+                for ev in dim.evidence
+            ],
+            "explanation": dim.explanation,
+            "improvement": dim.improvement,
+        }
+        for dim in slot_payload.dimensions
+    ]
+    try:
+        return validate_question_score(
+            question,
+            turns,
+            answers,
+            {"question_id": str(question.id), "dimensions": raw_dimensions},
+        )
+    except AppError as exc:
+        raise CachedScoreSlotError(
+            "AI_INVALID_OUTPUT",
+            "已保存的评分结果无法通过校验",
+            details=["stage=interview_report", "reason=invalid_cached_score_slot", f"slot={question.id}"],
+        ) from exc
 
 
 def question_score(
@@ -1629,33 +1756,15 @@ def publish_report_from_work(
                 "INTERVIEW_STATE_INVALID", "评分结果与当前问答内容不一致，不能发布报告"
             )
         try:
-            raw_dimensions = [
-                {
-                    key: value
-                    for key, value in dim.items()
-                    if key
-                    in (
-                        "dimension_id",
-                        "verdict",
-                        "score",
-                        "evidence",
-                        "explanation",
-                        "improvement",
-                    )
-                }
-                for dim in item.payload.get("dimensions", [])
-            ]
-            dims = validate_question_score(
+            dims = validate_cached_question_score(
+                item,
                 question,
                 question_turns,
                 question_answers,
-                {
-                    "question_id": str(question.id),
-                    "dimensions": raw_dimensions,
-                },
+                expected_hash,
             )
-        except AppError:
-            raise AppError("AI_INVALID_OUTPUT", "已保存的评分结果无法通过校验")
+        except CachedScoreSlotError as exc:
+            raise AppError(exc.code, exc.message, details=exc.details) from exc
         dimensions_by_question[question.id] = dims
 
     answered_questions = [q for q in questions if q.status == "answered"]

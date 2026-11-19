@@ -375,13 +375,27 @@ def make_pdf(lines: list[str]) -> bytes:
 
 
 def make_docx(paragraphs: list[str]) -> bytes:
+    return make_docx_with_tables(paragraphs)
+
+
+def make_docx_with_tables(blocks: list[str | list[list[str]]]) -> bytes:
+    """按顺序生成段落与表格；表格块为行列表，单元格内换行写成多段。"""
     import io
 
     import docx
 
     document = docx.Document()
-    for paragraph in paragraphs:
-        document.add_paragraph(paragraph)
+    for block in blocks:
+        if isinstance(block, str):
+            document.add_paragraph(block)
+            continue
+        if not block:
+            continue
+        width = max(len(row) for row in block)
+        table = document.add_table(rows=len(block), cols=width)
+        for row_index, row in enumerate(block):
+            for column_index, value in enumerate(row):
+                table.cell(row_index, column_index).text = value
     buffer = io.BytesIO()
     document.save(buffer)
     return buffer.getvalue()

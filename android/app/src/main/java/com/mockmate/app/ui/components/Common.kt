@@ -12,7 +12,6 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
@@ -55,6 +54,7 @@ import com.mockmate.app.core.network.JobDto
 import com.mockmate.app.data.M1Repository
 import com.mockmate.app.ui.ErrorDiagnosticsMapper
 import com.mockmate.app.ui.FriendlyErrorInfo
+import com.mockmate.app.ui.OngoingStatus
 import com.mockmate.app.ui.UiMessage
 import kotlinx.coroutines.delay
 
@@ -368,6 +368,46 @@ private fun DiagnosticRow(label: String, value: String, highlight: Boolean = fal
     }
 }
 
+/**
+ * 持续性后台任务状态条：显示在原底部 Toast 位置，只弹出一次并持续到任务结束，
+ * 不自动超时消失，避免轮询期间反复弹出。
+ */
+@Composable
+internal fun OngoingStatusBanner(
+    status: OngoingStatus,
+    modifier: Modifier = Modifier,
+) {
+    val colors = MaterialTheme.colorScheme
+    val shape = RoundedCornerShape(16.dp)
+
+    Surface(
+        modifier = modifier
+            .padding(horizontal = 4.dp)
+            .widthIn(max = 420.dp)
+            .shadow(4.dp, shape)
+            .semantics { liveRegion = LiveRegionMode.Polite },
+        shape = shape,
+        color = colors.inverseSurface,
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 11.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(16.dp),
+                strokeWidth = 2.dp,
+                color = colors.inversePrimary,
+            )
+            Text(
+                text = status.text,
+                style = MaterialTheme.typography.bodyMedium,
+                color = colors.inverseOnSurface,
+            )
+        }
+    }
+}
+
 @Composable
 internal fun MessageToast(message: UiMessage, onTimeout: () -> Unit, modifier: Modifier = Modifier) {
     val accessibilityManager = LocalAccessibilityManager.current
@@ -395,8 +435,7 @@ internal fun MessageToast(message: UiMessage, onTimeout: () -> Unit, modifier: M
     if (!message.isError) {
         Surface(
             modifier = modifier
-                .safeDrawingPadding()
-                .padding(horizontal = 20.dp, vertical = 20.dp)
+                .padding(horizontal = 4.dp)
                 .widthIn(max = 420.dp)
                 .shadow(4.dp, shape)
                 .semantics { liveRegion = LiveRegionMode.Polite },
@@ -429,8 +468,6 @@ internal fun MessageToast(message: UiMessage, onTimeout: () -> Unit, modifier: M
 
     Surface(
         modifier = modifier
-            .safeDrawingPadding()
-            .padding(horizontal = 16.dp, vertical = 16.dp)
             .widthIn(max = 440.dp)
             .fillMaxWidth()
             .shadow(6.dp, shape)
@@ -439,7 +476,7 @@ internal fun MessageToast(message: UiMessage, onTimeout: () -> Unit, modifier: M
         color = colors.surface,
         border = BorderStroke(1.5.dp, colors.error),
     ) {
-        Column(Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
+        Column(Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
@@ -459,51 +496,19 @@ internal fun MessageToast(message: UiMessage, onTimeout: () -> Unit, modifier: M
                     Text("关闭", style = MaterialTheme.typography.labelSmall)
                 }
             }
+            Text(
+                text = if (friendly.userExplanation != message.text) friendly.userExplanation else rawFormatted,
+                style = MaterialTheme.typography.bodySmall,
+                color = colors.onSurface,
+                maxLines = 2,
+            )
             if (friendly.userExplanation != message.text) {
                 Text(
-                    text = friendly.userExplanation,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = colors.onSurface,
-                )
-                Spacer(Modifier.height(2.dp))
-            }
-            // 保留原始文本与错误码节点，确保用户/开发者及自动化断言都能直接读取
-            Text(
-                text = rawFormatted,
-                style = MaterialTheme.typography.bodySmall,
-                color = if (friendly.userExplanation != message.text) colors.onSurfaceVariant else colors.onSurface,
-            )
-            friendly.suggestion?.let { hint ->
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    text = "💡 建议：$hint",
+                    text = rawFormatted,
                     style = MaterialTheme.typography.labelSmall,
-                    color = colors.primary,
+                    color = colors.onSurfaceVariant,
+                    maxLines = 1,
                 )
-            }
-            if (message.code != null || message.details.isNotEmpty() || message.diagnosticContext != null) {
-                Spacer(Modifier.height(4.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.End,
-                ) {
-                    TextButton(
-                        onClick = { showDevDetails = !showDevDetails },
-                        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 6.dp, vertical = 0.dp),
-                    ) {
-                        Text(
-                            text = if (showDevDetails) "收起诊断 ▴" else "</> 诊断详情 ▾",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = colors.onSurfaceVariant,
-                        )
-                    }
-                }
-                if (showDevDetails) {
-                    DeveloperDiagnosticPanel(
-                        info = friendly,
-                        defaultExpanded = true,
-                    )
-                }
             }
         }
     }
@@ -563,6 +568,7 @@ fun SecondaryAction(
 
 object JobRecoveryPolicy {
     fun retryButtonText(job: JobDto): String = when (job.kind) {
+        "parse" -> "重试 AI 解析"
         "match" -> "重试匹配分析（会再次调用模型）"
         "plan" -> "重试生成计划（会再次调用模型）"
         else -> "明确重试该任务（可能产生新的模型调用）"
@@ -614,8 +620,9 @@ fun JobRecoveryActions(
             Spacer(Modifier.height(4.dp))
         }
         job.error?.let {
+            val safeCode = ErrorDiagnosticsMapper.sanitizeErrorCode(it.code) ?: "INTERNAL_ERROR"
             Text(
-                "${it.message}（${it.code}）",
+                "${friendly.rawServerMessage}（$safeCode）",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

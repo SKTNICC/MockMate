@@ -4,11 +4,27 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
 from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
+from app.core.diagnostics import (
+    LEGACY_PARSE_SCHEMA_MESSAGE,
+    PARSE_SCHEMA_ROOT_FIELDS,
+    RECOVERABLE_PROVIDER_OUTPUT_REASONS,
+    RETRYABLE_PARSE_AI_REASONS,
+    RETRYABLE_PARSE_EVIDENCE_REASONS,
+    is_legacy_parse_schema_detail,
+    is_recoverable_parse_error,
+    normalize_job_error_envelope,
+    parse_detail_kv,
+    resolve_job_error_envelope,
+    sanitize_error_details_for_api,
+    sanitize_job_error_code,
+    sanitize_job_error_message,
+)
 from app.core.errors import AppError
 from app.models import Job, MaterialDraft, Preparation
 from app.schemas import ErrorInfo, Job as JobSchema, ResultRef
@@ -23,7 +39,10 @@ RETRYABLE_JOB_ERRORS = {
     "JOB_INTERRUPTED",
 }
 VALID_GENERATED_SLOTS = {"generated-1", "generated-2", "generated-3"}
-RETRYABLE_PLAN_FORMAT_REASONS = {"output_truncated", "empty_content", "invalid_json"}
+RETRYABLE_PLAN_FORMAT_REASONS = set(RECOVERABLE_PROVIDER_OUTPUT_REASONS)
+RETRYABLE_PLAN_REVIEW_REASONS = set(RECOVERABLE_PROVIDER_OUTPUT_REASONS) | {
+    "invalid_review_schema",
+}
 LEGACY_PLAN_SLOT_FAILURE_MESSAGE = "生成槽位在有限纠正后仍不合法"
 LEGACY_PLAN_INVALID_JSON_DETAIL = "AI 返回内容不是合法 JSON"
 JOB_ERROR_MESSAGES = {
@@ -199,6 +218,10 @@ def create_or_get_job(
     return job, created
 
 
+def has_structured_profile(profile: object) -> bool:
+    return isinstance(profile, dict) and bool(profile.get("kind"))
+
+
 def inputs_current(db: Session, job: Job) -> bool:
     if job.kind in ("extract", "parse"):
         draft = db.get(MaterialDraft, job.target_id)
@@ -208,6 +231,21 @@ def inputs_current(db: Session, job: Job) -> bool:
             return False
         if job.kind == "extract" and draft.state == "parsed":
             return False
+        if job.kind == "parse":
+            if not isinstance(draft.text, str) or not draft.text.strip():
+                return False
+            if has_structured_profile(draft.profile):
+                return False
+            from app.models import MaterialSnapshot
+
+            confirmed = db.scalars(
+                select(MaterialSnapshot.id).where(
+                    MaterialSnapshot.material_id == draft.id,
+                    MaterialSnapshot.source_revision == draft.revision,
+                )
+            ).first()
+            if confirmed is not None:
+                return False
         return True
     if job.kind in ("follow_up", "interview_report"):
         from app.models import InterviewSession
@@ -233,15 +271,36 @@ def inputs_current(db: Session, job: Job) -> bool:
     return preparation.revision == job.input_revision
 
 
-def _is_retryable_plan_format_failure(job: Job) -> bool:
-    """仅对计划出题槽位的明确输出/JSON 格式失败开放显式重试；业务校验失败保持不可重试。"""
-    err = job.error if isinstance(job.error, dict) else {}
-    details = err.get("details") if isinstance(err.get("details"), list) else []
+def _parse_detail_kv(details: object) -> dict[str, str]:
+    if not isinstance(details, list):
+        return {}
     kv: dict[str, str] = {}
     for entry in details:
         if isinstance(entry, str) and "=" in entry:
             key, _, value = entry.partition("=")
             kv[key.strip()] = value.strip()
+    return kv
+
+
+def _controlled_job_error(job: Job) -> dict[str, Any] | None:
+    """重试策略与 API 投影共用的受控错误视图。
+
+    可信错误列与历史 JSON 冲突时，旧 JSON 的消息和详情已被排除，不能用来授予
+    格式型或证据型重试；错误列缺省的真实历史任务仍按白名单内的旧记录判断。
+    """
+    return resolve_job_error_envelope(
+        job.error,
+        trusted_code=job.error_code,
+        job_id=job.id,
+        terminal=job.state in ("failed", "interrupted"),
+    )
+
+
+def _is_retryable_plan_format_failure(job: Job) -> bool:
+    """仅对计划出题槽位的明确输出/JSON 格式失败开放显式重试；业务校验失败保持不可重试。"""
+    err = _controlled_job_error(job) or {}
+    details = err.get("details") or []
+    kv = _parse_detail_kv(details)
     if (
         kv.get("stage") == "plan"
         and kv.get("slot") in VALID_GENERATED_SLOTS
@@ -256,14 +315,146 @@ def _is_retryable_plan_format_failure(job: Job) -> bool:
     )
 
 
+def _is_retryable_plan_review_format_failure(job: Job) -> bool:
+    err = _controlled_job_error(job) or {}
+    kv = _parse_detail_kv(err.get("details"))
+    return (
+        kv.get("stage") == "plan_review"
+        and kv.get("reason") in RETRYABLE_PLAN_REVIEW_REASONS
+    )
+
+
+def _is_legacy_parse_schema_detail(entry: object) -> bool:
+    if not isinstance(entry, str) or ":" not in entry:
+        return False
+    field_path, _, msg = entry.partition(":")
+    field_path = field_path.strip()
+    if not field_path or not msg.strip():
+        return False
+    root = field_path.split(".", 1)[0]
+    return root in PARSE_SCHEMA_ROOT_FIELDS
+
+
+def _is_retryable_parse_failure(job: Job, code: str | None) -> bool:
+    err = _controlled_job_error(job) or {}
+    return is_recoverable_parse_error(
+        err.get("code") or code,
+        err.get("details"),
+        message=err.get("message"),
+        allow_legacy=True,
+    )
+
+
+def collect_job_server_ref_ids(
+    db: Session,
+    job: Job,
+    details: object,
+) -> dict[str, set[str]] | None:
+    """按任务目标读取当前服务端对象允许的引用 ID，未命中时过滤自由或伪造 ID。"""
+    if not isinstance(details, list) or not details:
+        return None
+    if job.kind in ("extract", "parse"):
+        return {
+            "item_ids": set(),
+            "requirement_ids": set(),
+            "dimension_ids": set(),
+            "question_ids": set(),
+        }
+    needs_snap_refs = any(
+        isinstance(e, str)
+        and (
+            e.startswith(("item_id=", "requirement_id="))
+            or ("=" not in e and ":" not in e)
+        )
+        for e in details
+    )
+    needs_bank_refs = any(
+        isinstance(e, str)
+        and (
+            e.startswith("conflict_question_id=")
+            or ("=" not in e and ":" not in e)
+        )
+        for e in details
+    )
+    needs_dim_refs = any(
+        isinstance(e, str) and e.startswith("dimension_id=") for e in details
+    )
+    if not (needs_snap_refs or needs_bank_refs or needs_dim_refs):
+        return None
+
+    refs: dict[str, set[str]] = {
+        "item_ids": set(),
+        "requirement_ids": set(),
+        "dimension_ids": set(),
+        "question_ids": set(),
+    }
+    if job.kind in ("match", "plan"):
+        from app.models import BankQuestion, MaterialSnapshot
+        from app.services.evidence import profile_items
+
+        if needs_snap_refs:
+            prep = db.get(Preparation, job.target_id)
+            if prep is not None:
+                if prep.resume_snapshot_id is not None:
+                    resume_snap = db.get(MaterialSnapshot, prep.resume_snapshot_id)
+                    if resume_snap is not None:
+                        refs["item_ids"] = set(profile_items(resume_snap.profile).keys())
+                if prep.jd_snapshot_id is not None:
+                    jd_snap = db.get(MaterialSnapshot, prep.jd_snapshot_id)
+                    if jd_snap is not None:
+                        refs["requirement_ids"] = {
+                            str(item["item_id"])
+                            for item in ((jd_snap.profile or {}).get("requirements") or [])
+                            if isinstance(item, dict) and item.get("item_id")
+                        }
+        if needs_bank_refs:
+            refs["question_ids"] = {
+                str(qid)
+                for qid in db.scalars(select(BankQuestion.question_id)).all()
+                if qid
+            }
+        return refs
+
+    if job.kind in ("follow_up", "interview_report"):
+        from app.models import InterviewQuestion
+
+        if needs_dim_refs:
+            dim_ids: set[str] = {"expression"}
+            questions = db.scalars(
+                select(InterviewQuestion).where(InterviewQuestion.session_id == job.target_id)
+            ).all()
+            for q in questions:
+                rubric = q.rubric if isinstance(q.rubric, dict) else {}
+                for dim in rubric.get("dimensions") or []:
+                    if isinstance(dim, dict) and dim.get("id"):
+                        dim_ids.add(str(dim["id"]))
+            refs["dimension_ids"] = dim_ids
+        return refs
+
+    return refs
+
+
 def is_retryable(db: Session, job: Job, max_attempts: int = 2) -> bool:
     if job.state not in ("failed", "interrupted"):
         return False
     if job.attempt >= max_attempts:
         return False
-    code = job.error_code or (job.error or {}).get("code")
+    err = normalize_job_error_envelope(
+        job.error, fallback_code=job.error_code, job_id=job.id
+    )
+    code = (
+        sanitize_job_error_code(job.error_code, fallback="")
+        or (err["code"] if err is not None else "")
+    )
     if job.kind == "plan" and code == "AI_INVALID_OUTPUT":
-        if not _is_retryable_plan_format_failure(job):
+        if not (
+            _is_retryable_plan_format_failure(job)
+            or _is_retryable_plan_review_format_failure(job)
+        ):
+            return False
+        return inputs_current(db, job)
+    if job.kind == "parse" and code in ("AI_INVALID_OUTPUT", "EVIDENCE_INVALID", "PROFILE_INVALID"):
+        if not _is_retryable_parse_failure(job, code):
             return False
         return inputs_current(db, job)
     retryable_codes = RETRYABLE_JOB_ERRORS
@@ -277,17 +468,33 @@ def is_retryable(db: Session, job: Job, max_attempts: int = 2) -> bool:
 
 def job_to_schema(db: Session, job: Job, max_attempts: int = 2) -> JobSchema:
     retryable = is_retryable(db, job, max_attempts)
+    err = resolve_job_error_envelope(
+        job.error,
+        trusted_code=job.error_code,
+        job_id=job.id,
+        terminal=job.state in ("failed", "interrupted"),
+    )
     error_info = None
-    if job.error:
+    if err is not None:
+        err_code = err["code"]
+        raw_details = err["details"]
+        allowed_refs = collect_job_server_ref_ids(db, job, raw_details)
         error_info = ErrorInfo(
-            code=job.error.get("code", "INTERNAL_ERROR"),
-            message=job.error.get("message", "任务执行失败"),
+            code=err_code,
+            message=sanitize_job_error_message(
+                err["message"], err_code, JOB_ERROR_MESSAGES
+            ),
             retryable=retryable,
-            details=list(job.error.get("details") or []),
-            request_id=job.error.get("request_id") or str(job.id),
+            details=sanitize_error_details_for_api(
+                raw_details,
+                kind=job.kind,
+                code=err_code,
+                allowed_refs=allowed_refs,
+            ),
+            request_id=err["request_id"],
         )
     result_ref = None
-    if job.result and job.state == "succeeded":
+    if isinstance(job.result, dict) and job.state == "succeeded":
         result_ref = ResultRef(
             entity_type=job.result.get("entity_type"), id=job.result.get("id")
         )

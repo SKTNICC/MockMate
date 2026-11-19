@@ -54,17 +54,21 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import com.mockmate.app.core.network.JdTemplateDto
+import com.mockmate.app.core.network.JobDto
 import com.mockmate.app.core.network.MaterialDraftDto
 import com.mockmate.app.core.network.SkillCodeDto
 import com.mockmate.app.core.network.SnapshotDto
 import com.mockmate.app.ui.AppState
 import com.mockmate.app.ui.AppViewModel
+import com.mockmate.app.ui.MaterialJobLookup
+import com.mockmate.app.ui.MaterialJobLookupStatus
 import com.mockmate.app.ui.SkillCatalogStatus
 import com.mockmate.app.ui.components.ConsentDialog
 import com.mockmate.app.ui.components.EmptyHint
 import com.mockmate.app.ui.components.InfoCard
 import com.mockmate.app.ui.components.JobRecoveryActions
 import com.mockmate.app.ui.components.KeyValueRow
+import com.mockmate.app.ui.components.LoadingRow
 import com.mockmate.app.ui.components.PreparationStepHeader
 import com.mockmate.app.ui.components.PrimaryAction
 import com.mockmate.app.ui.components.SecondaryAction
@@ -328,6 +332,105 @@ private fun TemplateCard(template: JdTemplateDto, onUse: () -> Unit) {
     }
 }
 
+data class ReviewUiPolicyState(
+    val recoveryJob: JobDto?,
+    val hasCurrentFailedParse: Boolean,
+    val hasCurrentRunningJob: Boolean,
+    val isJobLookupPending: Boolean = false,
+    val showQueryJobStatusAction: Boolean = false,
+    val showStartParseAction: Boolean,
+    val showExtractAction: Boolean = false,
+    val parseExhausted: Boolean,
+    val showManualHint: Boolean,
+)
+
+object ReviewScreenPolicy {
+    fun evaluate(
+        material: MaterialDraftDto?,
+        job: JobDto?,
+        jobLookup: MaterialJobLookup? = null,
+    ): ReviewUiPolicyState {
+        if (material == null) {
+            return ReviewUiPolicyState(
+                recoveryJob = null,
+                hasCurrentFailedParse = false,
+                hasCurrentRunningJob = false,
+                isJobLookupPending = false,
+                showQueryJobStatusAction = false,
+                showStartParseAction = false,
+                showExtractAction = false,
+                parseExhausted = false,
+                showManualHint = false,
+            )
+        }
+        val recoveryJob = job?.takeIf { candidate ->
+            candidate.kind in setOf("parse", "extract") &&
+                candidate.target_id == material.id &&
+                (candidate.input_revision == material.revision || candidate.state == "superseded")
+        }
+        val currentRevisionJob = recoveryJob?.takeIf { candidate ->
+            candidate.input_revision == material.revision
+        }
+        val latestJobId = material.latest_job_id
+        val matchingLookup = jobLookup?.takeIf {
+            it.materialId == material.id &&
+                it.revision == material.revision &&
+                it.jobId == latestJobId
+        }
+        val needsMaterialResult = currentRevisionJob?.state == "succeeded" &&
+            ((currentRevisionJob.kind == "parse" && material.profile == null) ||
+                (currentRevisionJob.kind == "extract" && material.text.isNullOrBlank()))
+        val hasKnownTerminalFailure = currentRevisionJob != null &&
+            currentRevisionJob.id == latestJobId &&
+            currentRevisionJob.state in setOf("failed", "interrupted", "superseded")
+        val isJobLookupFailed = latestJobId != null &&
+            matchingLookup?.status == MaterialJobLookupStatus.FAILED &&
+            !hasKnownTerminalFailure
+        val latestJobResolved = latestJobId == null ||
+            matchingLookup?.status == MaterialJobLookupStatus.LOADED ||
+            (
+                currentRevisionJob?.id == latestJobId &&
+                    !needsMaterialResult &&
+                    !isJobLookupFailed &&
+                    matchingLookup?.status != MaterialJobLookupStatus.LOADING
+                )
+        val isJobLookupPending = latestJobId != null &&
+            !latestJobResolved &&
+            !isJobLookupFailed
+        val hasCurrentFailedParse = currentRevisionJob?.kind == "parse" &&
+            currentRevisionJob.state in setOf("failed", "interrupted")
+        val hasCurrentRunningJob = !isJobLookupFailed &&
+            !isJobLookupPending &&
+            currentRevisionJob != null &&
+            currentRevisionJob.state in setOf("queued", "running")
+        val hasText = !material.text.isNullOrBlank()
+        val hasProfile = material.profile != null
+        val showStartParseAction = hasText &&
+            !hasProfile &&
+            !hasCurrentFailedParse &&
+            !hasCurrentRunningJob &&
+            !isJobLookupPending &&
+            !isJobLookupFailed
+        val showExtractAction = !hasText &&
+            material.state == "uploaded" &&
+            !hasCurrentRunningJob &&
+            !isJobLookupPending &&
+            !isJobLookupFailed
+        val parseExhausted = hasCurrentFailedParse && currentRevisionJob?.retryable != true
+        return ReviewUiPolicyState(
+            recoveryJob = recoveryJob,
+            hasCurrentFailedParse = hasCurrentFailedParse,
+            hasCurrentRunningJob = hasCurrentRunningJob,
+            isJobLookupPending = isJobLookupPending,
+            showQueryJobStatusAction = isJobLookupFailed,
+            showStartParseAction = showStartParseAction,
+            showExtractAction = showExtractAction,
+            parseExhausted = parseExhausted,
+            showManualHint = hasText,
+        )
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun ReviewScreen(
@@ -339,6 +442,9 @@ fun ReviewScreen(
     val material = state.material?.takeIf { it.id == materialId }
     val kind = material?.kind ?: "resume"
     val prep = state.preparation
+    val reviewPolicy = remember(material, state.job, state.materialJobLookup) {
+        ReviewScreenPolicy.evaluate(material, state.job, state.materialJobLookup)
+    }
     val items = remember(material?.id, material?.revision) {
         mutableStateListOf<ItemDraft>().apply { addAll(ProfileDraftCodec.parse(material?.profile, kind)) }
     }
@@ -425,37 +531,115 @@ fun ReviewScreen(
                             Text(material.text ?: "（尚未提取文本）", style = MaterialTheme.typography.bodySmall)
                         }
                     }
-                    if (material.text == null && material.state == "uploaded") {
+                    if (reviewPolicy.showExtractAction) {
                         Spacer(Modifier.height(8.dp))
-                        SecondaryAction(text = "提取文件文本", onClick = { vm.extractMaterial(materialId) })
+                        SecondaryAction(
+                            text = "提取文件文本",
+                            enabled = !state.loading,
+                            onClick = { vm.extractMaterial(materialId) },
+                        )
                     }
                 }
                 Spacer(Modifier.height(10.dp))
-                // 置顶 AI 解析入口：让用户一进页面就能看到一键解析，无需滑到底部
+                // 置顶 AI 解析入口：按当前阶段与任务状态显示查询中、查询失败、启动、重试或手动填写提示
                 InfoCard(
                     title = "AI 解析（可选）",
                     subtitle = "解析会把你确认发送的材料文本交给服务端配置的外部模型",
                     accentColor = MaterialTheme.colorScheme.primary,
                     headerTrailing = { StatusChip("推荐第一步", MaterialTheme.colorScheme.primary) },
                 ) {
-                    Text(
-                        "可先点击下方「AI 解析并生成结构」自动填充条目与原文引用，再在下方核对确认；也可以直接手动填写。",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Spacer(Modifier.height(8.dp))
-                    SecondaryAction(text = "AI 解析并生成结构", onClick = { showParseConsent = true })
+                    when {
+                        reviewPolicy.isJobLookupPending -> {
+                            LoadingRow("正在查询当前版本任务状态…")
+                            if (reviewPolicy.showManualHint) {
+                                Spacer(Modifier.height(6.dp))
+                                Text(
+                                    "原文已保留，等待状态确认期间可直接在下方「结构化核对」手动填写。",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                        reviewPolicy.showQueryJobStatusAction -> {
+                            Text(
+                                text = if (reviewPolicy.showManualHint) {
+                                    "未能确认最近任务状态，暂不发起新的 AI 解析；原文已保留，可查询状态或直接在下方手动填写。"
+                                } else {
+                                    "未能确认最近任务状态，请先查询状态；已上传的文件内容不会丢失。"
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                            Spacer(Modifier.height(8.dp))
+                            SecondaryAction(
+                                text = "查询任务状态",
+                                enabled = !state.loading,
+                                onClick = { vm.queryLatestMaterialJob(materialId) },
+                            )
+                        }
+                        !reviewPolicy.showManualHint -> {
+                            Text(
+                                "请先提取文件文本，再使用 AI 解析或手动填写。",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        reviewPolicy.hasCurrentRunningJob -> {
+                            Text(
+                                "当前版本已有任务正在执行，请查看下方状态区进度。",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.primary,
+                            )
+                        }
+                        reviewPolicy.hasCurrentFailedParse -> {
+                            Text(
+                                text = if (reviewPolicy.recoveryJob?.retryable == true) {
+                                    "当前版本已有失败的 AI 解析任务，请点击下方「重试 AI 解析」；原文已保留，可以手动核对。"
+                                } else {
+                                    "AI 解析未能成功且当前不可继续重试。原文已保留，可以手动核对，请在下方「结构化核对」手动添加并确认。"
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                        }
+                        material.profile != null -> {
+                            Text(
+                                "当前版本已生成结构化草稿，请在下方「结构化核对」确认或补充。",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        else -> {
+                            Text(
+                                "可先点击下方「AI 解析并生成结构」自动填充条目与原文引用，再在下方核对确认；也可以直接手动填写。",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Spacer(Modifier.height(8.dp))
+                            SecondaryAction(
+                                text = "AI 解析并生成结构",
+                                enabled = !state.loading,
+                                onClick = { showParseConsent = true },
+                            )
+                        }
+                    }
                 }
                 Spacer(Modifier.height(8.dp))
-                JobRecoveryActions(
-                    job = state.job,
-                    onQuery = { vm.queryCurrentJob() },
-                    onRetry = { vm.retryCurrentJob() },
-                )
+                if (!reviewPolicy.isJobLookupPending && !reviewPolicy.showQueryJobStatusAction) {
+                    JobRecoveryActions(
+                        job = reviewPolicy.recoveryJob,
+                        onQuery = { vm.queryCurrentJob() },
+                        onRetry = { vm.retryCurrentJob() },
+                    )
+                }
                 Spacer(Modifier.height(10.dp))
                 InfoCard(
                     title = "结构化核对",
-                    subtitle = "引用必须逐字来自上方原文；手动补充的事实请标为“我手动确认”",
+                    subtitle = if (reviewPolicy.showManualHint) {
+                        "原文已保留，可以手动核对；引用必须逐字来自上方原文，手动补充请标为“我手动确认”"
+                    } else {
+                        "引用必须逐字来自上方原文；手动补充的事实请标为“我手动确认”"
+                    },
                     headerTrailing = {
                         StatusChip("共 ${items.size} 条", MaterialTheme.colorScheme.secondary)
                     },

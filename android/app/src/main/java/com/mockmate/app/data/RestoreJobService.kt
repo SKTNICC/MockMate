@@ -26,6 +26,10 @@ data class RestoreScope(
     val jobId: String = "",
     /** 面试间与报告页共享 job 匹配屏幕名，但写操作迟到时仍需区分具体页面。 */
     val screenKey: String? = null,
+    /** 发起材料恢复时捕获的材料版本，避免晚到的错误回退新版本状态。 */
+    val materialRevision: Int? = null,
+    /** 发起恢复或查询时捕获的任务尝试次序，避免旧 attempt 的错误覆盖新状态。 */
+    val jobAttempt: Int? = null,
 )
 
 interface RestorePorts {

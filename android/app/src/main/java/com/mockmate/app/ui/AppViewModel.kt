@@ -99,6 +99,13 @@ data class UiMessage(
     val jobKind: String? = null,
 )
 
+/** 持续性后台任务状态条：显示在底部 Toast 位置，只弹出一次并持续到任务结束，不自动超时消失。 */
+data class OngoingStatus(
+    val jobId: String,
+    val jobKind: String,
+    val text: String,
+)
+
 /** 已无法随当前回合提交、但仍属于本机的加密草稿；只用于查看或复制。 */
 data class LocalInterviewDraft(
     val turnId: String,
@@ -112,6 +119,21 @@ enum class SkillCatalogStatus {
     LOADED,
     FAILED,
 }
+
+enum class MaterialJobLookupStatus {
+    IDLE,
+    LOADING,
+    LOADED,
+    FAILED,
+}
+
+data class MaterialJobLookup(
+    val materialId: String,
+    val revision: Int,
+    val jobId: String,
+    val status: MaterialJobLookupStatus,
+    val errorMessage: String? = null,
+)
 
 data class PlanErrorState(
     val code: String?,
@@ -148,6 +170,7 @@ data class AppState(
     val loading: Boolean = false,
     val busyLabel: String? = null,
     val message: UiMessage? = null,
+    val ongoingStatus: OngoingStatus? = null,
     val roles: List<RoleDto> = emptyList(),
     val skillCodes: List<SkillCodeDto> = emptyList(),
     val skillCatalogStatus: SkillCatalogStatus = SkillCatalogStatus.IDLE,
@@ -162,6 +185,7 @@ data class AppState(
     val resumeSnapshot: SnapshotDto? = null,
     val jdSnapshot: SnapshotDto? = null,
     val material: MaterialDraftDto? = null,
+    val materialJobLookup: MaterialJobLookup? = null,
     val snapshots: List<SnapshotDto> = emptyList(),
     val matchReport: MatchReportDto? = null,
     val plan: PublicPlanDto? = null,
@@ -238,6 +262,7 @@ class AppViewModel internal constructor(
         coordinator = restoreCoordinator,
         isVisible = { appVisible },
         onEffect = { effect -> applyEffect(effect) },
+        onStopped = { _, jobId -> clearOngoingStatus(jobId) },
     )
 
     val state = androidx.compose.runtime.mutableStateOf(AppState())
@@ -245,6 +270,8 @@ class AppViewModel internal constructor(
     private val contextGeneration = ContextGeneration()
     private val interviewRecoveryLocks = java.util.concurrent.ConcurrentHashMap<String, Mutex>()
     private val confirmedInterviewTurns = java.util.concurrent.ConcurrentHashMap<String, Boolean>()
+    private val inFlightMaterialActionKeys = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    private val supersededMaterialRecoveries = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
     @Volatile
     private var appVisible = true
 
@@ -286,6 +313,7 @@ class AppViewModel internal constructor(
         contextGeneration.bumpNavigation()
         // 页面/账号切换后旧订阅立即停止；回到目标页时由恢复路径重新建立唯一订阅。
         jobWatch.cancelAll()
+        clearOngoingStatus()
     }
 
     fun setAppVisible(visible: Boolean) {
@@ -295,6 +323,7 @@ class AppViewModel internal constructor(
             restoreActiveJobs()
         } else {
             jobWatch.cancelAll()
+            clearOngoingStatus()
         }
     }
 
@@ -460,6 +489,27 @@ class AppViewModel internal constructor(
     }
 
     fun clearMessage() = update { it.copy(message = null) }
+
+    private fun clearOngoingStatus(jobId: String? = null) {
+        update { current ->
+            val existing = current.ongoingStatus ?: return@update current
+            if (jobId == null || existing.jobId == jobId) {
+                current.copy(ongoingStatus = null)
+            } else {
+                current
+            }
+        }
+    }
+
+    private fun ongoingStatusText(jobKind: String, fallback: String): String = when (jobKind) {
+        "extract" -> "正在提取文件文本；本页只查询状态，不会重复提交"
+        "parse" -> "正在 AI 解析；本页只查询状态，不会重复提交"
+        "match" -> "正在匹配分析；本页只查询状态，不会重复提交"
+        "plan" -> "正在生成计划；本页只查询状态，不会重复提交"
+        "follow_up" -> "正在判定追问；本页只查询状态，不会重复提交"
+        "interview_report" -> "正在生成面试报告；本页只查询状态，不会重复提交"
+        else -> fallback
+    }
 
     // ------------------------------------------------------------ 启动与会话
 
@@ -905,23 +955,51 @@ class AppViewModel internal constructor(
             notify("材料尚未加载完成")
             return
         }
-        val ctx = currentRequestContext() ?: return
-        val entry = scopeForJob("extract", null, materialId) ?: return
-        update { it.copy(loading = true, busyLabel = "提取文件文本…") }
+        val policy = com.mockmate.app.ui.screens.ReviewScreenPolicy.evaluate(
+            material,
+            state.value.job,
+            state.value.materialJobLookup,
+        )
+        if (!policy.showExtractAction) return
+        val actionKey = "extract:$materialId:${material.revision}"
+        if (!inFlightMaterialActionKeys.add(actionKey)) return
+        val ctx = currentRequestContext() ?: run {
+            inFlightMaterialActionKeys.remove(actionKey)
+            return
+        }
+        val page = pageSnapshot() ?: run {
+            inFlightMaterialActionKeys.remove(actionKey)
+            return
+        }
+        val entry = scopeForJob("extract", null, materialId) ?: run {
+            inFlightMaterialActionKeys.remove(actionKey)
+            return
+        }
+        update { it.copy(loading = true, busyLabel = "提取文件文本…", message = null) }
         viewModelScope.launch {
-            val job = performWrite(
-                ctx,
-                "extractMaterial",
-                ExtractMaterialPayload(material.revision),
-                targetId = materialId,
-                revision = material.revision,
-            ) { key -> repository.extractMaterial(materialId, material.revision, key) }
-            if (!isAccountCurrent(ctx)) return@launch
-            when (job) {
-                is ApiResult.Err -> showError(job, ctx)
-                is ApiResult.Ok -> {
-                    applyEffect(restoreCoordinator.project(entry.copy(jobId = job.value.id), job.value))
+            try {
+                val job = performWrite(
+                    ctx,
+                    "extractMaterial",
+                    ExtractMaterialPayload(material.revision),
+                    targetId = materialId,
+                    revision = material.revision,
+                ) { key -> repository.extractMaterial(materialId, material.revision, key) }
+                if (!isAccountCurrent(ctx) || !isScopeCurrent(page)) return@launch
+                when (job) {
+                    is ApiResult.Err -> showError(job, ctx, page)
+                    is ApiResult.Ok -> {
+                        if (!syncMaterialWriteReceipt(ctx, entry, "extract", job.value)) return@launch
+                        applyEffect(
+                            restoreCoordinator.project(
+                                entry.copy(jobId = job.value.id, jobAttempt = job.value.attempt),
+                                job.value,
+                            ),
+                        )
+                    }
                 }
+            } finally {
+                inFlightMaterialActionKeys.remove(actionKey)
             }
         }
     }
@@ -937,7 +1015,7 @@ class AppViewModel internal constructor(
     }
 
     fun openEditor(kind: String, materialId: String?, preparationId: String) {
-        update { it.copy(material = null, snapshots = emptyList()) }
+        update { it.copy(material = null, materialJobLookup = null, snapshots = emptyList()) }
         push(Screen.Editor(kind, materialId, preparationId))
         val ctx = currentRequestContext() ?: return
         if (materialId != null) {
@@ -954,7 +1032,9 @@ class AppViewModel internal constructor(
         update {
             it.copy(
                 material = null,
+                materialJobLookup = null,
                 snapshots = emptyList(),
+                job = null,
                 invalidSkillItemId = null,
                 invalidSkillField = null,
             )
@@ -970,9 +1050,20 @@ class AppViewModel internal constructor(
                 showError(material, ctx)
                 return@launch
             }
+            val loadedMaterial = (material as ApiResult.Ok).value
+            val latestJobId = loadedMaterial.latest_job_id
+            val initialLookup = latestJobId?.let { jobId ->
+                MaterialJobLookup(
+                    materialId = loadedMaterial.id,
+                    revision = loadedMaterial.revision,
+                    jobId = jobId,
+                    status = MaterialJobLookupStatus.LOADING,
+                )
+            }
             update {
                 it.copy(
-                    material = (material as ApiResult.Ok).value,
+                    material = loadedMaterial,
+                    materialJobLookup = initialLookup,
                     snapshots = okOrNull(snapshots) ?: emptyList(),
                     loading = false,
                     busyLabel = null,
@@ -980,6 +1071,449 @@ class AppViewModel internal constructor(
             }
             push(Screen.Review(materialId, preparationId))
             refreshSkillCodes()
+            if (latestJobId == null) return@launch
+            val reviewScope = currentScope()?.copy(materialRevision = loadedMaterial.revision) ?: return@launch
+            fetchAndApplyLatestMaterialJob(reviewScope, loadedMaterial, latestJobId)
+        }
+    }
+
+    private fun materialLookupKey(
+        scope: RestoreScope,
+        material: MaterialDraftDto,
+        jobId: String,
+    ): String =
+        "lookup:${scope.accountId}:${scope.sessionGeneration}:${scope.navigationEpoch}:${material.id}:${material.revision}:$jobId"
+
+    /** 核对页任务状态查询失败后的只读查询入口：只 GET，不重新 POST。 */
+    fun queryLatestMaterialJob(materialId: String) {
+        val material = state.value.material?.takeIf { it.id == materialId } ?: return
+        val latestJobId = material.latest_job_id ?: return
+        val reviewScope = currentScope()?.takeIf {
+            it.screen == RestoreJobService.SCREEN_REVIEW && it.materialId == materialId
+        }?.copy(materialRevision = material.revision) ?: return
+        val lookupKey = materialLookupKey(reviewScope, material, latestJobId)
+        if (!inFlightMaterialActionKeys.add(lookupKey)) return
+        update { current ->
+            if (current.material?.id == material.id &&
+                current.material.revision == material.revision
+            ) {
+                current.copy(
+                    materialJobLookup = MaterialJobLookup(
+                        materialId = material.id,
+                        revision = material.revision,
+                        jobId = latestJobId,
+                        status = MaterialJobLookupStatus.LOADING,
+                    ),
+                )
+            } else {
+                current
+            }
+        }
+        viewModelScope.launch {
+            fetchAndApplyLatestMaterialJob(
+                reviewScope = reviewScope,
+                expectedMaterial = material,
+                latestJobId = latestJobId,
+                lookupKeyAcquired = true,
+            )
+        }
+    }
+
+    private suspend fun fetchAndApplyLatestMaterialJob(
+        reviewScope: RestoreScope,
+        expectedMaterial: MaterialDraftDto,
+        latestJobId: String,
+        lookupKeyAcquired: Boolean = false,
+        requireCurrentRevision: Boolean = false,
+    ) {
+        val lookupKey = materialLookupKey(reviewScope, expectedMaterial, latestJobId)
+        if (!lookupKeyAcquired && !inFlightMaterialActionKeys.add(lookupKey)) return
+        try {
+            val jobResult = repository.job(latestJobId)
+            if (!isScopeCurrent(reviewScope)) return
+            val currentMaterial = state.value.material
+            if (currentMaterial == null ||
+                currentMaterial.id != expectedMaterial.id ||
+                currentMaterial.revision != expectedMaterial.revision
+            ) {
+                return
+            }
+            when (jobResult) {
+                is ApiResult.Err -> {
+                    update { current ->
+                        val mat = current.material
+                        val canMarkFailed = current.job == null ||
+                            current.job.id != latestJobId ||
+                            current.job.state !in setOf("failed", "interrupted", "superseded")
+                        if (mat != null &&
+                            mat.id == currentMaterial.id &&
+                            mat.revision == currentMaterial.revision &&
+                            mat.latest_job_id == latestJobId &&
+                            canMarkFailed
+                        ) {
+                            current.copy(
+                                materialJobLookup = MaterialJobLookup(
+                                    materialId = mat.id,
+                                    revision = mat.revision,
+                                    jobId = latestJobId,
+                                    status = MaterialJobLookupStatus.FAILED,
+                                    errorMessage = ErrorDiagnosticsMapper.sanitizeRawServerMessage(
+                                        jobResult.message,
+                                        jobResult.code,
+                                    ),
+                                ),
+                            )
+                        } else {
+                            current
+                        }
+                    }
+                }
+                is ApiResult.Ok -> {
+                    val restoredJob = jobResult.value
+                    val matchesMaterial = restoredJob.target_id == currentMaterial.id &&
+                        if (requireCurrentRevision) {
+                            restoredJob.input_revision == currentMaterial.revision
+                        } else {
+                            restoredJob.input_revision == currentMaterial.revision ||
+                                restoredJob.state == "superseded"
+                        }
+                    if (!matchesMaterial) {
+                        update { current ->
+                            if (current.material?.id == currentMaterial.id &&
+                                current.material.revision == currentMaterial.revision
+                            ) {
+                                current.copy(
+                                    materialJobLookup = MaterialJobLookup(
+                                        materialId = currentMaterial.id,
+                                        revision = currentMaterial.revision,
+                                        jobId = latestJobId,
+                                        status = MaterialJobLookupStatus.LOADED,
+                                    ),
+                                )
+                            } else {
+                                current
+                            }
+                        }
+                        return
+                    }
+                    if (!InterviewUiMerge.shouldApplyJob(state.value.job, restoredJob)) {
+                        update { current ->
+                            if (current.material?.id == currentMaterial.id &&
+                                current.material.revision == currentMaterial.revision &&
+                                current.materialJobLookup?.status == MaterialJobLookupStatus.LOADING
+                            ) {
+                                current.copy(
+                                    materialJobLookup = MaterialJobLookup(
+                                        materialId = currentMaterial.id,
+                                        revision = currentMaterial.revision,
+                                        jobId = latestJobId,
+                                        status = MaterialJobLookupStatus.LOADED,
+                                    ),
+                                )
+                            } else {
+                                current
+                            }
+                        }
+                        return
+                    }
+                    val scopedEntry = reviewScope.copy(
+                        jobId = restoredJob.id,
+                        materialRevision = currentMaterial.revision,
+                        jobAttempt = restoredJob.attempt,
+                    )
+                    when (restoredJob.state) {
+                        "queued", "running" -> {
+                            applyEffect(restoreCoordinator.project(scopedEntry, restoredJob))
+                        }
+                        "failed", "interrupted" -> {
+                            update { current ->
+                                if (current.material?.id == currentMaterial.id &&
+                                    current.material.revision == currentMaterial.revision &&
+                                    InterviewUiMerge.shouldApplyJob(current.job, restoredJob)
+                                ) {
+                                    current.copy(
+                                        job = restoredJob,
+                                        ongoingStatus = if (current.ongoingStatus?.jobId == restoredJob.id) {
+                                            null
+                                        } else {
+                                            current.ongoingStatus
+                                        },
+                                        materialJobLookup = MaterialJobLookup(
+                                            materialId = currentMaterial.id,
+                                            revision = currentMaterial.revision,
+                                            jobId = latestJobId,
+                                            status = MaterialJobLookupStatus.LOADED,
+                                        ),
+                                    )
+                                } else {
+                                    current
+                                }
+                            }
+                            jobWatch.cancel(reviewScope.accountId, restoredJob.id)
+                        }
+                        "superseded" -> {
+                            if (restoredJob.input_revision >= currentMaterial.revision) {
+                                // 当前版本的任务已失效：保留已显示原文，只读回读材料与快照。
+                                rereadMaterialAfterSuperseded(
+                                    reviewScope = reviewScope,
+                                    expectedMaterial = currentMaterial,
+                                    supersededJob = restoredJob,
+                                )
+                            } else {
+                                update { current ->
+                                    if (current.material?.id == currentMaterial.id &&
+                                        current.material.revision == currentMaterial.revision &&
+                                        InterviewUiMerge.shouldApplyJob(current.job, restoredJob)
+                                    ) {
+                                        current.copy(
+                                            job = restoredJob,
+                                            ongoingStatus = if (current.ongoingStatus?.jobId == restoredJob.id) {
+                                                null
+                                            } else {
+                                                current.ongoingStatus
+                                            },
+                                            materialJobLookup = MaterialJobLookup(
+                                                materialId = currentMaterial.id,
+                                                revision = currentMaterial.revision,
+                                                jobId = latestJobId,
+                                                status = MaterialJobLookupStatus.LOADED,
+                                            ),
+                                        )
+                                    } else {
+                                        current
+                                    }
+                                }
+                                jobWatch.cancel(reviewScope.accountId, restoredJob.id)
+                            }
+                        }
+                        "succeeded" -> {
+                            val latestMaterial = state.value.material?.takeIf {
+                                it.id == currentMaterial.id && it.revision == currentMaterial.revision
+                            } ?: return
+                            val needsMaterialRefresh = restoredJob.input_revision == latestMaterial.revision &&
+                                ((restoredJob.kind == "parse" && latestMaterial.profile == null) ||
+                                    (restoredJob.kind == "extract" && latestMaterial.text.isNullOrBlank()))
+                            if (needsMaterialRefresh) {
+                                // 材料正文或结构化结果尚未到达前保持 LOADING，失败时由 Error 分支切为 FAILED。
+                                update { current ->
+                                    if (current.material?.id == latestMaterial.id &&
+                                        current.material.revision == latestMaterial.revision &&
+                                        InterviewUiMerge.shouldApplyJob(current.job, restoredJob)
+                                    ) {
+                                        current.copy(job = restoredJob)
+                                    } else {
+                                        current
+                                    }
+                                }
+                                applyEffect(restoreCoordinator.project(scopedEntry, restoredJob))
+                            } else {
+                                update { current ->
+                                    if (current.material?.id == latestMaterial.id &&
+                                        current.material.revision == latestMaterial.revision &&
+                                        InterviewUiMerge.shouldApplyJob(current.job, restoredJob)
+                                    ) {
+                                        current.copy(
+                                            job = restoredJob,
+                                            ongoingStatus = if (current.ongoingStatus?.jobId == restoredJob.id) {
+                                                null
+                                            } else {
+                                                current.ongoingStatus
+                                            },
+                                            materialJobLookup = MaterialJobLookup(
+                                                materialId = latestMaterial.id,
+                                                revision = latestMaterial.revision,
+                                                jobId = latestJobId,
+                                                status = MaterialJobLookupStatus.LOADED,
+                                            ),
+                                        )
+                                    } else {
+                                        current
+                                    }
+                                }
+                                jobWatch.cancel(reviewScope.accountId, restoredJob.id)
+                            }
+                        }
+                    }
+                }
+            }
+        } finally {
+            inFlightMaterialActionKeys.remove(lookupKey)
+        }
+    }
+
+    /**
+     * 当前核对页所持版本的提取／解析任务变为 superseded 时，只读回读材料与快照。
+     * 回读期间保留已显示原文并暂停会使用旧 revision 的操作；取得更高版本后复用
+     * 现有 Job 查询入口，仍指向已知旧版本的任务指针则直接结束恢复。
+     */
+    private suspend fun rereadMaterialAfterSuperseded(
+        reviewScope: RestoreScope,
+        expectedMaterial: MaterialDraftDto,
+        supersededJob: JobDto,
+    ) {
+        if (supersededJob.kind !in setOf("extract", "parse")) return
+        if (!isScopeCurrent(reviewScope)) return
+        val currentBefore = state.value.material
+        if (currentBefore == null || currentBefore.id != expectedMaterial.id) return
+        // 当前版本已同步到更新版本时不再回读；旧的失效任务指针已在本页解析过时也不重复读取。
+        if (currentBefore.revision > expectedMaterial.revision) return
+        val resolvedLookup = state.value.materialJobLookup
+        if (state.value.job == null &&
+            resolvedLookup?.status == MaterialJobLookupStatus.LOADED &&
+            resolvedLookup.materialId == expectedMaterial.id &&
+            resolvedLookup.revision == expectedMaterial.revision &&
+            resolvedLookup.jobId == supersededJob.id
+        ) {
+            return
+        }
+        // 在途去重必须随页面切换：同一页重复触发合并，退出后新页面可以接管自己的回读。
+        val recoveryKey =
+            "superseded:${reviewScope.accountId}:${reviewScope.sessionGeneration}:" +
+                "${reviewScope.navigationEpoch}:${expectedMaterial.id}:" +
+                "${expectedMaterial.revision}:${supersededJob.id}"
+        if (!supersededMaterialRecoveries.add(recoveryKey)) return
+        try {
+            update { current ->
+                val mat = current.material
+                if (mat != null &&
+                    mat.id == expectedMaterial.id &&
+                    mat.revision == expectedMaterial.revision
+                ) {
+                    current.copy(
+                        job = null,
+                        materialJobLookup = MaterialJobLookup(
+                            materialId = mat.id,
+                            revision = mat.revision,
+                            jobId = supersededJob.id,
+                            status = MaterialJobLookupStatus.LOADING,
+                        ),
+                    )
+                } else {
+                    current
+                }
+            }
+            val materialResult = repository.material(expectedMaterial.id)
+            val snapshotsResult = repository.snapshots(expectedMaterial.id)
+            if (!isScopeCurrent(reviewScope)) return
+            val currentMaterial = state.value.material
+            if (currentMaterial == null ||
+                currentMaterial.id != expectedMaterial.id ||
+                currentMaterial.revision != expectedMaterial.revision
+            ) {
+                return
+            }
+            if (materialResult is ApiResult.Err) {
+                markMaterialRereadFailed(expectedMaterial, supersededJob, materialResult)
+                return
+            }
+            if (snapshotsResult is ApiResult.Err) {
+                markMaterialRereadFailed(expectedMaterial, supersededJob, snapshotsResult)
+                return
+            }
+            val reread = (materialResult as ApiResult.Ok).value
+            if (reread.id != expectedMaterial.id ||
+                reread.revision < expectedMaterial.revision
+            ) {
+                markMaterialRereadFailed(
+                    expectedMaterial,
+                    supersededJob,
+                    ApiResult.Err("MATERIAL_MISMATCH", "回读到的材料版本不匹配", false),
+                )
+                return
+            }
+            val nextJobId = reread.latest_job_id
+            val stalePointer = nextJobId == supersededJob.id &&
+                reread.revision > expectedMaterial.revision
+            val unresolvedPointer = nextJobId == supersededJob.id &&
+                reread.revision == expectedMaterial.revision
+            val nextLookup = when {
+                nextJobId == null -> null
+                stalePointer || unresolvedPointer -> MaterialJobLookup(
+                    materialId = reread.id,
+                    revision = reread.revision,
+                    jobId = nextJobId,
+                    status = MaterialJobLookupStatus.LOADED,
+                )
+                else -> MaterialJobLookup(
+                    materialId = reread.id,
+                    revision = reread.revision,
+                    jobId = nextJobId,
+                    status = MaterialJobLookupStatus.LOADING,
+                )
+            }
+            update { current ->
+                if (current.material?.id == expectedMaterial.id &&
+                    current.material.revision == expectedMaterial.revision
+                ) {
+                    current.copy(
+                        material = reread,
+                        snapshots = okOrNull(snapshotsResult) ?: current.snapshots,
+                        job = null,
+                        ongoingStatus = if (current.ongoingStatus?.jobId == supersededJob.id) {
+                            null
+                        } else {
+                            current.ongoingStatus
+                        },
+                        materialJobLookup = nextLookup,
+                        loading = false,
+                        busyLabel = null,
+                    )
+                } else {
+                    current
+                }
+            }
+            if (nextLookup != null &&
+                nextLookup.status == MaterialJobLookupStatus.LOADING &&
+                nextJobId != null
+            ) {
+                fetchAndApplyLatestMaterialJob(
+                    reviewScope = reviewScope.copy(
+                        materialId = reread.id,
+                        materialRevision = reread.revision,
+                        jobId = nextJobId,
+                        jobAttempt = null,
+                    ),
+                    expectedMaterial = reread,
+                    latestJobId = nextJobId,
+                    requireCurrentRevision = true,
+                )
+            }
+            jobWatch.cancel(reviewScope.accountId, supersededJob.id)
+        } finally {
+            // 成功、失败、取消或被页面切换丢弃都释放本页的在途键，避免长期挡住后续页面。
+            supersededMaterialRecoveries.remove(recoveryKey)
+        }
+    }
+
+    private fun markMaterialRereadFailed(
+        expectedMaterial: MaterialDraftDto,
+        supersededJob: JobDto,
+        error: ApiResult.Err,
+    ) {
+        update { current ->
+            val mat = current.material
+            if (mat != null &&
+                mat.id == expectedMaterial.id &&
+                mat.revision == expectedMaterial.revision
+            ) {
+                current.copy(
+                    job = null,
+                    loading = false,
+                    busyLabel = null,
+                    materialJobLookup = MaterialJobLookup(
+                        materialId = mat.id,
+                        revision = mat.revision,
+                        jobId = supersededJob.id,
+                        status = MaterialJobLookupStatus.FAILED,
+                        errorMessage = ErrorDiagnosticsMapper.sanitizeRawServerMessage(
+                            error.message,
+                            error.code,
+                        ),
+                    ),
+                )
+            } else {
+                current
+            }
         }
     }
 
@@ -1047,6 +1581,8 @@ class AppViewModel internal constructor(
                         it.copy(
                             loading = false,
                             busyLabel = null,
+                            job = null,
+                            materialJobLookup = null,
                             invalidSkillItemId = null,
                             invalidSkillField = null,
                         )
@@ -1124,6 +1660,8 @@ class AppViewModel internal constructor(
                     update {
                         it.copy(
                             material = material,
+                            materialJobLookup = null,
+                            job = null,
                             loading = true,
                             busyLabel = "提取文件文本…",
                             invalidSkillItemId = null,
@@ -1144,11 +1682,18 @@ class AppViewModel internal constructor(
                         revision = material.revision,
                         preparationId = preparationId,
                     ) { key -> repository.extractMaterial(material.id, material.revision, key) }
+                    if (!isAccountCurrent(screenRequestContext) || !isScopeCurrent(entry)) return@launch
                     when (extract) {
-                        is ApiResult.Err -> showError(extract, screenRequestContext)
+                        is ApiResult.Err -> showError(extract, screenRequestContext, entry)
                         is ApiResult.Ok -> {
+                            if (!syncMaterialWriteReceipt(screenRequestContext, entry, "extract", extract.value)) {
+                                return@launch
+                            }
                             applyEffect(
-                                restoreCoordinator.project(entry.copy(jobId = extract.value.id), extract.value)
+                                restoreCoordinator.project(
+                                    entry.copy(jobId = extract.value.id, jobAttempt = extract.value.attempt),
+                                    extract.value,
+                                ),
                             )
                         }
                     }
@@ -1193,6 +1738,8 @@ class AppViewModel internal constructor(
                         it.copy(
                             loading = false,
                             busyLabel = null,
+                            job = null,
+                            materialJobLookup = null,
                             invalidSkillItemId = null,
                             invalidSkillField = null,
                         )
@@ -1222,23 +1769,51 @@ class AppViewModel internal constructor(
             update { it.copy(message = UiMessage("材料尚未加载完成，请稍后再试")) }
             return
         }
-        val ctx = currentRequestContext() ?: return
-        val entry = scopeForJob("parse", null, materialId) ?: return
-        update { it.copy(loading = true, busyLabel = "AI 解析中…") }
+        val policy = com.mockmate.app.ui.screens.ReviewScreenPolicy.evaluate(
+            material,
+            state.value.job,
+            state.value.materialJobLookup,
+        )
+        if (!policy.showStartParseAction) return
+        val actionKey = "parse:$materialId:${material.revision}"
+        if (!inFlightMaterialActionKeys.add(actionKey)) return
+        val ctx = currentRequestContext() ?: run {
+            inFlightMaterialActionKeys.remove(actionKey)
+            return
+        }
+        val page = pageSnapshot() ?: run {
+            inFlightMaterialActionKeys.remove(actionKey)
+            return
+        }
+        val entry = scopeForJob("parse", null, materialId) ?: run {
+            inFlightMaterialActionKeys.remove(actionKey)
+            return
+        }
+        update { it.copy(loading = true, busyLabel = "AI 解析中…", message = null) }
         viewModelScope.launch {
-            val job = performWrite(
-                ctx,
-                "parseMaterial",
-                ParseMaterialPayload(material.revision, roleId, level),
-                targetId = materialId,
-                revision = material.revision,
-            ) { key -> repository.parseMaterial(materialId, material.revision, roleId, level, key) }
-            if (!isAccountCurrent(ctx)) return@launch
-            when (job) {
-                is ApiResult.Err -> showError(job, ctx)
-                is ApiResult.Ok -> {
-                    applyEffect(restoreCoordinator.project(entry.copy(jobId = job.value.id), job.value))
+            try {
+                val job = performWrite(
+                    ctx,
+                    "parseMaterial",
+                    ParseMaterialPayload(material.revision, roleId, level),
+                    targetId = materialId,
+                    revision = material.revision,
+                ) { key -> repository.parseMaterial(materialId, material.revision, roleId, level, key) }
+                if (!isAccountCurrent(ctx) || !isScopeCurrent(page)) return@launch
+                when (job) {
+                    is ApiResult.Err -> showError(job, ctx, page)
+                    is ApiResult.Ok -> {
+                        if (!syncMaterialWriteReceipt(ctx, entry, "parse", job.value)) return@launch
+                        applyEffect(
+                            restoreCoordinator.project(
+                                entry.copy(jobId = job.value.id, jobAttempt = job.value.attempt),
+                                job.value,
+                            ),
+                        )
+                    }
                 }
+            } finally {
+                inFlightMaterialActionKeys.remove(actionKey)
             }
         }
     }
@@ -1486,7 +2061,7 @@ class AppViewModel internal constructor(
         if (prep.id != preparationId) return
         val ctx = currentRequestContext() ?: return
         val entry = scopeForJob("match", preparationId, preparationId) ?: return
-        update { it.copy(loading = true, busyLabel = "匹配分析中…", matchReport = null) }
+        update { it.copy(loading = true, busyLabel = "匹配分析中…", matchReport = null, message = null) }
         viewModelScope.launch {
             val job = performWrite(
                 ctx,
@@ -1631,7 +2206,7 @@ class AppViewModel internal constructor(
         val ctx = currentRequestContext() ?: return
         val page = pageSnapshot() ?: return
         val entry = scopeForJob("plan", preparationId, preparationId) ?: return
-        update { it.copy(loading = true, busyLabel = "生成计划中…", plan = null, planError = null) }
+        update { it.copy(loading = true, busyLabel = "生成计划中…", plan = null, planError = null, message = null) }
         viewModelScope.launch {
             val job = performWrite(
                 ctx,
@@ -1713,7 +2288,7 @@ class AppViewModel internal constructor(
         val ctx = currentRequestContext() ?: return
         val page = pageSnapshot() ?: return
         val entry = scopeForJob(job.kind, prep.id, job.target_id, job.id) ?: return
-        update { it.copy(loading = true, busyLabel = "重试中…") }
+        update { it.copy(loading = true, busyLabel = "重试中…", message = null) }
         viewModelScope.launch {
             val result = performWrite(
                 ctx,
@@ -1740,36 +2315,63 @@ class AppViewModel internal constructor(
             update { it.copy(message = UiMessage("该任务不可重试或输入已过期")) }
             return
         }
-        val ctx = currentRequestContext() ?: return
-        val page = pageSnapshot() ?: return
+        val actionKey = "retry:${job.id}:${job.attempt}"
+        if (!inFlightMaterialActionKeys.add(actionKey)) return
+        val ctx = currentRequestContext() ?: run {
+            inFlightMaterialActionKeys.remove(actionKey)
+            return
+        }
+        val page = pageSnapshot() ?: run {
+            inFlightMaterialActionKeys.remove(actionKey)
+            return
+        }
         val prep = state.value.preparation
         if (job.kind in setOf("match", "plan") && prep == null) {
+            inFlightMaterialActionKeys.remove(actionKey)
             update { it.copy(message = UiMessage("准备尚未加载完成，请返回准备页重试")) }
             return
         }
-        val entry = scopeForJob(job.kind, prep?.id, job.target_id, job.id) ?: return
+        val entry = scopeForJob(job.kind, prep?.id, job.target_id, job.id) ?: run {
+            inFlightMaterialActionKeys.remove(actionKey)
+            return
+        }
         update {
             it.copy(
                 loading = true,
                 busyLabel = "重试中…",
                 planError = if (job.kind == "plan") null else it.planError,
+                message = null,
             )
         }
         viewModelScope.launch {
-            val result = performWrite(
-                ctx,
-                "retryJob",
-                RetryJobPayload(job.attempt),
-                targetId = job.id,
-                revision = job.attempt,
-                preparationId = prep?.id,
-            ) { key -> repository.retryJob(job.id, job.attempt, key) }
-            if (!isAccountCurrent(ctx) || !isScopeCurrent(page)) return@launch
-            when (result) {
-                is ApiResult.Err -> showError(result, ctx, page)
-                is ApiResult.Ok -> {
-                    applyEffect(restoreCoordinator.project(entry, result.value))
+            try {
+                val result = performWrite(
+                    ctx,
+                    "retryJob",
+                    RetryJobPayload(job.attempt),
+                    targetId = job.id,
+                    revision = job.attempt,
+                    preparationId = prep?.id,
+                ) { key -> repository.retryJob(job.id, job.attempt, key) }
+                if (!isAccountCurrent(ctx) || !isScopeCurrent(page)) return@launch
+                when (result) {
+                    is ApiResult.Err -> showError(result, ctx, page)
+                    is ApiResult.Ok -> {
+                        if (result.value.kind in setOf("extract", "parse") &&
+                            !syncMaterialWriteReceipt(ctx, entry, job.kind, result.value)
+                        ) {
+                            return@launch
+                        }
+                        applyEffect(
+                            restoreCoordinator.project(
+                                entry.copy(jobId = result.value.id, jobAttempt = result.value.attempt),
+                                result.value,
+                            ),
+                        )
+                    }
                 }
+            } finally {
+                inFlightMaterialActionKeys.remove(actionKey)
             }
         }
     }
@@ -2071,6 +2673,7 @@ class AppViewModel internal constructor(
         clearLoading: Boolean = false,
     ) {
         if (!isScopeCurrent(page)) return
+        var cancelledJobId: String? = null
         update {
             if (!isScopeCurrent(page)) {
                 it
@@ -2079,6 +2682,21 @@ class AppViewModel internal constructor(
             ) {
                 if (clearLoading) it.copy(loading = false, busyLabel = null) else it
             } else {
+                val existingOngoing = it.ongoingStatus
+                val clearOngoing = existingOngoing != null && when (existingOngoing.jobKind) {
+                    "follow_up" ->
+                        (detail.follow_up_job?.id == existingOngoing.jobId &&
+                            detail.follow_up_job.state in M1Repository.TERMINAL_STATES) ||
+                            (detail.follow_up_job == null && detail.phase != "deciding_follow_up")
+                    "interview_report" ->
+                        (detail.report_job?.id == existingOngoing.jobId &&
+                            detail.report_job.state in M1Repository.TERMINAL_STATES) ||
+                            detail.report_state == "ready"
+                    else -> false
+                }
+                if (clearOngoing) {
+                    cancelledJobId = existingOngoing?.jobId
+                }
                 it.copy(
                     interviewDetail = detail,
                     pendingInterviewTurnId = pendingTurnId,
@@ -2087,11 +2705,13 @@ class AppViewModel internal constructor(
                         sessionId,
                         detail,
                     ),
+                    ongoingStatus = if (clearOngoing) null else existingOngoing,
                     loading = if (clearLoading) false else it.loading,
                     busyLabel = if (clearLoading) null else it.busyLabel,
                 )
             }
         }
+        cancelledJobId?.let { jobWatch.cancel(accountId, it) }
     }
 
     /**
@@ -2483,7 +3103,7 @@ class AppViewModel internal constructor(
     fun retryInterviewJob(sessionId: String, jobId: String, attempt: Int) {
         val ctx = currentRequestContext() ?: return
         val page = pageSnapshot() ?: return
-        update { it.copy(loading = true, busyLabel = "重试任务…") }
+        update { it.copy(loading = true, busyLabel = "重试任务…", message = null) }
         viewModelScope.launch {
             val result = performWrite(
                 ctx,
@@ -2862,22 +3482,27 @@ class AppViewModel internal constructor(
         jobId: String = "",
     ): RestoreScope? {
         val base = currentScope() ?: return null
+        val jobAttempt = state.value.job?.takeIf { jobId.isNotBlank() && it.id == jobId }?.attempt
         return when (kind) {
             "plan", "match" -> base.copy(
                 jobId = jobId,
                 preparationId = preparationId ?: base.preparationId,
                 materialId = null,
+                jobAttempt = jobAttempt,
             )
             "follow_up", "interview_report" -> base.copy(
                 jobId = jobId,
                 preparationId = null,
                 materialId = null,
                 interviewSessionId = targetId,
+                jobAttempt = jobAttempt,
             )
             else -> base.copy(
                 jobId = jobId,
                 preparationId = preparationId ?: base.preparationId,
                 materialId = targetId,
+                materialRevision = state.value.material?.takeIf { it.id == targetId }?.revision,
+                jobAttempt = jobAttempt,
             )
         }
     }
@@ -2913,6 +3538,88 @@ class AppViewModel internal constructor(
                 materialId = active.targetId,
             )
         }
+
+    private fun isStaleMaterialCallback(
+        currentMat: MaterialDraftDto?,
+        currentJob: JobDto?,
+        incoming: JobDto,
+    ): Boolean {
+        if (incoming.kind !in setOf("extract", "parse")) return false
+        if (currentMat == null) return false
+        if (incoming.target_id != currentMat.id) return true
+        if (incoming.input_revision < currentMat.revision && incoming.state != "superseded") {
+            return true
+        }
+        if (incoming.kind == "extract" &&
+            currentMat.latest_job_id != null &&
+            currentMat.latest_job_id != incoming.id &&
+            incoming.input_revision <= currentMat.revision
+        ) {
+            return true
+        }
+        if (incoming.kind == "extract" &&
+            currentJob != null &&
+            currentJob.kind == "parse" &&
+            currentJob.target_id == currentMat.id &&
+            incoming.input_revision <= currentJob.input_revision
+        ) {
+            return true
+        }
+        return false
+    }
+
+    /**
+     * 在解析/提取写入回执进入状态投影前校验账号、页面、材料 ID、revision 与任务类型，
+     * 并把本次权威回执 Job ID 一次性同步到 material.latest_job_id、materialJobLookup 与 job。
+     */
+    private fun syncMaterialWriteReceipt(
+        ctx: RequestContext,
+        scope: RestoreScope,
+        expectedKind: String,
+        receipt: JobDto,
+    ): Boolean {
+        if (!isAccountCurrent(ctx) || !isScopeCurrent(scope)) return false
+        if (receipt.kind != expectedKind) return false
+        var synced = false
+        var previousJobId: String? = null
+        update { current ->
+            val mat = current.material
+            if (mat == null ||
+                mat.id != receipt.target_id ||
+                mat.revision != receipt.input_revision ||
+                (scope.materialId != null && scope.materialId != mat.id) ||
+                (scope.materialRevision != null && scope.materialRevision != mat.revision) ||
+                !InterviewUiMerge.shouldApplyJob(current.job, receipt)
+            ) {
+                return@update current
+            }
+            synced = true
+            previousJobId = mat.latest_job_id
+            val updatedMat = if (mat.latest_job_id == receipt.id) mat else mat.copy(latest_job_id = receipt.id)
+            val needsResultFetch = receipt.state == "succeeded" &&
+                ((receipt.kind == "parse" && updatedMat.profile == null) ||
+                    (receipt.kind == "extract" && updatedMat.text.isNullOrBlank()))
+            val lookupStatus = if (needsResultFetch) {
+                MaterialJobLookupStatus.LOADING
+            } else {
+                MaterialJobLookupStatus.LOADED
+            }
+            current.copy(
+                material = updatedMat,
+                job = receipt,
+                materialJobLookup = MaterialJobLookup(
+                    materialId = updatedMat.id,
+                    revision = updatedMat.revision,
+                    jobId = receipt.id,
+                    status = lookupStatus,
+                ),
+            )
+        }
+        if (synced && previousJobId != null && previousJobId != receipt.id) {
+            jobWatch.cancel(ctx.accountId, previousJobId!!)
+        }
+        return synced
+    }
 
     /** 唯一 UI 归并出口：Project/Inform/Error 只在原 scope 仍为当前页面时应用。 */
     private suspend fun applyEffect(effect: RestoreUiEffect) {
@@ -2961,6 +3668,36 @@ class AppViewModel internal constructor(
                 ) {
                     return
                 }
+                val currentMat = state.value.material
+                if (currentMat != null && outcome.material != null) {
+                    if (outcome.material.id != currentMat.id ||
+                        outcome.material.revision < currentMat.revision
+                    ) {
+                        return
+                    }
+                }
+                if (isStaleMaterialCallback(currentMat, state.value.job, outcome.job)) {
+                    return
+                }
+                // 回读到的权威材料已进入更高版本（或指向另一个最新任务）时，
+                // 旧 Job 的结果只能标记其对应版本完成，不能继续呈现旧任务与旧完成提示。
+                val readBackMaterial = outcome.material
+                val materialJobSuperseded = readBackMaterial != null &&
+                    outcome.job.kind in setOf("extract", "parse") &&
+                    outcome.job.target_id == readBackMaterial.id &&
+                    (
+                        outcome.job.input_revision < readBackMaterial.revision ||
+                            (
+                                outcome.job.input_revision == readBackMaterial.revision &&
+                                    readBackMaterial.latest_job_id != null &&
+                                    readBackMaterial.latest_job_id != outcome.job.id
+                                )
+                        )
+                val newerMaterial = readBackMaterial.takeIf { materialJobSuperseded }
+                val latestMaterialJobId = newerMaterial?.latest_job_id
+                val staleMaterialPointer = newerMaterial != null &&
+                    latestMaterialJobId == outcome.job.id &&
+                    outcome.job.input_revision < newerMaterial.revision
                 val message = when {
                     outcome.interviewReport != null -> "报告已生成"
                     outcome.interview != null && outcome.job.kind == "interview_report" -> "报告状态已更新"
@@ -2972,6 +3709,34 @@ class AppViewModel internal constructor(
                     else -> outcome.message
                 }
                 update {
+                    if (newerMaterial != null) {
+                        // 旧任务不再作为当前任务展示；新版本有任务则从材料指针重新只读恢复。
+                        val nextLookup = when {
+                            latestMaterialJobId == null -> null
+                            staleMaterialPointer -> MaterialJobLookup(
+                                materialId = newerMaterial.id,
+                                revision = newerMaterial.revision,
+                                jobId = latestMaterialJobId,
+                                status = MaterialJobLookupStatus.LOADED,
+                            )
+                            else -> MaterialJobLookup(
+                                materialId = newerMaterial.id,
+                                revision = newerMaterial.revision,
+                                jobId = latestMaterialJobId,
+                                status = MaterialJobLookupStatus.LOADING,
+                            )
+                        }
+                        return@update it.copy(
+                            material = newerMaterial,
+                            materialJobLookup = nextLookup,
+                            snapshots = outcome.snapshots ?: it.snapshots,
+                            job = null,
+                            ongoingStatus = if (it.ongoingStatus?.jobId == outcome.job.id) null else it.ongoingStatus,
+                            loading = false,
+                            busyLabel = null,
+                            message = null,
+                        )
+                    }
                     val nextDetail = outcome.interview?.let { incoming ->
                         if (InterviewUiMerge.shouldApplyDetail(it.interviewDetail, incoming)) incoming
                         else it.interviewDetail
@@ -2981,22 +3746,77 @@ class AppViewModel internal constructor(
                     } else {
                         it.job
                     }
+                    val mergedMaterial = when {
+                        outcome.material == null -> it.material
+                        it.material == null -> outcome.material
+                        outcome.material.id != it.material.id -> outcome.material
+                        outcome.material.revision > it.material.revision -> outcome.material
+                        outcome.material.revision < it.material.revision -> it.material
+                        else -> {
+                            val keepText = outcome.material.text ?: it.material.text
+                            val keepProfile = outcome.material.profile ?: it.material.profile
+                            val keepState = when {
+                                it.material.state == "parsed" && outcome.material.state != "parsed" -> it.material.state
+                                it.material.state == "text_ready" && outcome.material.state == "uploaded" -> it.material.state
+                                else -> outcome.material.state
+                            }
+                            outcome.material.copy(
+                                text = keepText,
+                                profile = keepProfile,
+                                state = keepState,
+                                latest_job_id = outcome.material.latest_job_id ?: it.material.latest_job_id,
+                            )
+                        }
+                    }
+                    val nextLookup = if (outcome.job.kind in setOf("extract", "parse") &&
+                        mergedMaterial != null &&
+                        outcome.job.target_id == mergedMaterial.id &&
+                        outcome.job.input_revision == mergedMaterial.revision
+                    ) {
+                        MaterialJobLookup(
+                            materialId = mergedMaterial.id,
+                            revision = mergedMaterial.revision,
+                            jobId = outcome.job.id,
+                            status = MaterialJobLookupStatus.LOADED,
+                        )
+                    } else {
+                        it.materialJobLookup
+                    }
                     it.copy(
                         plan = outcome.plan ?: it.plan,
                         planError = if (outcome.plan != null) null else it.planError,
                         lastGeneratedPlanId = outcome.plan?.id ?: it.lastGeneratedPlanId,
                         preparation = outcome.preparation ?: it.preparation,
                         matchReport = outcome.matchReport ?: it.matchReport,
-                        material = outcome.material ?: it.material,
+                        material = mergedMaterial,
+                        materialJobLookup = nextLookup,
                         snapshots = outcome.snapshots ?: it.snapshots,
                         interviewDetail = nextDetail,
                         interviewReport = outcome.interviewReport ?: it.interviewReport,
                         interviewReportError = null,
                         job = nextJob,
+                        ongoingStatus = if (it.ongoingStatus?.jobId == outcome.job.id) null else it.ongoingStatus,
                         loading = false,
                         busyLabel = null,
                         message = UiMessage(message, isError = false),
                     )
+                }
+                if (newerMaterial != null) {
+                    if (latestMaterialJobId != null && !staleMaterialPointer) {
+                        fetchAndApplyLatestMaterialJob(
+                            reviewScope = effect.result.scope.copy(
+                                materialId = newerMaterial.id,
+                                materialRevision = newerMaterial.revision,
+                                jobId = latestMaterialJobId,
+                                jobAttempt = null,
+                            ),
+                            expectedMaterial = newerMaterial,
+                            latestJobId = latestMaterialJobId,
+                            requireCurrentRevision = true,
+                        )
+                    }
+                    jobWatch.cancel(effect.result.scope.accountId, outcome.job.id)
+                    return
                 }
                 outcome.interview?.report_job?.let { summary ->
                     if (summary.state == "queued" || summary.state == "running") {
@@ -3007,10 +3827,19 @@ class AppViewModel internal constructor(
                         )
                     }
                 }
+                jobWatch.cancel(effect.result.scope.accountId, outcome.job.id)
             }
             is RestoreUiEffect.Inform -> {
                 if (!isScopeCurrent(effect.result.scope)) return
                 val outcome = effect.result.outcome as RestoreOutcome.Inform
+                val safeOutcomeMessage = if (outcome.job.error != null) {
+                    ErrorDiagnosticsMapper.sanitizeRawServerMessage(
+                        outcome.message,
+                        outcome.job.error.code,
+                    )
+                } else {
+                    outcome.message
+                }
                 if (outcome.job.kind in setOf("follow_up", "interview_report")) {
                     if (!InterviewUiMerge.interviewJobUpdateAllowed(
                             state.value.interviewDetail, outcome.job
@@ -3018,26 +3847,46 @@ class AppViewModel internal constructor(
                     ) {
                         return
                     }
-                    val isError = outcome.job.state != "queued" && outcome.job.state != "running"
-                    update {
-                        it.copy(
-                            loading = false,
-                            busyLabel = null,
-                            message = UiMessage(
-                                outcome.message,
-                                isError = isError,
-                                code = outcome.job.error?.code,
-                                details = outcome.job.error?.details ?: emptyList(),
-                                retryable = outcome.job.retryable,
-                                diagnosticContext = "jobId=${outcome.job.id} · kind=${outcome.job.kind} · state=${outcome.job.state} · attempt=${outcome.job.attempt}",
-                                jobKind = outcome.job.kind,
-                            ),
+                    val isOngoing = outcome.job.state == "queued" || outcome.job.state == "running"
+                    if (isOngoing) {
+                        val nextOngoing = OngoingStatus(
+                            jobId = outcome.job.id,
+                            jobKind = outcome.job.kind,
+                            text = ongoingStatusText(outcome.job.kind, safeOutcomeMessage),
                         )
-                    }
-                    if (outcome.job.state == "queued" || outcome.job.state == "running") {
+                        update {
+                            it.copy(
+                                loading = false,
+                                busyLabel = null,
+                                ongoingStatus = nextOngoing,
+                            )
+                        }
                         jobWatch.ensure(effect.result.scope, outcome.job)
-                    } else if (outcome.job.state == "failed" || outcome.job.state == "interrupted") {
-                        refreshInterviewInBackground(effect.result.scope.interviewSessionId)
+                    } else {
+                        update {
+                            it.copy(
+                                loading = false,
+                                busyLabel = null,
+                                ongoingStatus = if (it.ongoingStatus?.jobId == outcome.job.id) {
+                                    null
+                                } else {
+                                    it.ongoingStatus
+                                },
+                                message = UiMessage(
+                                    safeOutcomeMessage,
+                                    isError = true,
+                                    code = outcome.job.error?.code,
+                                    details = outcome.job.error?.details ?: emptyList(),
+                                    retryable = outcome.job.retryable,
+                                    diagnosticContext = "jobId=${outcome.job.id} · kind=${outcome.job.kind} · state=${outcome.job.state} · attempt=${outcome.job.attempt}",
+                                    jobKind = outcome.job.kind,
+                                ),
+                            )
+                        }
+                        jobWatch.cancel(effect.result.scope.accountId, outcome.job.id)
+                        if (outcome.job.state == "failed" || outcome.job.state == "interrupted") {
+                            refreshInterviewInBackground(effect.result.scope.interviewSessionId)
+                        }
                     }
                     return
                 }
@@ -3057,17 +3906,57 @@ class AppViewModel internal constructor(
                 ) {
                     return
                 }
-                val isError = outcome.job.state != "queued" && outcome.job.state != "running"
+                val currentMat = state.value.material
+                if (isStaleMaterialCallback(currentMat, state.value.job, outcome.job)) {
+                    return
+                }
+                if (currentMat != null &&
+                    outcome.job.kind in setOf("extract", "parse") &&
+                    outcome.job.target_id != currentMat.id
+                ) {
+                    return
+                }
+                val isOngoing = outcome.job.state == "queued" || outcome.job.state == "running"
                 val planErr = outcome.job.error
                 val formattedOutcomeMsg = if (outcome.job.kind == "plan" && planErr != null) {
-                    PlanErrorFormatter.userMessage(planErr.code, outcome.message, planErr.details)
+                    PlanErrorFormatter.userMessage(planErr.code, safeOutcomeMessage, planErr.details)
                 } else {
-                    outcome.message
+                    safeOutcomeMessage
                 }
                 val jobCtx = "jobId=${outcome.job.id} · kind=${outcome.job.kind} · state=${outcome.job.state} · attempt=${outcome.job.attempt} · target=${outcome.job.target_id} (rev=${outcome.job.input_revision})"
+                val nextOngoing = if (isOngoing) {
+                    OngoingStatus(
+                        jobId = outcome.job.id,
+                        jobKind = outcome.job.kind,
+                        text = ongoingStatusText(outcome.job.kind, formattedOutcomeMsg),
+                    )
+                } else {
+                    null
+                }
                 update {
+                    val syncMaterial = outcome.job.kind in setOf("extract", "parse") &&
+                        it.material != null &&
+                        outcome.job.target_id == it.material.id &&
+                        outcome.job.input_revision == it.material.revision
+                    val nextMaterial = if (syncMaterial && it.material!!.latest_job_id != outcome.job.id) {
+                        it.material.copy(latest_job_id = outcome.job.id)
+                    } else {
+                        it.material
+                    }
+                    val nextLookup = if (syncMaterial && nextMaterial != null) {
+                        MaterialJobLookup(
+                            materialId = nextMaterial.id,
+                            revision = nextMaterial.revision,
+                            jobId = outcome.job.id,
+                            status = MaterialJobLookupStatus.LOADED,
+                        )
+                    } else {
+                        it.materialJobLookup
+                    }
                     it.copy(
+                        material = nextMaterial,
                         job = outcome.job,
+                        materialJobLookup = nextLookup,
                         planError = when {
                             outcome.job.kind == "plan" &&
                                 outcome.job.state == "failed" &&
@@ -3079,7 +3968,10 @@ class AppViewModel internal constructor(
                                     code = planErr.code,
                                     message = formattedOutcomeMsg,
                                     details = planErr.details,
-                                    rawServerMessage = planErr.message,
+                                    rawServerMessage = ErrorDiagnosticsMapper.sanitizeRawServerMessage(
+                                        planErr.message,
+                                        planErr.code,
+                                    ),
                                     retryable = outcome.job.retryable,
                                     diagnosticContext = jobCtx,
                                     jobId = outcome.job.id,
@@ -3090,34 +3982,153 @@ class AppViewModel internal constructor(
                                 outcome.job.state in setOf("queued", "running", "superseded") -> null
                             else -> it.planError
                         },
+                        ongoingStatus = if (isOngoing) {
+                            nextOngoing
+                        } else if (it.ongoingStatus?.jobId == outcome.job.id) {
+                            null
+                        } else {
+                            it.ongoingStatus
+                        },
                         loading = false,
                         busyLabel = null,
-                        message = UiMessage(
-                            formattedOutcomeMsg,
-                            isError = isError,
-                            code = outcome.job.error?.code
-                                ?: if (outcome.job.state == "superseded") "SUPERSEDED" else null,
-                            details = outcome.job.error?.details ?: emptyList(),
-                            retryable = outcome.job.retryable,
-                            diagnosticContext = jobCtx,
-                            jobKind = outcome.job.kind,
-                        ),
+                        message = if (isOngoing) {
+                            it.message
+                        } else {
+                            UiMessage(
+                                formattedOutcomeMsg,
+                                isError = true,
+                                code = outcome.job.error?.code
+                                    ?: if (outcome.job.state == "superseded") "SUPERSEDED" else null,
+                                details = outcome.job.error?.details ?: emptyList(),
+                                retryable = outcome.job.retryable,
+                                diagnosticContext = jobCtx,
+                                jobKind = outcome.job.kind,
+                            )
+                        },
                     )
                 }
-                if (outcome.job.state == "queued" || outcome.job.state == "running") {
+                if (outcome.job.state == "superseded" &&
+                    outcome.job.kind in setOf("extract", "parse")
+                ) {
+                    val materialForRecovery = state.value.material
+                    if (materialForRecovery != null &&
+                        materialForRecovery.id == outcome.job.target_id &&
+                        outcome.job.input_revision >= materialForRecovery.revision
+                    ) {
+                        // 首次打开、主动查询和运行中轮询收到失效任务时复用同一只读回读逻辑。
+                        rereadMaterialAfterSuperseded(
+                            reviewScope = effect.result.scope,
+                            expectedMaterial = materialForRecovery,
+                            supersededJob = outcome.job,
+                        )
+                        jobWatch.cancel(effect.result.scope.accountId, outcome.job.id)
+                        return
+                    }
+                }
+                if (isOngoing) {
                     // 唯一持续订阅：重复的前台恢复/手动查询不会叠加第二个轮询。
-                    jobWatch.ensure(effect.result.scope, outcome.job)
+                    jobWatch.ensure(
+                        effect.result.scope.copy(
+                            jobId = outcome.job.id,
+                            jobAttempt = outcome.job.attempt,
+                        ),
+                        outcome.job,
+                    )
+                } else {
+                    jobWatch.cancel(effect.result.scope.accountId, outcome.job.id)
                 }
             }
-            is RestoreUiEffect.Error -> showError(
-                ApiResult.Err(effect.code, effect.message, false),
-                RequestContext(
-                    effect.scope.accountId,
-                    effect.scope.sessionGeneration,
-                    effect.scope.navigationEpoch,
-                ),
-                effect.scope,
-            )
+            is RestoreUiEffect.Error -> {
+                if (!isScopeCurrent(effect.scope)) return
+                val currentMat = state.value.material
+                if (effect.scope.materialRevision != null &&
+                    currentMat != null &&
+                    currentMat.id == effect.scope.materialId &&
+                    currentMat.revision != effect.scope.materialRevision
+                ) {
+                    return
+                }
+                val currentJob = state.value.job
+                if (effect.scope.jobAttempt != null &&
+                    currentJob != null &&
+                    currentJob.id == effect.scope.jobId &&
+                    effect.scope.jobAttempt < currentJob.attempt
+                ) {
+                    return
+                }
+                if (effect.scope.screen == RestoreJobService.SCREEN_REVIEW && effect.scope.materialId != null) {
+                    if (currentMat != null &&
+                        currentMat.id == effect.scope.materialId &&
+                        currentMat.latest_job_id != null &&
+                        effect.scope.jobId.isNotBlank() &&
+                        currentMat.latest_job_id != effect.scope.jobId
+                    ) {
+                        return
+                    }
+                    if (currentJob != null &&
+                        currentJob.target_id == effect.scope.materialId &&
+                        currentJob.kind == "parse" &&
+                        effect.scope.jobId.isNotBlank() &&
+                        currentJob.id != effect.scope.jobId
+                    ) {
+                        return
+                    }
+                    val jobIdToMark = effect.scope.jobId.ifBlank { currentMat?.latest_job_id.orEmpty() }
+                    update { current ->
+                        val mat = current.material
+                        val sameMat = mat != null && mat.id == effect.scope.materialId
+                        val sameRevision = effect.scope.materialRevision == null ||
+                            (mat != null && mat.revision == effect.scope.materialRevision)
+                        val sameJobId = mat?.latest_job_id == null || mat.latest_job_id == jobIdToMark
+                        val hasKnownTerminalFailure = current.job != null &&
+                            current.job.id == jobIdToMark &&
+                            current.job.state in setOf("failed", "interrupted", "superseded")
+                        val alreadyHasMaterialResult = mat != null && current.job != null &&
+                            current.job.id == jobIdToMark &&
+                            current.job.state == "succeeded" &&
+                            ((current.job.kind == "parse" && mat.profile != null) ||
+                                (current.job.kind == "extract" && !mat.text.isNullOrBlank()))
+                        if (sameMat &&
+                            sameRevision &&
+                            sameJobId &&
+                            jobIdToMark.isNotBlank() &&
+                            !hasKnownTerminalFailure &&
+                            !alreadyHasMaterialResult
+                        ) {
+                            val updatedMat = if (mat!!.latest_job_id == null) mat.copy(latest_job_id = jobIdToMark) else mat
+                            current.copy(
+                                material = updatedMat,
+                                materialJobLookup = MaterialJobLookup(
+                                    materialId = mat.id,
+                                    revision = mat.revision,
+                                    jobId = jobIdToMark,
+                                    status = MaterialJobLookupStatus.FAILED,
+                                    errorMessage = ErrorDiagnosticsMapper.sanitizeRawServerMessage(
+                                        effect.message,
+                                        effect.code,
+                                    ),
+                                ),
+                            )
+                        } else {
+                            current
+                        }
+                    }
+                }
+                if (effect.scope.jobId.isNotBlank() &&
+                    !jobWatch.isWatching(effect.scope.accountId, effect.scope.jobId)
+                ) {
+                    clearOngoingStatus(effect.scope.jobId)
+                }
+                showError(
+                    ApiResult.Err(effect.code, effect.message, false),
+                    RequestContext(
+                        effect.scope.accountId,
+                        effect.scope.sessionGeneration,
+                        effect.scope.navigationEpoch,
+                    ),
+                    effect.scope,
+                )
+            }
         }
     }
 

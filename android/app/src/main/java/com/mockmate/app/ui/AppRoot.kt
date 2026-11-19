@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -18,6 +19,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.mockmate.app.ui.components.LoadingRow
 import com.mockmate.app.ui.components.MessageToast
+import com.mockmate.app.ui.components.OngoingStatusBanner
 import com.mockmate.app.ui.screens.AuthScreen
 import com.mockmate.app.ui.screens.EditorScreen
 import com.mockmate.app.ui.screens.InterviewHistoryScreen
@@ -85,12 +87,25 @@ fun AppRoot(vm: AppViewModel) {
                     }
                 }
             }
-            state.message?.let { message ->
-                MessageToast(
-                    message = message,
-                    onTimeout = { vm.dismissMessage(message) },
-                    modifier = Modifier.align(Alignment.BottomCenter),
-                )
+            if (state.message != null || state.ongoingStatus != null) {
+                Column(
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .safeDrawingPadding()
+                        .padding(horizontal = 16.dp, vertical = 16.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    state.message?.let { message ->
+                        MessageToast(
+                            message = message,
+                            onTimeout = { vm.dismissMessage(message) },
+                        )
+                    }
+                    state.ongoingStatus?.let { status ->
+                        OngoingStatusBanner(status = status)
+                    }
+                }
             }
         }
     }

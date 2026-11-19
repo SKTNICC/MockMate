@@ -465,3 +465,91 @@ def test_deepseek_six_question_plan_quota_request_options_and_confirm(
     )
     assert confirm.status_code == 200
     assert confirm.json()["state"] == "confirmed"
+
+
+def test_deepseek_match_rejects_free_text_quote_and_keeps_verified_evidence() -> None:
+    import types
+
+    resume_text = "技能：熟悉 Java 集合基础。"
+    resume = types.SimpleNamespace(
+        id="00000000-0000-4000-8000-000000000001",
+        text=resume_text,
+        profile={
+            "kind": "resume",
+            "education": [],
+            "work_experience": [],
+            "projects": [],
+            "skills": [
+                {
+                    "item_id": "skill-1",
+                    "name": "Java 集合",
+                    "code": "java.core",
+                    "evidence": {"quote": "技能：熟悉 Java 集合基础。", "origin": "extracted"},
+                }
+            ],
+        },
+    )
+    jd = types.SimpleNamespace(
+        id="00000000-0000-4000-8000-000000000002",
+        text="JD",
+        profile={"kind": "jd", "requirements": [{"item_id": "req-1", "text": "理解 Java 集合"}]},
+    )
+
+    # 旧版错误自由引文形式必须被拒绝
+    legacy_bad_provider = DeepSeekProvider(
+        SETTINGS,
+        transport=httpx.MockTransport(
+            lambda _: _chat(
+                {
+                    "rows": [
+                        {
+                            "requirement_id": "req-1",
+                            "status": "supported",
+                            "resume_evidence": [
+                                {
+                                    "snapshot_id": "00000000-0000-4000-8000-000000000001",
+                                    "item_id": "skill-1",
+                                    "quote": "模型自由拼写的错误引文",
+                                }
+                            ],
+                            "explanation": "说明",
+                            "suggested_focus": "建议",
+                        }
+                    ]
+                }
+            )
+        ),
+    )
+    try:
+        legacy_bad_provider.match_requirements(resume_snapshot=resume, jd_snapshot=jd)
+        raise AssertionError("应拒绝模型自由文本 resume_evidence")
+    except Exception as exc:
+        assert getattr(exc, "code", None) == "AI_INVALID_OUTPUT"
+
+    # 正常选择 item_id 时由服务端已确认快照还原准确引文
+    good_provider = DeepSeekProvider(
+        SETTINGS,
+        transport=httpx.MockTransport(
+            lambda _: _chat(
+                {
+                    "rows": [
+                        {
+                            "requirement_id": "req-1",
+                            "status": "supported",
+                            "resume_item_ids": ["skill-1"],
+                            "explanation": "技能条目说明熟悉 Java 集合基础。",
+                            "suggested_focus": "说明扩容和哈希冲突边界。",
+                        }
+                    ]
+                }
+            )
+        ),
+    )
+    rows = good_provider.match_requirements(resume_snapshot=resume, jd_snapshot=jd)
+    assert rows[0]["resume_evidence"] == [
+        {
+            "snapshot_id": "00000000-0000-4000-8000-000000000001",
+            "item_id": "skill-1",
+            "quote": "技能：熟悉 Java 集合基础。",
+        }
+    ]

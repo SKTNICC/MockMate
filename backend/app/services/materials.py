@@ -16,7 +16,7 @@ from app.models import IdempotencyRecord, Job, MaterialDraft, MaterialSnapshot, 
 from app.schemas import MaterialDraft as MaterialDraftSchema
 from app.schemas import Snapshot as SnapshotSchema
 from app.services import catalog
-from app.services.jobs import create_or_get_job, supersede_job
+from app.services.jobs import create_or_get_job, has_structured_profile, supersede_job
 from app.services.text import (
     check_material_text,
     normalized_stem,
@@ -254,7 +254,7 @@ def create_parse_job(
         raise AppError("REVISION_CONFLICT", "材料版本已变化，请刷新后重试")
     if draft.state == "uploaded" or not draft.text:
         raise AppError("FILE_TEXT_UNAVAILABLE", "材料文本尚未提取，无法解析")
-    if draft.profile is not None:
+    if has_structured_profile(draft.profile):
         raise AppError(
             "REVISION_CONFLICT",
             "当前版本已确认，如需重新解析请先编辑材料产生新版本",

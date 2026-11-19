@@ -70,6 +70,18 @@ object InterviewUiMerge {
     fun shouldApplyJob(current: JobDto?, incoming: JobDto): Boolean {
         if (current == null) return true
         if (current.id != incoming.id) {
+            if (current.target_id == incoming.target_id &&
+                current.kind in setOf("extract", "parse") &&
+                incoming.kind in setOf("extract", "parse")
+            ) {
+                if (incoming.input_revision < current.input_revision) return false
+                if (incoming.input_revision == current.input_revision &&
+                    current.kind == "parse" &&
+                    incoming.kind == "extract"
+                ) {
+                    return false
+                }
+            }
             if (current.kind == incoming.kind &&
                 current.target_id == incoming.target_id &&
                 incoming.input_revision < current.input_revision

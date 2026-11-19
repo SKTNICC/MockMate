@@ -23,6 +23,7 @@ def parse_prompt(
     role_id: str,
     level: str,
     skill_catalog: list[dict[str, str]] | None = None,
+    correction: dict | None = None,
 ) -> tuple[str, str]:
     catalog_items = [
         {"code": str(item["code"]), "label": str(item.get("label") or item["code"])}
@@ -45,36 +46,36 @@ def parse_prompt(
     if kind == "resume":
         schema = {
             "kind": "resume",
-            "education": [
+            "education": [],
+            "work_experience": [
                 {
-                    "item_id": "edu-1",
-                    "degree": "本科在读",
-                    "major": "计算机科学与技术",
-                    "evidence": {"quote": "原文逐字片段", "origin": "extracted"},
+                    "item_id": "work-1",
+                    "organization": "示例实验室",
+                    "title": "开发实习生",
+                    "description": "维护库存接口",
+                    "evidence": {"quote": "示例实验室｜开发实习生｜维护库存接口", "origin": "extracted"},
                 }
             ],
-            "work_experience": [],
             "projects": [
                 {
                     "item_id": "project-1",
-                    "name": "项目名",
-                    "description": "原文中的项目描述",
+                    "name": "库存工具",
+                    "description": "用 Java 编写库存查询",
                     "skill_codes": [],
-                    "evidence": {"quote": "原文逐字片段", "origin": "extracted"},
+                    "evidence": {"quote": "库存工具｜用 Java 编写库存查询", "origin": "extracted"},
                 }
             ],
-            "skills": [
-                {
-                    "item_id": "skill-1",
-                    "name": "Java 集合",
-                    "code": None,
-                    "evidence": {"quote": "原文逐字片段", "origin": "extracted"},
-                }
-            ],
+            "skills": [],
         }
         instruction = (
-            "把简历原文结构化。没有工作经历时 work_experience 输出空数组，这完全合法；"
-            "没有项目时 projects 为空数组。education/work/projects/skills 至少保留一项。"
+            "把简历原文结构化。没有该类材料时用空数组 []（例如没有工作经历时 work_experience 输出 []，"
+            "没有项目时 projects 输出 []，没有教育或技能时输出 []；四项整体至少保留一条有效条目）。\n"
+            "各数组条目字段严格区分，不得混用或增减键：\n"
+            "- education[]: {\"item_id\", \"degree\", \"major\", \"evidence\"}\n"
+            "- work_experience[]: {\"item_id\", \"organization\", \"title\", \"description\", \"evidence\"}（organization 和 title 必须按原文提取；该条 evidence.quote 必须在同一条工作经历内连续覆盖该条的 organization 与 title，可跨连续行，不得跨越两段不同经历，也不得拼接两条经历的单位与职务；不得使用 name 或 skill_codes；版式不清或缺少字段时保留原文事实并交由人工核对，不得自填头衔或删减已识别经历）\n"
+            "- projects[]: {\"item_id\", \"name\", \"description\", \"skill_codes\", \"evidence\"}\n"
+            "- skills[]: {\"item_id\", \"name\", \"code\", \"evidence\"}\n"
+            "所有 evidence 必须为 {\"quote\": \"材料原文逐字连续片段\", \"origin\": \"extracted\"}。\n"
             f"本次目标岗位 {role_id}，级别 {level}；该信息只用于从词表中关联技能，不得据此补充材料中没有的事实。"
         )
     else:
@@ -82,35 +83,72 @@ def parse_prompt(
             "kind": "jd",
             "role_id": role_id,
             "level": level,
-            "title": "岗位标题",
+            "title": "后端开发实习生",
             "responsibilities": [
                 {
                     "item_id": "responsibility-1",
-                    "text": "职责正文",
-                    "evidence": {"quote": "原文逐字片段", "origin": "extracted"},
+                    "text": "负责库存接口开发与维护",
+                    "evidence": {"quote": "负责库存接口开发与维护", "origin": "extracted"},
                 }
             ],
             "requirements": [
                 {
                     "item_id": "req-1",
-                    "text": "要求正文",
+                    "text": "熟悉 Java 基础与单元测试",
                     "skill_codes": [],
                     "importance": "must",
-                    "evidence": {"quote": "原文逐字片段", "origin": "extracted"},
+                    "evidence": {"quote": "熟悉 Java 基础与单元测试", "origin": "extracted"},
                 }
             ],
         }
         instruction = (
-            "把 JD 原文结构化，逐条提炼职责与显式技能要求。不要补写原文没有的要求；"
+            "把 JD 原文结构化，逐条提炼职责（responsibilities）与显式技能要求（requirements）。"
+            "没有该类材料时用空数组，但合格 JD 必须至少包含一条职责与一条要求，不得补写原文没有的要求。\n"
+            "各数组条目字段严格区分，不得混用或增减键：\n"
+            "- responsibilities[]: {\"item_id\", \"text\", \"evidence\"}\n"
+            "- requirements[]: {\"item_id\", \"text\", \"skill_codes\", \"importance\" (\"must\"|\"nice\"), \"evidence\"}\n"
             f"role_id/level 的默认设置为 {role_id}/{level}，但只在原文未明确相反信息时沿用。"
             "若原文明确写资深、多年经验、架构师或跨岗位，不得为了匹配而改写成实习/初级；"
             "保留原文事实，系统会给出受控冲突并请用户修改。"
         )
+
+    correction_block = ""
+    if isinstance(correction, dict) and correction:
+        corr_details = [str(item) for item in (correction.get("details") or [])]
+        corr_reason = str(correction.get("reason") or "invalid_output")
+        corr_type = str(correction.get("error_code") or "AI_INVALID_OUTPUT")
+        extra_guidance = ""
+        if corr_reason == "ungrounded_work_experience":
+            extra_guidance = (
+                "尤其注意 work_experience[] 每条的 organization 与 title 必须同时出现在同一条自身的 "
+                "evidence.quote 中（若原文该段有显式公司/单位或职位/岗位标签，必须严格取自对应标签字段值，"
+                "不得用职责、时间或合作方文字替代；可跨同一经历的连续行，严禁跨两条经历拼接或把两段经历包进同一条 quote）。"
+            )
+        elif corr_reason == "empty_profile":
+            extra_guidance = (
+                "上一次解析返回了全空数组；材料原文非空且包含可解析信息，"
+                "请从下方原文提取至少一条真实存在的条目并给出逐字引文，不要返回全空数组。"
+            )
+        elif corr_reason == "duplicate_item_id":
+            extra_guidance = (
+                "上一次解析出现了重复的 item_id；请确保所有条目的 item_id 在整份输出中互不重复。"
+            )
+        elif corr_reason == "invalid_json_text":
+            extra_guidance = "严禁在 JSON 键或字符串中输出空字符（\\u0000）或非法 UTF-8 代理字符。"
+        correction_block = (
+            "\n\n上一次解析纠正要求（请严格遵守）：\n"
+            f"错误类型：{corr_type}（reason={corr_reason}）；"
+            f"安全字段与校验反馈：{json.dumps(corr_details, ensure_ascii=False)}。\n"
+            "请严格按照下方 JSON 结构形状重新输出单个 JSON 对象，仅从本次材料原文提取真实事实，"
+            "确保工作经历使用 organization/title（不使用 name/skill_codes）、quote 为原文逐字连续片段、禁止输出额外字段。"
+            f"{extra_guidance}"
+        )
+
     user = f"""{instruction}
 
-{catalog_instruction}
+{catalog_instruction}{correction_block}
 
-请只输出如下形状的 JSON：
+请只输出如下形状的 JSON（示例引文仅作格式示意，实际输出必须逐字来自下方材料原文）：
 {json.dumps(schema, ensure_ascii=False)}
 
 材料原文：
@@ -318,10 +356,17 @@ def generate_prompt(
         ]
     }
 
+    bank_summaries = [
+        item for item in (context.get("bank_summaries") or []) if isinstance(item, dict)
+    ]
+    preferred_anchor_ids = list(context.get("preferred_anchor_ids") or [])
     slot_meta: dict = {
         "slot_key": slot_key,
         "slot_index": slot_index,
         "question_type": slot_type,
+        "slot_angle": str(context.get("slot_angle") or ""),
+        "preferred_anchor_ids": preferred_anchor_ids,
+        "bank_covered_topics": bank_summaries,
         "role_id": role_id,
         "level": level,
         "prefer_jd_scenario": bool(context.get("prefer_jd_scenario")),
@@ -355,7 +400,14 @@ def generate_prompt(
                 "（reference_approach 控制在 2–3 句以内，acceptable_alternatives、common_mistakes、"
                 "basis[].note 控制为简短要点），确保 JSON 在结束前完整闭合。"
             )
-        elif reason in {"empty_content", "invalid_json", "non_object_json"}:
+        elif reason in {
+            "empty_content",
+            "invalid_json",
+            "non_object_json",
+            "duplicate_json_key",
+            "invalid_json_number",
+            "invalid_json_text",
+        }:
             correction_block = (
                 "\n\n上一次生成纠正要求（请严格遵守）：\n"
                 f"上一次输出未返回完整合法的 JSON 对象（reason={reason}）。"
@@ -397,6 +449,53 @@ def generate_prompt(
                 "重新输出一条完整、合法的单个 JSON 对象（questions 恰好 1 题）；"
                 "禁止题干仍以「已有题干」列表为准，并保持原有槽位类型、允许锚点、评价依据和 rubric 要求不变。"
             )
+        elif reason == "semantic_duplicate":
+            conflict_source = kv.get("conflict_source", "")
+            conflict_slot = kv.get("conflict_slot", "")
+            conflict_qid = kv.get("conflict_question_id", "")
+            conflict_meta = None
+            if conflict_slot:
+                conflict_meta = next(
+                    (item for item in previous_summaries if item.get("slot") == conflict_slot),
+                    None,
+                )
+            elif conflict_qid:
+                conflict_meta = next(
+                    (
+                        item
+                        for item in bank_summaries
+                        if item.get("question_id") == conflict_qid
+                    ),
+                    None,
+                )
+            conflict_ref = conflict_slot or conflict_qid or "已有题目"
+            topic_parts = []
+            if conflict_meta:
+                if conflict_meta.get("focus"):
+                    topic_parts.append(f"focus={conflict_meta['focus']}")
+                if conflict_meta.get("topic_key"):
+                    topic_parts.append(f"topic_key={conflict_meta['topic_key']}")
+                if conflict_meta.get("anchor_refs"):
+                    topic_parts.append(
+                        f"anchor_refs={','.join(str(x) for x in conflict_meta['anchor_refs'])}"
+                    )
+            conflict_note = f"（已考察：{', '.join(topic_parts)}）" if topic_parts else ""
+            preferred_hint = (
+                f"优先改用 preferred_anchor_ids={json.dumps(preferred_anchor_ids, ensure_ascii=False)} 中的材料条目，"
+                if preferred_anchor_ids
+                else ""
+            )
+            correction_block = (
+                "\n\n上一次生成纠正要求（请严格遵守）：\n"
+                f"上一次为槽位 {slot_key} 生成的题目在整场语义复核中被判定与已有题目实质重复"
+                f"（reason=semantic_duplicate, conflict_source={conflict_source or 'unknown'}, "
+                f"冲突标识={conflict_ref}{conflict_note}）。"
+                f"本次必须在**同一槽位 {slot_key}** 彻底更换考察角度、场景与实际作答任务"
+                f"（遵循 slot_meta.slot_angle；{preferred_hint}"
+                "切勿继续沿用上次被拦截的机制、假设小工具或题干结构，上次被拒题干已加入「已有题干」黑名单）。"
+                "重新输出一条完整、合法的单个 JSON 对象（questions 恰好 1 题），"
+                "并保持原有槽位类型、允许锚点、评价依据和 rubric 要求不变。"
+            )
         else:
             corr_msg = str(correction.get("message") or "输出不符合契约要求")
             correction_block = (
@@ -409,7 +508,9 @@ def generate_prompt(
 - 只输出单个 JSON 对象，格式为 {{"questions": [ <恰好 1 道题> ]}}；多返回或少返回都视为非法输出。
 - 槽位类型固定为 {slot_type}：experience（经历／推理表达）或 knowledge（技术知识）。
 - 只允许从下方「允许锚点」选择 anchors；snapshot_id、item_id 与 quote 必须原样来自该列表。
+- 严格遵循 `slot_meta.slot_angle` 给定的本槽考察角度，并优先选用 `slot_meta.preferred_anchor_ids` 中前序槽位尚未覆盖的材料条目；避免多道题扎堆复用同一个实习或技能条目。
 - 后续题选择顺序：结合「match_focus」与下方「已考察槽位摘要」，优先选择仍与岗位要求相关且前序槽位尚未充分覆盖的条目或考察点；材料较少时允许复用同一真实锚点，但必须考察不同的实际作答任务（例如前序题已问数据库访问的资源管理，后一题可考察如何验证失败路径或异常恢复）。只换项目名、题干开场措辞或挪动句子不足以构成新题。
+- 下方「已有题干」与 `slot_meta.bank_covered_topics` 仅是**禁止撞题的黑名单**，绝不是写法或领域模板：严禁把候选人材料中不存在的业务名词（例如材料未提及“图书”时却写“图书列表/图书条目”）借用到新题中，也严禁在换个项目壳子后重问已被题库或前序槽位考过的同类问题（如多线程并发修改同一集合）。
 - 题干（stem）直接给出设问，只带必要背景；长段简历原话已在 anchors 中保存，不要在 stem 中重复整段原话。
 - 没有项目／工作经历时，可以引用 JD 锚点构造“假设场景”，但必须说明是假设，不得编造成做过。
 - knowledge 题必须在 evaluation.basis 引用下方「可用依据卡」中的已审 fact_card；不得把技术断言藏在 reasoning 里绕过。experience 题必须在 evaluation.basis 至少引用一条本场材料依据（<snapshot_id>/<item_id>）。
@@ -456,11 +557,12 @@ def review_prompt(*, questions, material_texts, fact_cards=None) -> tuple[str, s
         "uncertain": False,
     }
     user = f"""检查以下面试主问题：
-1. 是否存在相同问法、同义改写或只是替换项目的重复题（duplicate_pairs）。
+1. 是否存在相同问法、同义改写或只是替换项目的重复题（duplicate_pairs）（仅当两题考察的核心知识点/机制与要求候选人完成的作答任务实质相同时才记为重复；若两题虽共用同一材料条目或基础技能标签，但考察机制或实际作答任务明显不同，不记为重复）。
 2. 是否包含材料或已审 fact card 无法支持的陈述、编造经历、与 fact card 冲突的技术断言
    （grounding_issues）。
 3. 若无法确定，uncertain 设 true。不要为了通过而强行判为不重复。
 4. left_id/right_id/question_id 必须使用题目列表中真实存在的 id，不得编造或重复关系。
+5. duplicate_pairs、grounding_issues 和 uncertain 三个字段全部必填：没有发现任何重复或无依据问题时，duplicate_pairs 与 grounding_issues 必须显式返回空数组 []，uncertain 必须是 JSON 布尔值 true 或 false（禁止省略字段或输出字符串）。
 
 题目（含考察目标、参考思路、评分要点、锚点与评价依据）：
 {json.dumps(questions, ensure_ascii=False)}

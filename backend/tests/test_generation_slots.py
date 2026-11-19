@@ -208,6 +208,7 @@ def test_truncated_slot_gets_one_correction_and_records_finish_reason(
     client: TestClient, worker, db, monkeypatch
 ) -> None:
     import httpx
+    import uuid
     import app.workers.runner as runner
     from app.ai.provider import DeepSeekProvider
     from app.core.config import Settings
@@ -382,6 +383,7 @@ def test_double_invalid_json_fails_without_plan_and_keeps_structured_details(
     client: TestClient, worker, db, monkeypatch
 ) -> None:
     import httpx
+    import uuid
     import app.workers.runner as runner
     from app.ai.provider import DeepSeekProvider
     from app.core.config import Settings
@@ -459,6 +461,7 @@ def test_content_filter_is_not_retried_in_slot(
     client: TestClient, worker, db, monkeypatch
 ) -> None:
     import httpx
+    import uuid
     import app.workers.runner as runner
     from app.ai.provider import DeepSeekProvider
     from app.core.config import Settings
@@ -525,6 +528,7 @@ def test_content_filter_is_not_retried_in_slot(
 def test_review_receives_full_evaluation_and_fact_cards(
     client: TestClient, worker, monkeypatch
 ) -> None:
+    import uuid
     import app.workers.runner as runner
 
     captured: dict = {}
@@ -670,6 +674,7 @@ def test_slot_three_duplicates_slot_one_then_recovers_with_correction_and_publis
 ) -> None:
     import httpx
     import re
+    import uuid
     import uuid
     import app.workers.runner as runner
     from app.ai.provider import DeepSeekProvider
@@ -864,6 +869,7 @@ def test_slot_three_repeated_duplicate_fails_with_structured_diagnostics_and_kee
     import httpx
     import re
     import uuid
+    import uuid
     import app.workers.runner as runner
     from app.ai.provider import DeepSeekProvider
     from app.core.config import Settings
@@ -1013,6 +1019,7 @@ def test_slot_three_repeated_duplicate_fails_with_structured_diagnostics_and_kee
 def test_validate_generated_attributes_bank_duplicate_and_semantic_review_rejects(
     client: TestClient, worker, monkeypatch
 ) -> None:
+    import uuid
     import app.workers.runner as runner
 
     resume, jd = _snapshots()
@@ -1099,3 +1106,1118 @@ def test_validate_generated_attributes_bank_duplicate_and_semantic_review_reject
     failed = wait_job(client, token, g.json()["id"], worker, attempts=4)
     assert failed["state"] == "failed"
     assert failed["error"]["code"] == "DUPLICATE_QUESTION"
+
+
+def test_generated_skill_code_gate_anchor_consistency_and_semantic_review_retry(
+    client: TestClient, worker, db, monkeypatch
+) -> None:
+    """合成计划词表外技能阻断、生成槽过滤词表外标签、错锚点拦截及语义复核严格校验与任务级重试。"""
+    import uuid
+    import app.workers.runner as runner
+    from app.models import Job, Plan
+
+    # 1. 整份计划校验：生成题携带词表外技能编码必须被 validate_internal_plan 拒绝
+    bad_plan = copy.deepcopy(BASE_PLAN)
+    bad_plan["questions"][3]["skill_codes"] = ["invented.unknown.skill"]
+    with pytest.raises(AppError) as caught:
+        validate_internal_plan(
+            parse_internal_plan(bad_plan),
+            PlanValidationContext(True, db=db),
+        )
+    assert caught.value.code == "EVALUATION_INVALID"
+
+    # 2. _validate_generated 检查 allowed_anchors 一致性
+    resume, jd = _snapshots()
+    rubric = BANK["questions"][0]["evaluation"]["rubric"]
+    valid_q = TestProvider().generate_questions(
+        count=1,
+        resume_snapshot=resume,
+        jd_snapshot=jd,
+        rubric=rubric,
+        avoid_stems=[],
+        context={"slot_key": "generated-1", "question_type": "experience"},
+    )[0]
+    allowed_anchors = [
+        {
+            "snapshot_id": valid_q["anchors"][0]["snapshot_id"],
+            "item_id": valid_q["anchors"][0]["item_id"],
+            "quote": valid_q["anchors"][0]["quote"],
+        }
+    ]
+    # 修改 quote 为子串（不匹配完整允许锚点）时被拦截
+    modified_anchor_q = copy.deepcopy(valid_q)
+    modified_anchor_q["anchors"][0]["quote"] = valid_q["anchors"][0]["quote"][:6]
+    with pytest.raises(AppError) as anchor_err:
+        worker._validate_generated(
+            modified_anchor_q,
+            resume,
+            jd,
+            allowed_fact_card_ids=set(),
+            expected_rubric=rubric,
+            expected_question_type="experience",
+            allowed_anchors=allowed_anchors,
+        )
+    assert anchor_err.value.code == "AI_INVALID_OUTPUT"
+    assert "reason=invalid_anchor_selection" in anchor_err.value.details
+
+    # 3. 语义复核严格校验：缺字段、字符串布尔、数组 ID（不抛 TypeError）
+    known = {"q-1", "q-2"}
+    for bad_semantic in [
+        {"uncertain": False},
+        {"duplicate_pairs": [], "grounding_issues": [], "uncertain": "false"},
+        {
+            "duplicate_pairs": [{"left_id": ["q-1"], "right_id": "q-2", "reason": "dup"}],
+            "grounding_issues": [],
+            "uncertain": False,
+        },
+        {
+            "duplicate_pairs": [{"left_id": "q-1", "right_id": "q-1", "reason": "self"}],
+            "grounding_issues": [],
+            "uncertain": False,
+        },
+        {
+            "duplicate_pairs": [],
+            "grounding_issues": [{"question_id": "q-1", "claim": "   ", "reason": "blank"}],
+            "uncertain": False,
+        },
+    ]:
+        with pytest.raises(AppError) as sem_err:
+            worker._validate_semantic_output(bad_semantic, known)
+        assert sem_err.value.code == "AI_INVALID_OUTPUT"
+
+    # 4. 端到端：生成题带词表外可选技能过滤后保存槽位；语义复核初次缺字段失败可显式重试并复用已生成槽位，发布 3+3 计划
+    _, token = issue_token(client)
+    r_id = create_confirmed_resume(client, token)
+    j_id = create_confirmed_template_jd(client, token)
+    prep = client.post(
+        "/v1/preparations",
+        json={
+            "role_id": "java-backend",
+            "level": "intern",
+            "main_question_count": 6,
+            "resume_snapshot_id": r_id,
+            "jd_snapshot_id": j_id,
+        },
+        headers={**auth(token), "Idempotency-Key": new_key()},
+    ).json()
+    m = client.post(
+        f"/v1/preparations/{prep['id']}/match",
+        json={"revision": 1, "external_processing_consent": True},
+        headers={**auth(token), "Idempotency-Key": new_key()},
+    )
+    assert wait_job(client, token, m.json()["id"], worker)["state"] == "succeeded"
+
+    import httpx
+    from app.ai.provider import DeepSeekProvider
+    from app.core.config import Settings
+
+    ds_settings = Settings(
+        APP_ENV="test",
+        DATABASE_URL="postgresql+psycopg://mockmate@127.0.0.1:55432/mockmate_test",
+        PRIVATE_FILE_ROOT="runtime/test-private",
+        AI_PROVIDER="deepseek",
+        AI_MODEL="deepseek-stub",
+        AI_API_KEY="stub-key",
+        AI_BASE_URL="https://api.deepseek.test",
+        ALLOW_TEST_FIXTURES=True,
+    )
+    gen_slots_called: list[str] = []
+    review_calls = 0
+
+    def ds_handler(request: httpx.Request) -> httpx.Response:
+        nonlocal review_calls
+        body = json.loads(request.content)
+        user_msg = body["messages"][-1]["content"]
+        if "本次只为槽位" in user_msg:
+            import re
+
+            slot_match = re.search(r"本次只为槽位 (generated-\d+)", user_msg)
+            slot_key = slot_match.group(1) if slot_match else "generated-1"
+            gen_slots_called.append(slot_key)
+            slot_type = "knowledge" if "槽位类型固定为 knowledge" in user_msg else "experience"
+            anchors_block = user_msg.split("允许锚点（anchors 必须原样取自这里）：", 1)[1]
+            anchors_block = anchors_block.split("\n\n可用依据卡（knowledge 题必须从中引用 fact_card）：", 1)[0].strip()
+            anchors = json.loads(anchors_block)
+            cards_block = user_msg.split("可用依据卡（knowledge 题必须从中引用 fact_card）：", 1)[1]
+            cards_block = cards_block.split("\n\n已有题干（禁止复用或同义改写）：", 1)[0].strip()
+            fact_cards = json.loads(cards_block)
+            anchor = anchors[0]
+            basis = [
+                {
+                    "kind": "material",
+                    "ref_id": f"{anchor['snapshot_id']}/{anchor['item_id']}",
+                    "note": "依据材料",
+                },
+                {"kind": "reasoning", "ref_id": "hypothetical-analysis", "note": "仅评价思路"},
+            ]
+            if slot_type == "knowledge" and fact_cards:
+                basis.insert(
+                    0,
+                    {"kind": "fact_card", "ref_id": fact_cards[0]["id"], "note": "依据卡"},
+                )
+            stems = {
+                "generated-1": "围绕图书借阅系统，说明在并发读写场景下为什么需要校验边界并设计对照实验？",
+                "generated-2": "结合已审技术依据卡，解释为什么局部变量和共享集合在线程安全边界上存在本质差异？",
+                "generated-3": "当检索数据量扩大十倍且要求响应稳定时，如何从数据结构与索引前提定位性能退化？",
+            }
+            q = {
+                "question_type": slot_type,
+                "canonical_id": f"ds-{slot_key}",
+                "stem": stems[slot_key],
+                "focus": "边界验证",
+                "topic_key": "java.core",
+                "skill_codes": ["java.core", "invented.tag", "java.core"],
+                "anchors": [
+                    {
+                        "snapshot_id": anchor["snapshot_id"],
+                        "item_id": anchor["item_id"],
+                        "quote": anchor["quote"],
+                    }
+                ],
+                "evaluation": {
+                    "goal": "考察边界验证",
+                    "reference_approach": "澄清前提并说明可执行验证步骤。",
+                    "key_points": [
+                        {"point": "明确事实前提", "weight": 0.6},
+                        {"point": "设计验证用例", "weight": 0.4},
+                    ],
+                    "acceptable_alternatives": ["等价验证方案"],
+                    "common_mistakes": ["缺少边界约束"],
+                    "rubric": rubric,
+                    "basis": basis,
+                    "answer_status": "model_generated",
+                    "trust": "provisional",
+                    "uncertainties": [],
+                },
+            }
+            return httpx.Response(
+                200,
+                json={"id": f"req-{slot_key}", "choices": [{"finish_reason": "stop", "message": {"content": json.dumps({"questions": [q]}, ensure_ascii=False)}}]},
+            )
+
+        review_calls += 1
+        if review_calls == 1:
+            # 首次复核仅返回 {"uncertain": false}，缺少 duplicate_pairs/grounding_issues
+            return httpx.Response(
+                200,
+                json={"id": "req-rev-1", "choices": [{"finish_reason": "stop", "message": {"content": json.dumps({"uncertain": False})}}]},
+            )
+        return httpx.Response(
+            200,
+            json={"id": "req-rev-2", "choices": [{"finish_reason": "stop", "message": {"content": json.dumps({"duplicate_pairs": [], "grounding_issues": [], "uncertain": False})}}]},
+        )
+
+    monkeypatch.setattr(
+        runner,
+        "get_provider",
+        lambda _: DeepSeekProvider(ds_settings, transport=httpx.MockTransport(ds_handler)),
+    )
+    g2 = client.post(
+        f"/v1/preparations/{prep['id']}/generate-plan",
+        json={"revision": 1, "external_processing_consent": True},
+        headers={**auth(token), "Idempotency-Key": new_key()},
+    )
+    first_fail = wait_job(client, token, g2.json()["id"], worker, attempts=4)
+    assert first_fail["state"] == "failed"
+    assert first_fail["error"]["code"] == "AI_INVALID_OUTPUT"
+    assert "stage=plan_review" in first_fail["error"]["details"]
+    assert "reason=invalid_review_schema" in first_fail["error"]["details"]
+    assert first_fail["retryable"] is True
+    assert gen_slots_called == ["generated-1", "generated-2", "generated-3"]
+
+    gen_slots_called.clear()
+    retry_resp = client.post(
+        f"/v1/jobs/{g2.json()['id']}/retry",
+        json={"expected_attempt": 1},
+        headers={**auth(token), "Idempotency-Key": new_key()},
+    )
+    assert retry_resp.status_code == 202
+    final_ok = wait_job(client, token, g2.json()["id"], worker, attempts=4)
+    assert final_ok["state"] == "succeeded", final_ok
+    # 已生成并通过校验的槽位必须复用，不再重新生成
+    assert gen_slots_called == []
+    plan_row = db.get(Plan, uuid.UUID(final_ok["result_ref"]["id"]))
+    assert plan_row is not None
+    gen_questions = [q for q in plan_row.internal_payload["questions"] if q["source"] == "generated"]
+    assert len(gen_questions) == 3
+    assert all(q["skill_codes"] == ["java.core"] for q in gen_questions)
+
+
+def test_plan_duplicate_json_key_slot_failure_retry_reuses_saved_slot_and_enforces_limits(
+    client: TestClient, worker, db, monkeypatch
+) -> None:
+    """Section 4：槽位 1 成功入库后槽位 2 连续重键失败，只读查状态不重跑，重试复用槽位 1 发布 3+3；再测次数上限、真实重题与版本过期。"""
+    import re
+    import uuid
+    import httpx
+    import app.workers.runner as runner
+    from app.ai.provider import DeepSeekProvider
+    from app.core.config import Settings
+    from app.models import Job, JobWorkItem, Plan, Preparation
+
+    _, token = issue_token(client)
+    r_id = create_confirmed_resume(client, token)
+    j_id = create_confirmed_template_jd(client, token)
+    prep = client.post(
+        "/v1/preparations",
+        json={
+            "role_id": "java-backend",
+            "level": "intern",
+            "main_question_count": 6,
+            "resume_snapshot_id": r_id,
+            "jd_snapshot_id": j_id,
+        },
+        headers={**auth(token), "Idempotency-Key": new_key()},
+    ).json()
+    m = client.post(
+        f"/v1/preparations/{prep['id']}/match",
+        json={"revision": 1, "external_processing_consent": True},
+        headers={**auth(token), "Idempotency-Key": new_key()},
+    )
+    assert wait_job(client, token, m.json()["id"], worker)["state"] == "succeeded"
+
+    rubric = {
+        "id": "m1-java-rubric-v1",
+        "version": 1,
+        "dimensions": [
+            {
+                "id": "core",
+                "name": "核心原理与边界",
+                "weight": 0.6,
+                "low_anchor": "缺少前提与验证",
+                "high_anchor": "准确说明原理并给出边界用例",
+            },
+            {
+                "id": "verify",
+                "name": "验证与可维护性",
+                "weight": 0.4,
+                "low_anchor": "没有验证思路",
+                "high_anchor": "能用可检验步骤验证结论",
+            },
+        ],
+    }
+
+    ds_settings = Settings(
+        APP_ENV="test",
+        DATABASE_URL="postgresql+psycopg://mockmate@127.0.0.1:55432/mockmate_test",
+        PRIVATE_FILE_ROOT="runtime/test-private",
+        AI_PROVIDER="deepseek",
+        AI_MODEL="deepseek-stub",
+        AI_API_KEY="stub-key",
+        AI_BASE_URL="https://api.deepseek.test",
+        ALLOW_TEST_FIXTURES=True,
+    )
+    fail_slot2 = True
+    slots_called: list[str] = []
+
+    def build_valid_question(user_msg: str, slot_key: str) -> dict:
+        slot_type = "knowledge" if "槽位类型固定为 knowledge" in user_msg else "experience"
+        anchors_block = user_msg.split("允许锚点（anchors 必须原样取自这里）：", 1)[1]
+        anchors_block = anchors_block.split("\n\n可用依据卡（knowledge 题必须从中引用 fact_card）：", 1)[0].strip()
+        anchors = json.loads(anchors_block)
+        cards_block = user_msg.split("可用依据卡（knowledge 题必须从中引用 fact_card）：", 1)[1]
+        cards_block = cards_block.split("\n\n已有题干（禁止复用或同义改写）：", 1)[0].strip()
+        fact_cards = json.loads(cards_block)
+        schema_block = user_msg.split("只输出如下 JSON（恰好 1 题，rubric 必须原样保留）：\n", 1)[1]
+        schema_block = schema_block.split("\n\n简历原文（仅作语境参考）：", 1)[0].strip()
+        expected_rubric = json.loads(schema_block)["questions"][0]["evaluation"]["rubric"]
+        anchor = anchors[0]
+        basis = [
+            {"kind": "material", "ref_id": f"{anchor['snapshot_id']}/{anchor['item_id']}", "note": "依据材料"},
+            {"kind": "reasoning", "ref_id": "hypothetical-analysis", "note": "仅评价思路"},
+        ]
+        if slot_type == "knowledge" and fact_cards:
+            basis.insert(0, {"kind": "fact_card", "ref_id": fact_cards[0]["id"], "note": "依据卡"})
+        stems = {
+            "generated-1": "围绕图书借阅系统，说明在并发读写场景下为什么需要校验边界并设计对照实验？",
+            "generated-2": "结合已审技术依据卡，解释为什么局部变量和共享集合在线程安全边界上存在本质差异？",
+            "generated-3": "当检索数据量扩大十倍且要求响应稳定时，如何从数据结构与索引前提定位性能退化？",
+        }
+        return {
+            "question_type": slot_type,
+            "canonical_id": f"dupkey-{slot_key}",
+            "stem": stems[slot_key],
+            "focus": "边界验证",
+            "topic_key": "java.core",
+            "skill_codes": ["java.core"],
+            "anchors": [{"snapshot_id": anchor["snapshot_id"], "item_id": anchor["item_id"], "quote": anchor["quote"]}],
+            "evaluation": {
+                "goal": "考察边界验证",
+                "reference_approach": "澄清前提并说明可执行验证步骤。",
+                "key_points": [
+                    {"point": "明确事实前提", "weight": 0.6},
+                    {"point": "设计验证用例", "weight": 0.4},
+                ],
+                "acceptable_alternatives": ["等价验证方案"],
+                "common_mistakes": ["缺少边界约束"],
+                "rubric": expected_rubric,
+                "basis": basis,
+                "answer_status": "model_generated",
+                "trust": "provisional",
+                "uncertainties": [],
+            },
+        }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        user_msg = body["messages"][-1]["content"]
+        if "本次只为槽位" in user_msg:
+            slot_match = re.search(r"本次只为槽位 (generated-\d+)", user_msg)
+            slot_key = slot_match.group(1) if slot_match else "generated-1"
+            slots_called.append(slot_key)
+            if slot_key == "generated-2" and fail_slot2:
+                return httpx.Response(
+                    200,
+                    json={
+                        "id": "req-dupkey",
+                        "choices": [{"finish_reason": "stop", "message": {"content": '{"questions":[],"questions":[]}'}}],
+                    },
+                )
+            q = build_valid_question(user_msg, slot_key)
+            return httpx.Response(
+                200,
+                json={"id": f"req-{slot_key}", "choices": [{"finish_reason": "stop", "message": {"content": json.dumps({"questions": [q]}, ensure_ascii=False)}}]},
+            )
+        return httpx.Response(
+            200,
+            json={"id": "req-rev", "choices": [{"finish_reason": "stop", "message": {"content": json.dumps({"duplicate_pairs": [], "grounding_issues": [], "uncertain": False})}}]},
+        )
+
+    monkeypatch.setattr(
+        runner,
+        "get_provider",
+        lambda _: DeepSeekProvider(ds_settings, transport=httpx.MockTransport(handler)),
+    )
+    gen = client.post(
+        f"/v1/preparations/{prep['id']}/generate-plan",
+        json={"revision": 1, "external_processing_consent": True},
+        headers={**auth(token), "Idempotency-Key": new_key()},
+    )
+    job_id = gen.json()["id"]
+    first_fail = wait_job(client, token, job_id, worker, attempts=6)
+    assert first_fail["state"] == "failed"
+    assert first_fail["retryable"] is True
+    assert first_fail["attempt"] == 1
+    assert first_fail["error"]["code"] == "AI_INVALID_OUTPUT"
+    assert "stage=plan" in first_fail["error"]["details"]
+    assert "slot=generated-2" in first_fail["error"]["details"]
+    assert "reason=duplicate_json_key" in first_fail["error"]["details"]
+    assert slots_called == ["generated-1", "generated-2", "generated-2"]
+    saved_items = db.query(JobWorkItem).filter(JobWorkItem.job_id == uuid.UUID(job_id)).all()
+    assert [item.slot_key for item in saved_items] == ["generated-1"]
+
+    # 只读 GET 保持只读，不触发模型调用
+    slots_called.clear()
+    readonly_get = client.get(f"/v1/jobs/{job_id}", headers=auth(token)).json()
+    assert readonly_get["retryable"] is True
+    assert slots_called == []
+
+    # 重试复用已验证的 generated-1，仅补齐 generated-2 和 generated-3 并发布 3+3
+    fail_slot2 = False
+    retry = client.post(
+        f"/v1/jobs/{job_id}/retry",
+        json={"expected_attempt": 1},
+        headers={**auth(token), "Idempotency-Key": new_key()},
+    )
+    assert retry.status_code == 202
+    done = wait_job(client, token, job_id, worker, attempts=6)
+    assert done["state"] == "succeeded", done
+    assert done["attempt"] == 2
+    assert slots_called == ["generated-2", "generated-3"]
+    plan_row = db.get(Plan, uuid.UUID(done["result_ref"]["id"]))
+    assert plan_row is not None
+    assert plan_row.internal_payload["source_counts"] == {"bank": 3, "generated": 3}
+
+    # 覆盖：1) 超过总次数不可重试；2) 真实 duplicate_stem 不可重试；3) 版本过期不可重试
+    monkeypatch.undo()
+    prep2 = client.post(
+        "/v1/preparations",
+        json={
+            "role_id": "java-backend",
+            "level": "intern",
+            "main_question_count": 2,
+            "resume_snapshot_id": r_id,
+            "jd_snapshot_id": j_id,
+        },
+        headers={**auth(token), "Idempotency-Key": new_key()},
+    ).json()
+    m2 = client.post(
+        f"/v1/preparations/{prep2['id']}/match",
+        json={"revision": 1, "external_processing_consent": True},
+        headers={**auth(token), "Idempotency-Key": new_key()},
+    )
+    assert wait_job(client, token, m2.json()["id"], worker)["state"] == "succeeded"
+    g2 = client.post(
+        f"/v1/preparations/{prep2['id']}/generate-plan",
+        json={"revision": 1, "external_processing_consent": True},
+        headers={**auth(token), "Idempotency-Key": new_key()},
+    ).json()
+    g2_row = db.get(Job, uuid.UUID(g2["id"]))
+    assert g2_row is not None
+    g2_row.state = "failed"
+    g2_row.error_code = "AI_INVALID_OUTPUT"
+    # attempt=2 超过总次数 -> retryable=False
+    g2_row.attempt = 2
+    g2_row.error = {
+        "code": "AI_INVALID_OUTPUT",
+        "message": "生成槽位在有限纠正后仍不合法",
+        "details": ["stage=plan", "slot=generated-1", "reason=duplicate_json_key"],
+        "request_id": "exhausted-dupkey",
+    }
+    db.commit()
+    assert client.get(f"/v1/jobs/{g2_row.id}", headers=auth(token)).json()["retryable"] is False
+
+    # attempt=1 但真实 duplicate_stem -> retryable=False
+    g2_row.attempt = 1
+    g2_row.error = {
+        "code": "AI_INVALID_OUTPUT",
+        "message": "生成槽位在有限纠正后仍不合法",
+        "details": ["stage=plan", "slot=generated-1", "reason=duplicate_stem"],
+        "request_id": "dup-stem",
+    }
+    db.commit()
+    assert client.get(f"/v1/jobs/{g2_row.id}", headers=auth(token)).json()["retryable"] is False
+
+    # attempt=1 且可重试原因 duplicate_json_key，但准备版本过期 -> retryable=False
+    g2_row.error = {
+        "code": "AI_INVALID_OUTPUT",
+        "message": "生成槽位在有限纠正后仍不合法",
+        "details": ["stage=plan", "slot=generated-1", "reason=duplicate_json_key"],
+        "request_id": "stale-dupkey",
+    }
+    prep2_row = db.get(Preparation, uuid.UUID(prep2["id"]))
+    assert prep2_row is not None
+    prep2_row.revision = 2
+    db.commit()
+    assert client.get(f"/v1/jobs/{g2_row.id}", headers=auth(token)).json()["retryable"] is False
+    assert (
+        client.post(
+            f"/v1/jobs/{g2_row.id}/retry",
+            json={"expected_attempt": 1},
+            headers={**auth(token), "Idempotency-Key": new_key()},
+        ).status_code
+        == 409
+    )
+
+
+def test_semantic_review_duplicate_repairs_conflicting_slot_and_publishes(
+    client: TestClient, worker, db, monkeypatch
+) -> None:
+    """语义复核发现重复对时，仅定向重生成冲突槽位、使用 semantic_duplicate 纠正与 temperature=0.5 并二次复核发布。"""
+    import re
+    import uuid
+    import httpx
+    import app.workers.runner as runner
+    from app.ai.provider import DeepSeekProvider
+    from app.core.config import Settings
+    from app.models import Job, JobWorkItem, Plan
+    from sqlalchemy import select
+
+    _, token = issue_token(client)
+    resume_id = create_confirmed_resume(client, token)
+    jd_id = create_confirmed_template_jd(client, token)
+    prep = client.post(
+        "/v1/preparations",
+        json={
+            "role_id": "java-backend",
+            "level": "intern",
+            "main_question_count": 6,
+            "resume_snapshot_id": resume_id,
+            "jd_snapshot_id": jd_id,
+        },
+        headers={**auth(token), "Idempotency-Key": new_key()},
+    ).json()
+    m = client.post(
+        f"/v1/preparations/{prep['id']}/match",
+        json={"revision": 1, "external_processing_consent": True},
+        headers={**auth(token), "Idempotency-Key": new_key()},
+    )
+    assert wait_job(client, token, m.json()["id"], worker)["state"] == "succeeded"
+
+    rubric = BANK["questions"][0]["evaluation"]["rubric"]
+    slot_calls: dict[str, int] = {}
+    slot3_requests: list[dict] = []
+    review_calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal review_calls
+        body = json.loads(request.content)
+        user_msg = body["messages"][-1]["content"]
+        if "本次只为槽位" in user_msg:
+            slot_key = re.search(r"本次只为槽位 (generated-\d+)", user_msg).group(1)
+            slot_type = "knowledge" if "槽位类型固定为 knowledge" in user_msg else "experience"
+            slot_calls[slot_key] = slot_calls.get(slot_key, 0) + 1
+            if slot_key == "generated-3":
+                slot3_requests.append({"body": body, "user_msg": user_msg})
+            anchors = _extract_prompt_json(
+                user_msg,
+                "允许锚点（anchors 必须原样取自这里）：",
+                "\n\n可用依据卡",
+            )
+            fact_cards = _extract_prompt_json(
+                user_msg,
+                "可用依据卡（knowledge 题必须从中引用 fact_card）：",
+                "\n\n已有题干",
+            )
+            anchor = anchors[0]
+            if slot_key == "generated-1":
+                q = _build_synthetic_question(
+                    question_type=slot_type,
+                    canonical_id="sem-rep-1",
+                    stem="结合你在校园图书借阅系统中的实现，说明如何划分借阅状态变更的边界与异常处理流程？",
+                    focus="借阅状态流转与异常边界",
+                    topic_key="java.design.boundary",
+                    anchor=anchor,
+                    rubric=rubric,
+                    fact_cards=fact_cards,
+                )
+            elif slot_key == "generated-2":
+                q = _build_synthetic_question(
+                    question_type=slot_type,
+                    canonical_id="sem-rep-2",
+                    stem="从集合底层契约出发，解释 ArrayList 预分配容量与元素实际个数之间的差异及测试验证方法。",
+                    focus="集合容量与契约边界",
+                    topic_key="java.collections.capacity",
+                    anchor=anchor,
+                    rubric=rubric,
+                    fact_cards=fact_cards,
+                )
+            else:
+                if slot_calls[slot_key] == 1:
+                    q = _build_synthetic_question(
+                        question_type=slot_type,
+                        canonical_id="sem-rep-3-v1",
+                        stem="围绕你参与过的借阅模块开发，如果发生非法输入或状态冲突，你会用什么步骤定位与验证？",
+                        focus="异常输入与状态验证",
+                        topic_key="java.validation",
+                        anchor=anchor,
+                        rubric=rubric,
+                        fact_cards=fact_cards,
+                    )
+                else:
+                    q = _build_synthetic_question(
+                        question_type=slot_type,
+                        canonical_id="sem-rep-3-v2",
+                        stem="假设接口日志出现慢查询或局部数据丢失，你会按照怎样的排查顺序设计最小复现实验并确认回归通过？",
+                        focus="问题排查与回归验证",
+                        topic_key="test.troubleshooting",
+                        anchor=anchor,
+                        rubric=rubric,
+                        fact_cards=fact_cards,
+                    )
+            return httpx.Response(
+                200,
+                json={
+                    "id": f"req-{slot_key}-{slot_calls[slot_key]}",
+                    "choices": [
+                        {
+                            "finish_reason": "stop",
+                            "message": {"content": json.dumps({"questions": [q]}, ensure_ascii=False)},
+                        }
+                    ],
+                },
+            )
+
+        review_calls += 1
+        review_qs = _extract_prompt_json(
+            user_msg,
+            "题目（含考察目标、参考思路、评分要点、锚点与评价依据）：",
+            "\n\n材料原文：",
+        )
+        gen_qs = [q for q in review_qs if q["source"] == "generated"]
+        if review_calls == 1:
+            return httpx.Response(
+                200,
+                json={
+                    "id": "req-rev-1",
+                    "choices": [
+                        {
+                            "finish_reason": "stop",
+                            "message": {
+                                "content": json.dumps(
+                                    {
+                                        "duplicate_pairs": [
+                                            {
+                                                "left_id": gen_qs[0]["id"],
+                                                "right_id": gen_qs[2]["id"],
+                                                "reason": "实质考察相同边界",
+                                            }
+                                        ],
+                                        "grounding_issues": [],
+                                        "uncertain": False,
+                                    },
+                                    ensure_ascii=False,
+                                )
+                            },
+                        }
+                    ],
+                },
+            )
+        return httpx.Response(
+            200,
+            json={
+                "id": "req-rev-2",
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {
+                            "content": json.dumps(
+                                {"duplicate_pairs": [], "grounding_issues": [], "uncertain": False}
+                            )
+                        },
+                    }
+                ],
+            },
+        )
+
+    settings = Settings(
+        APP_ENV="test",
+        DATABASE_URL="postgresql+psycopg://mockmate@127.0.0.1:55432/mockmate_test",
+        PRIVATE_FILE_ROOT=str(Path(__file__).resolve().parents[1] / "runtime" / "test-private"),
+        AI_PROVIDER="deepseek",
+        AI_MODEL="deepseek-flash",
+        AI_API_KEY="stub-key",
+        AI_BASE_URL="https://api.deepseek.test",
+        ALLOW_TEST_FIXTURES=True,
+    )
+    monkeypatch.setattr(
+        runner,
+        "get_provider",
+        lambda _: DeepSeekProvider(settings, transport=httpx.MockTransport(handler)),
+    )
+    gen = client.post(
+        f"/v1/preparations/{prep['id']}/generate-plan",
+        json={"revision": 1, "external_processing_consent": True},
+        headers={**auth(token), "Idempotency-Key": new_key()},
+    )
+    job = wait_job(client, token, gen.json()["id"], worker, attempts=6)
+    assert job["state"] == "succeeded", job
+    assert slot_calls == {"generated-1": 1, "generated-2": 1, "generated-3": 2}
+    assert review_calls == 2
+    assert len(slot3_requests) == 2
+    repair_req = slot3_requests[1]
+    assert repair_req["body"]["temperature"] == 0.5
+    assert "reason=semantic_duplicate" in repair_req["user_msg"]
+    assert "冲突标识=generated-1" in repair_req["user_msg"]
+    assert "围绕你参与过的借阅模块开发" in repair_req["user_msg"]
+
+    job_uuid = uuid.UUID(job["id"])
+    work_items = {
+        w.slot_key: w
+        for w in db.scalars(select(JobWorkItem).where(JobWorkItem.job_id == job_uuid)).all()
+    }
+    assert set(work_items.keys()) == {"generated-1", "generated-2", "generated-3"}
+    assert "慢查询或局部数据丢失" in work_items["generated-3"].payload["question"]["stem"]
+
+    row = db.get(Job, job_uuid)
+    review_records = [r for r in row.ai_call_records if r["stage"] == "plan_review"]
+    assert len(review_records) == 2
+    assert review_records[0]["validation_outcome"] == "rejected"
+    assert "reason=semantic_duplicate" in review_records[0]["validation_details"]
+    assert "slot=generated-3" in review_records[0]["validation_details"]
+    assert "conflict_slot=generated-1" in review_records[0]["validation_details"]
+    assert review_records[1]["validation_outcome"] == "passed"
+    assert review_records[1]["is_correction"] is True
+    assert review_records[1]["correction_attempt"] == 2
+
+    plan_row = db.get(Plan, uuid.UUID(job["result_ref"]["id"]))
+    assert plan_row is not None
+    assert plan_row.internal_payload["source_counts"] == {"bank": 3, "generated": 3}
+
+
+def test_semantic_review_bank_conflict_bounded_repair_and_structured_details(
+    client: TestClient, worker, db, monkeypatch
+) -> None:
+    """语义复核持续报与题库重复时，最多修复 1 轮后以 DUPLICATE_QUESTION + 安全明细失败，不泄露模型原文。"""
+    import re
+    import uuid
+    import httpx
+    import app.workers.runner as runner
+    from app.ai.provider import DeepSeekProvider
+    from app.core.config import Settings
+    from app.models import Job, Plan
+
+    _, token = issue_token(client)
+    resume_id = create_confirmed_resume(client, token)
+    jd_id = create_confirmed_template_jd(client, token)
+    prep = client.post(
+        "/v1/preparations",
+        json={
+            "role_id": "java-backend",
+            "level": "intern",
+            "main_question_count": 6,
+            "resume_snapshot_id": resume_id,
+            "jd_snapshot_id": jd_id,
+        },
+        headers={**auth(token), "Idempotency-Key": new_key()},
+    ).json()
+    m = client.post(
+        f"/v1/preparations/{prep['id']}/match",
+        json={"revision": 1, "external_processing_consent": True},
+        headers={**auth(token), "Idempotency-Key": new_key()},
+    )
+    assert wait_job(client, token, m.json()["id"], worker)["state"] == "succeeded"
+
+    rubric = BANK["questions"][0]["evaluation"]["rubric"]
+    slot_calls: dict[str, int] = {}
+    review_calls = 0
+    expected_bank_qid: str | None = None
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal review_calls, expected_bank_qid
+        body = json.loads(request.content)
+        user_msg = body["messages"][-1]["content"]
+        if "本次只为槽位" in user_msg:
+            slot_key = re.search(r"本次只为槽位 (generated-\d+)", user_msg).group(1)
+            slot_type = "knowledge" if "槽位类型固定为 knowledge" in user_msg else "experience"
+            slot_calls[slot_key] = slot_calls.get(slot_key, 0) + 1
+            if expected_bank_qid is None:
+                slot_meta = _extract_prompt_json(
+                    user_msg,
+                    "槽位与岗位信息：",
+                    "\n\n允许锚点",
+                )
+                expected_bank_qid = slot_meta["bank_covered_topics"][0]["question_id"]
+            anchors = _extract_prompt_json(
+                user_msg,
+                "允许锚点（anchors 必须原样取自这里）：",
+                "\n\n可用依据卡",
+            )
+            fact_cards = _extract_prompt_json(
+                user_msg,
+                "可用依据卡（knowledge 题必须从中引用 fact_card）：",
+                "\n\n已有题干",
+            )
+            anchor = anchors[0]
+            stems = {
+                "generated-1": "结合你的课程项目，说明你是如何拆解功能模块并确认核心输入边界的？",
+                "generated-2": (
+                    "解释 ArrayList 与普通数组在扩容机制与内存占用上的区别，并说明测试如何校验越界行为？"
+                    if slot_calls[slot_key] == 1
+                    else "结合 Java 核心类库契约，说明迭代过程中发生并发修改时应如何识别并发风险并设计测试？"
+                ),
+                "generated-3": "在数据规模扩大后，如果检索接口响应变慢，你会从哪几步排查定位并验证修复？",
+            }
+            q = _build_synthetic_question(
+                question_type=slot_type,
+                canonical_id=f"bank-conf-{slot_key}-{slot_calls[slot_key]}",
+                stem=stems[slot_key],
+                focus="边界分析与验证",
+                topic_key="java.core",
+                anchor=anchor,
+                rubric=rubric,
+                fact_cards=fact_cards,
+            )
+            return httpx.Response(
+                200,
+                json={
+                    "id": f"req-{slot_key}-{slot_calls[slot_key]}",
+                    "choices": [
+                        {
+                            "finish_reason": "stop",
+                            "message": {"content": json.dumps({"questions": [q]}, ensure_ascii=False)},
+                        }
+                    ],
+                },
+            )
+
+        review_calls += 1
+        review_qs = _extract_prompt_json(
+            user_msg,
+            "题目（含考察目标、参考思路、评分要点、锚点与评价依据）：",
+            "\n\n材料原文：",
+        )
+        bank_q = next(q for q in review_qs if q["source"] == "bank")
+        gen2_q = [q for q in review_qs if q["source"] == "generated"][1]
+        return httpx.Response(
+            200,
+            json={
+                "id": f"req-rev-{review_calls}",
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "duplicate_pairs": [
+                                        {
+                                            "left_id": bank_q["id"],
+                                            "right_id": gen2_q["id"],
+                                            "reason": "SECRET_RAW_REASON_TEXT_DO_NOT_LEAK",
+                                        }
+                                    ],
+                                    "grounding_issues": [],
+                                    "uncertain": False,
+                                },
+                                ensure_ascii=False,
+                            )
+                        },
+                    }
+                ],
+            },
+        )
+
+    settings = Settings(
+        APP_ENV="test",
+        DATABASE_URL="postgresql+psycopg://mockmate@127.0.0.1:55432/mockmate_test",
+        PRIVATE_FILE_ROOT=str(Path(__file__).resolve().parents[1] / "runtime" / "test-private"),
+        AI_PROVIDER="deepseek",
+        AI_MODEL="deepseek-flash",
+        AI_API_KEY="stub-key",
+        AI_BASE_URL="https://api.deepseek.test",
+        ALLOW_TEST_FIXTURES=True,
+    )
+    monkeypatch.setattr(
+        runner,
+        "get_provider",
+        lambda _: DeepSeekProvider(settings, transport=httpx.MockTransport(handler)),
+    )
+    gen = client.post(
+        f"/v1/preparations/{prep['id']}/generate-plan",
+        json={"revision": 1, "external_processing_consent": True},
+        headers={**auth(token), "Idempotency-Key": new_key()},
+    )
+    failed = wait_job(client, token, gen.json()["id"], worker, attempts=6)
+    assert failed["state"] == "failed", failed
+    assert failed["retryable"] is False
+    assert slot_calls == {"generated-1": 1, "generated-2": 2, "generated-3": 1}
+    assert review_calls == 2
+    assert failed["error"]["code"] == "DUPLICATE_QUESTION"
+    assert failed["error"]["message"] == "语义去重复核发现重复题目"
+    details = failed["error"]["details"]
+    assert "stage=plan_review" in details
+    assert "reason=semantic_duplicate" in details
+    assert "duplicate_count=1" in details
+    assert "slot=generated-2" in details
+    assert "conflict_source=bank" in details
+    assert expected_bank_qid is not None
+    assert f"conflict_question_id={expected_bank_qid}" in details
+    serialized_details = " ".join(details)
+    assert "SECRET_RAW_REASON_TEXT_DO_NOT_LEAK" not in serialized_details
+    assert "并发修改时应如何识别" not in serialized_details
+    assert db.query(Plan).filter(Plan.preparation_id == uuid.UUID(prep["id"])).count() == 0
+
+    job_row = db.get(Job, uuid.UUID(failed["id"]))
+    assert len([r for r in job_row.ai_call_records if r["stage"] == "plan_review"]) == 2
+
+
+def test_generation_prompt_includes_bank_covered_topics_slot_angle_and_preferred_anchors(
+    client: TestClient, worker, monkeypatch
+) -> None:
+    """槽位提示词包含 bank_covered_topics、slot_angle，且 preferred_anchor_ids 随已使用锚点动态避让。"""
+    import re
+    import httpx
+    import app.workers.runner as runner
+    from app.ai.provider import DeepSeekProvider
+    from app.core.config import Settings
+
+    _, token = issue_token(client)
+    multi_resume_text = (
+        "南京信息工程大学 本科 计算机科学与技术\n"
+        "实习：某软件公司 | 后端实习生 | 2025.07-2025.09 | 维护订单导出脚本\n"
+        "项目：校园自习室预约系统 | 2026.03-2026.05 | 负责预约冲突校验与接口测试\n"
+        "技能：掌握 Java 基础与 JVM 内存机制\n"
+        "技能：理解 Java 多线程与 JUnit 单元测试"
+    )
+    multi_resume_profile = {
+        "kind": "resume",
+        "education": [
+            {
+                "item_id": "edu-1",
+                "degree": "本科",
+                "major": "计算机科学与技术",
+                "evidence": {
+                    "quote": "南京信息工程大学 本科 计算机科学与技术",
+                    "origin": "extracted",
+                },
+            }
+        ],
+        "work_experience": [
+            {
+                "item_id": "work-1",
+                "organization": "某软件公司",
+                "title": "后端实习生",
+                "description": "维护订单导出脚本",
+                "evidence": {
+                    "quote": "某软件公司 | 后端实习生 | 2025.07-2025.09 | 维护订单导出脚本",
+                    "origin": "extracted",
+                },
+            }
+        ],
+        "projects": [
+            {
+                "item_id": "project-1",
+                "name": "校园自习室预约系统",
+                "description": "负责预约冲突校验与接口测试",
+                "skill_codes": ["java.core", "test.junit"],
+                "evidence": {
+                    "quote": "校园自习室预约系统 | 2026.03-2026.05 | 负责预约冲突校验与接口测试",
+                    "origin": "extracted",
+                },
+            }
+        ],
+        "skills": [
+            {
+                "item_id": "skill-1",
+                "name": "Java 基础与 JVM",
+                "code": "java.core",
+                "evidence": {
+                    "quote": "掌握 Java 基础与 JVM 内存机制",
+                    "origin": "extracted",
+                },
+            },
+            {
+                "item_id": "skill-2",
+                "name": "Java 多线程与 JUnit",
+                "code": "java.concurrency",
+                "evidence": {
+                    "quote": "理解 Java 多线程与 JUnit 单元测试",
+                    "origin": "extracted",
+                },
+            },
+        ],
+    }
+    created_resume = client.post(
+        "/v1/materials/text",
+        json={"kind": "resume", "title": "多锚点简历", "text": multi_resume_text},
+        headers={**auth(token), "Idempotency-Key": new_key()},
+    )
+    assert created_resume.status_code == 201
+    resume_snap = client.post(
+        f"/v1/materials/{created_resume.json()['id']}/confirm",
+        json={"revision": 1, "profile": multi_resume_profile},
+        headers={**auth(token), "Idempotency-Key": new_key()},
+    )
+    assert resume_snap.status_code == 201
+    resume_id = resume_snap.json()["id"]
+    jd_id = create_confirmed_template_jd(client, token)
+    prep = client.post(
+        "/v1/preparations",
+        json={
+            "role_id": "java-backend",
+            "level": "intern",
+            "main_question_count": 6,
+            "resume_snapshot_id": resume_id,
+            "jd_snapshot_id": jd_id,
+        },
+        headers={**auth(token), "Idempotency-Key": new_key()},
+    ).json()
+    m = client.post(
+        f"/v1/preparations/{prep['id']}/match",
+        json={"revision": 1, "external_processing_consent": True},
+        headers={**auth(token), "Idempotency-Key": new_key()},
+    )
+    assert wait_job(client, token, m.json()["id"], worker)["state"] == "succeeded"
+
+    rubric = BANK["questions"][0]["evaluation"]["rubric"]
+    slot_metas: dict[str, dict] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        user_msg = body["messages"][-1]["content"]
+        if "本次只为槽位" in user_msg:
+            slot_key = re.search(r"本次只为槽位 (generated-\d+)", user_msg).group(1)
+            slot_type = "knowledge" if "槽位类型固定为 knowledge" in user_msg else "experience"
+            slot_meta = _extract_prompt_json(
+                user_msg,
+                "槽位与岗位信息：",
+                "\n\n允许锚点",
+            )
+            slot_metas[slot_key] = slot_meta
+            anchors = _extract_prompt_json(
+                user_msg,
+                "允许锚点（anchors 必须原样取自这里）：",
+                "\n\n可用依据卡",
+            )
+            fact_cards = _extract_prompt_json(
+                user_msg,
+                "可用依据卡（knowledge 题必须从中引用 fact_card）：",
+                "\n\n已有题干",
+            )
+            anchor_by_id = {a["item_id"]: a for a in anchors}
+            chosen_id = (
+                "work-1"
+                if slot_key == "generated-1"
+                else ("project-1" if slot_key == "generated-2" else "skill-1")
+            )
+            chosen_anchor = anchor_by_id[chosen_id]
+            stems = {
+                "generated-1": "围绕你在某软件公司维护订单导出脚本的实习经历，说明如何拆解导出接口需求并防范数据缺失？",
+                "generated-2": "结合校园自习室预约系统中的冲突校验需求，解释集合初始化容量与实际元素数量的区别及测试方法。",
+                "generated-3": "针对 Java 基础与 JVM 内存机制，当应用频繁出现对象分配延迟时，你会按什么步骤排查并验证优化？",
+            }
+            q = _build_synthetic_question(
+                question_type=slot_type,
+                canonical_id=f"meta-{slot_key}",
+                stem=stems[slot_key],
+                focus=f"考察维度-{slot_key}",
+                topic_key="java.core",
+                anchor=chosen_anchor,
+                rubric=rubric,
+                fact_cards=fact_cards,
+            )
+            return httpx.Response(
+                200,
+                json={
+                    "id": f"req-{slot_key}",
+                    "choices": [
+                        {
+                            "finish_reason": "stop",
+                            "message": {"content": json.dumps({"questions": [q]}, ensure_ascii=False)},
+                        }
+                    ],
+                },
+            )
+        return httpx.Response(
+            200,
+            json={
+                "id": "req-rev",
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {
+                            "content": json.dumps(
+                                {"duplicate_pairs": [], "grounding_issues": [], "uncertain": False}
+                            )
+                        },
+                    }
+                ],
+            },
+        )
+
+    settings = Settings(
+        APP_ENV="test",
+        DATABASE_URL="postgresql+psycopg://mockmate@127.0.0.1:55432/mockmate_test",
+        PRIVATE_FILE_ROOT=str(Path(__file__).resolve().parents[1] / "runtime" / "test-private"),
+        AI_PROVIDER="deepseek",
+        AI_MODEL="deepseek-flash",
+        AI_API_KEY="stub-key",
+        AI_BASE_URL="https://api.deepseek.test",
+        ALLOW_TEST_FIXTURES=True,
+    )
+    monkeypatch.setattr(
+        runner,
+        "get_provider",
+        lambda _: DeepSeekProvider(settings, transport=httpx.MockTransport(handler)),
+    )
+    gen = client.post(
+        f"/v1/preparations/{prep['id']}/generate-plan",
+        json={"revision": 1, "external_processing_consent": True},
+        headers={**auth(token), "Idempotency-Key": new_key()},
+    )
+    done = wait_job(client, token, gen.json()["id"], worker, attempts=6)
+    assert done["state"] == "succeeded", done
+    assert set(slot_metas.keys()) == {"generated-1", "generated-2", "generated-3"}
+    for key in ("generated-1", "generated-2", "generated-3"):
+        meta = slot_metas[key]
+        assert len(meta["bank_covered_topics"]) == 3
+        assert meta["slot_angle"]
+    assert "work-1" in slot_metas["generated-1"]["preferred_anchor_ids"]
+    assert "work-1" not in slot_metas["generated-2"]["preferred_anchor_ids"]
+    assert "project-1" in slot_metas["generated-2"]["preferred_anchor_ids"]
+    assert "work-1" not in slot_metas["generated-3"]["preferred_anchor_ids"]
+    assert "project-1" not in slot_metas["generated-3"]["preferred_anchor_ids"]
+    assert "skill-1" in slot_metas["generated-3"]["preferred_anchor_ids"]
+    assert slot_metas["generated-1"]["slot_angle"] != slot_metas["generated-2"]["slot_angle"]
+    assert slot_metas["generated-2"]["slot_angle"] != slot_metas["generated-3"]["slot_angle"]
+    assert slot_metas["generated-1"]["slot_angle"] != slot_metas["generated-3"]["slot_angle"]

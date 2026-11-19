@@ -133,6 +133,86 @@ class PlanValidationContext:
     extra_fact_cards: dict[str, dict] = field(default_factory=dict)
     # 同一岗位／级别下未入选的合格候选题干，防止生成题只避开本场已选题目。
     candidate_stems: list[str] = field(default_factory=list)
+    allowed_skill_codes: set[str] | None = None
+
+
+def semantic_review_failure_details(plan: InternalPlan) -> list[str]:
+    """生成语义复核失败的安全结构化明细，绝不包含题干原文或模型自由文本。"""
+    question_meta: dict[str, dict] = {}
+    gen_idx = 0
+    for q in sorted(plan.questions, key=lambda item: item.position):
+        if q.source == "bank":
+            question_meta[q.id] = {
+                "source": "bank",
+                "ref": q.bank_ref.question_id if q.bank_ref else "",
+            }
+        else:
+            gen_idx += 1
+            question_meta[q.id] = {
+                "source": "generated",
+                "slot": f"generated-{gen_idx}",
+                "index": gen_idx,
+            }
+
+    if plan.semantic_review.duplicate_pairs:
+        details = [
+            "stage=plan_review",
+            "reason=semantic_duplicate",
+            f"duplicate_count={len(plan.semantic_review.duplicate_pairs)}",
+        ]
+        first = plan.semantic_review.duplicate_pairs[0]
+        left_id = first.get("left_id") if isinstance(first, dict) else None
+        right_id = first.get("right_id") if isinstance(first, dict) else None
+        left_meta = question_meta.get(str(left_id)) if left_id else None
+        right_meta = question_meta.get(str(right_id)) if right_id else None
+        if left_meta and right_meta:
+            if left_meta["source"] == "generated" and right_meta["source"] == "bank":
+                g_meta, b_meta = left_meta, right_meta
+                details.extend([f"slot={g_meta['slot']}", "conflict_source=bank"])
+                if b_meta["ref"]:
+                    details.append(f"conflict_question_id={b_meta['ref']}")
+            elif right_meta["source"] == "generated" and left_meta["source"] == "bank":
+                g_meta, b_meta = right_meta, left_meta
+                details.extend([f"slot={g_meta['slot']}", "conflict_source=bank"])
+                if b_meta["ref"]:
+                    details.append(f"conflict_question_id={b_meta['ref']}")
+            elif left_meta["source"] == "generated" and right_meta["source"] == "generated":
+                if left_meta["index"] >= right_meta["index"]:
+                    target, other = left_meta, right_meta
+                else:
+                    target, other = right_meta, left_meta
+                details.extend(
+                    [
+                        f"slot={target['slot']}",
+                        "conflict_source=prior_generated",
+                        f"conflict_slot={other['slot']}",
+                    ]
+                )
+            elif left_meta["source"] == "bank" and right_meta["source"] == "bank":
+                details.extend(["slot=semantic", "conflict_source=bank"])
+                if left_meta["ref"]:
+                    details.append(f"conflict_question_id={left_meta['ref']}")
+            else:
+                details.append("slot=semantic")
+        else:
+            details.append("slot=semantic")
+        return details
+
+    if plan.semantic_review.uncertain:
+        return ["stage=plan_review", "slot=semantic", "reason=semantic_uncertain"]
+
+    if plan.semantic_review.grounding_issues:
+        first = plan.semantic_review.grounding_issues[0]
+        qid = first.get("question_id") if isinstance(first, dict) else None
+        meta = question_meta.get(str(qid)) if qid else None
+        slot_token = (
+            f"slot={meta['slot']}"
+            if meta and meta["source"] == "generated"
+            else "slot=semantic"
+        )
+        return ["stage=plan_review", slot_token, "reason=grounding_issue"]
+
+    return []
 
 
 def parse_internal_plan(raw: dict) -> InternalPlan:
@@ -268,6 +348,12 @@ def validate_internal_plan(plan: InternalPlan, ctx: PlanValidationContext) -> No
             if row is None or row.content_sha256 != card.content_sha256 or row.status != "approved":
                 raise rule_error("EVALUATION_INVALID", "依据卡与数据库审核状态不一致", [card.id])
 
+    allowed_skill_codes = ctx.allowed_skill_codes
+    if allowed_skill_codes is None and ctx.db is not None:
+        from app.services import catalog
+
+        allowed_skill_codes = catalog.allowed_skill_codes(ctx.db)
+
     used_fact_cards: set[str] = set()
     for question in plan.questions:
         _validate_question(
@@ -281,6 +367,7 @@ def validate_internal_plan(plan: InternalPlan, ctx: PlanValidationContext) -> No
             fact_cards=fact_cards,
             used_fact_cards=used_fact_cards,
             available_rubrics=available_rubrics,
+            allowed_skill_codes=allowed_skill_codes,
         )
 
     # 去重：canonical、归一化题干、近似改写、生成题复用
@@ -301,7 +388,7 @@ def validate_internal_plan(plan: InternalPlan, ctx: PlanValidationContext) -> No
             raise rule_error(
                 "DUPLICATE_QUESTION",
                 "本场存在相同问法的主问题",
-                [question.id, question.stem[:40]],
+                [question.id, "reason=duplicate_normalized_stem"],
             )
         seen_stem[stem_key] = question.position
 
@@ -326,7 +413,7 @@ def validate_internal_plan(plan: InternalPlan, ctx: PlanValidationContext) -> No
                     raise rule_error(
                         "DUPLICATE_QUESTION",
                         "生成题复用了同岗位题库候选，不算新生成",
-                        [question.id, candidate_stem[:40], f"similarity={similarity:.2f}"],
+                        [question.id, "reason=candidate_stem_reused", f"similarity={similarity:.2f}"],
                     )
 
     known_question_ids = {question.id for question in plan.questions}
@@ -357,11 +444,23 @@ def validate_internal_plan(plan: InternalPlan, ctx: PlanValidationContext) -> No
         seen_grounding.add(key)
 
     if plan.semantic_review.duplicate_pairs:
-        raise rule_error("DUPLICATE_QUESTION", "语义去重复核发现重复题目")
+        raise rule_error(
+            "DUPLICATE_QUESTION",
+            "语义去重复核发现重复题目",
+            semantic_review_failure_details(plan),
+        )
     if plan.semantic_review.uncertain:
-        raise rule_error("DEDUP_UNCERTAIN", "语义去重结果不确定，不能发布 ready 计划")
+        raise rule_error(
+            "DEDUP_UNCERTAIN",
+            "语义去重结果不确定，不能发布 ready 计划",
+            semantic_review_failure_details(plan),
+        )
     if plan.semantic_review.grounding_issues:
-        raise rule_error("GROUNDING_INVALID", "语义复核发现无依据陈述")
+        raise rule_error(
+            "GROUNDING_INVALID",
+            "语义复核发现无依据陈述",
+            semantic_review_failure_details(plan),
+        )
 
     if synthetic_reviewers:
         if not plan.test_only:
@@ -387,6 +486,7 @@ def _validate_question(
     fact_cards: dict[str, FactCard],
     used_fact_cards: set[str],
     available_rubrics: dict[tuple[str, int], dict],
+    allowed_skill_codes: set[str] | None = None,
 ) -> None:
     if question.source == "generated" and question.bank_ref is not None:
         raise rule_error("GENERATED_REUSE", "生成题不能带题库引用", [question.id])
@@ -428,7 +528,7 @@ def _validate_question(
         raise rule_error(
             "EVALUATION_INVALID",
             "题目存在未解决的不确定性，不能发布 ready 计划",
-            [question.id, *evaluation.uncertainties[:2]],
+            [question.id, f"uncertainties_count={len(evaluation.uncertainties)}"],
         )
     if not evaluation.basis:
         raise rule_error("EVALUATION_INVALID", "题目缺少评价依据", [question.id])
@@ -476,6 +576,16 @@ def _validate_question(
             )
         if not evaluation.acceptable_alternatives:
             raise rule_error("EVALUATION_INVALID", "生成题缺少合理替代解", [question.id])
+        if allowed_skill_codes is not None:
+            unknown_skills = [
+                code for code in question.skill_codes if code not in allowed_skill_codes
+            ]
+            if unknown_skills:
+                raise rule_error(
+                    "EVALUATION_INVALID",
+                    "生成题包含未启用的技能编码",
+                    [question.id, "reason=unknown_skill_code", *unknown_skills[:5]],
+                )
 
     material_basis = 0
     fact_card_basis = 0

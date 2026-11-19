@@ -9,7 +9,16 @@ import uuid
 from datetime import datetime
 from typing import Annotated, Literal, Union
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, StrictBool, StrictInt, StrictStr
+
+
+def _require_non_blank(value: str) -> str:
+    if not value.strip():
+        raise ValueError("must not be blank")
+    return value
+
+
+NonBlankStrictStr = Annotated[StrictStr, AfterValidator(_require_non_blank)]
 
 
 class ContractModel(BaseModel):
@@ -515,10 +524,22 @@ class GeneratedQuestionOutput(ContractModel):
     evaluation: Evaluation
 
 
+class DuplicatePair(ContractModel):
+    left_id: NonBlankStrictStr
+    right_id: NonBlankStrictStr
+    reason: NonBlankStrictStr
+
+
+class GroundingIssue(ContractModel):
+    question_id: NonBlankStrictStr
+    claim: NonBlankStrictStr
+    reason: NonBlankStrictStr
+
+
 class DuplicateReviewOutput(ContractModel):
-    duplicate_pairs: list[dict] = Field(default_factory=list)
-    grounding_issues: list[dict] = Field(default_factory=list)
-    uncertain: bool
+    duplicate_pairs: list[DuplicatePair]
+    grounding_issues: list[GroundingIssue]
+    uncertain: StrictBool
 
 
 # --------------------------------------------------------------------------- M2 文字面试
@@ -738,23 +759,40 @@ class InterviewReport(ContractModel):
 
 class FollowUpDecisionOutput(ContractModel):
     decision: Literal["ask", "advance"]
-    prompt: str | None = None
-    answer_quote: str | None = None
-    target: str | None = None
+    prompt: StrictStr | None = None
+    answer_quote: StrictStr | None = None
+    target: StrictStr | None = None
 
 
 class ScoreDimensionOutput(ContractModel):
-    dimension_id: str = Field(min_length=1)
+    dimension_id: NonBlankStrictStr
     verdict: Literal["scored", "insufficient_evidence", "uncertain"]
-    score: int | None = Field(default=None, ge=0, le=4)
+    score: StrictInt | None = Field(default=None, ge=0, le=4)
     evidence: list[InterviewEvidence] = Field(default_factory=list)
-    explanation: str = ""
-    improvement: str = ""
+    explanation: StrictStr = ""
+    improvement: StrictStr = ""
 
 
 class ScoreQuestionOutput(ContractModel):
     question_id: uuid.UUID
     dimensions: list[ScoreDimensionOutput] = Field(min_length=1)
+
+
+class CachedScoreDimensionItem(ContractModel):
+    dimension_id: NonBlankStrictStr
+    name: NonBlankStrictStr
+    weight: float = Field(gt=0, le=1)
+    verdict: Literal["scored", "insufficient_evidence", "uncertain"]
+    score: StrictInt | None = Field(default=None, ge=0, le=4)
+    evidence: list[InterviewEvidence] = Field(default_factory=list)
+    explanation: StrictStr = ""
+    improvement: StrictStr = ""
+
+
+class CachedScoreSlotPayload(ContractModel):
+    question_id: uuid.UUID
+    content_hash: NonBlankStrictStr
+    dimensions: list[CachedScoreDimensionItem] = Field(min_length=1)
 
 
 InternalPlan.model_rebuild()

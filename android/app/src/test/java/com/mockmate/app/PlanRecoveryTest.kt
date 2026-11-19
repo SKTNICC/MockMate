@@ -316,6 +316,61 @@ class PlanRecoveryTest {
         )
         assertTrue(duplicateLegacy.suggestion.orEmpty().contains("已用完 2 次生成尝试"))
 
+        val semanticBankDuplicate = ErrorDiagnosticsMapper.fromJob(
+            planJobDto(
+                attempt = 1,
+                retryable = false,
+                error = ErrorInfo(
+                    code = "DUPLICATE_QUESTION",
+                    message = "语义去重复核发现重复题目",
+                    retryable = false,
+                    details = listOf(
+                        "stage=plan_review",
+                        "reason=semantic_duplicate",
+                        "duplicate_count=1",
+                        "slot=generated-2",
+                        "conflict_source=bank",
+                        "conflict_question_id=M1-JAVA-0003",
+                    ),
+                    request_id = "req-sem-bank",
+                ),
+            ),
+        )
+        assertEquals("语义去重复核发现重复题目", semanticBankDuplicate.rawServerMessage)
+        assertTrue(semanticBankDuplicate.details.contains("reason=semantic_duplicate"))
+        assertTrue(semanticBankDuplicate.details.contains("conflict_question_id=M1-JAVA-0003"))
+        assertFalse(semanticBankDuplicate.userExplanation.contains("计划语义复核未能返回完整合规的结果"))
+        assertTrue(semanticBankDuplicate.userExplanation.contains("第 2 道 AI 题"))
+        assertTrue(semanticBankDuplicate.userExplanation.contains("题库已有题目重复"))
+        assertTrue(semanticBankDuplicate.suggestion.orEmpty().contains("沿用材料新建准备"))
+
+        val semanticPriorDuplicate = ErrorDiagnosticsMapper.fromJob(
+            planJobDto(
+                attempt = 1,
+                retryable = false,
+                error = ErrorInfo(
+                    code = "DUPLICATE_QUESTION",
+                    message = "语义去重复核发现重复题目",
+                    retryable = false,
+                    details = listOf(
+                        "stage=plan_review",
+                        "reason=semantic_duplicate",
+                        "duplicate_count=1",
+                        "slot=generated-3",
+                        "conflict_source=prior_generated",
+                        "conflict_slot=generated-1",
+                    ),
+                    request_id = "req-sem-prior",
+                ),
+            ),
+        )
+        assertEquals("语义去重复核发现重复题目", semanticPriorDuplicate.rawServerMessage)
+        assertTrue(semanticPriorDuplicate.details.contains("conflict_slot=generated-1"))
+        assertFalse(semanticPriorDuplicate.userExplanation.contains("计划语义复核未能返回完整合规的结果"))
+        assertTrue(semanticPriorDuplicate.userExplanation.contains("第 3 道 AI 题"))
+        assertTrue(semanticPriorDuplicate.userExplanation.contains("本场已有题目重复"))
+        assertTrue(semanticPriorDuplicate.suggestion.orEmpty().contains("沿用材料新建准备"))
+
         val superseded = ErrorDiagnosticsMapper.fromJob(
             planJobDto(
                 state = "superseded",

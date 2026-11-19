@@ -6,6 +6,9 @@ evidence 原文，而不只是碰巧出现在整份材料里。
 
 from __future__ import annotations
 
+from pydantic import ValidationError
+
+from app.core.diagnostics import safe_validation_details
 from app.core.errors import AppError
 from app.schemas import Anchor, MatchRow
 
@@ -46,16 +49,31 @@ def validate_anchor(
     quote = anchor["quote"] if isinstance(anchor, dict) else anchor.quote
     snapshot = snapshots.get(snapshot_id)
     if snapshot is None:
-        raise AppError(error_code, "题目或证据引用了不属于本场的材料", [snapshot_id])
+        raise AppError(
+            error_code,
+            "题目或证据引用了不属于本场的材料",
+            ["field=snapshot_id", "unknown_count=1"],
+        )
     item = items_by_snapshot.get(snapshot_id, {}).get(item_id)
+    if not isinstance(quote, str) or not quote.strip():
+        details = (
+            ["reason=blank_quote", f"item_id={item_id}"]
+            if item is not None
+            else ["reason=blank_quote", "field=item_id", "unknown_count=1"]
+        )
+        raise AppError(error_code, "引用原文不能为空白", details)
     if item is None:
-        raise AppError(error_code, "引用的条目不在材料结构中", [item_id])
+        raise AppError(
+            error_code,
+            "引用的条目不在材料结构中",
+            ["field=item_id", "unknown_count=1"],
+        )
     item_quote = _item_quote(item)
     if not item_quote or quote not in item_quote:
         raise AppError(
             error_code,
             "引用原文不属于所引用的材料条目",
-            [item_id, quote[:40]],
+            ["reason=quote_mismatch_item", f"item_id={item_id}"],
         )
     if quote not in (getattr(snapshot, "text", "") or ""):
         raise AppError(error_code, "引用原文在当前材料中不存在", [item_id])
@@ -74,11 +92,24 @@ def validate_match_rows(
     seen: set[str] = set()
     result: list[dict] = []
     for row in rows:
-        model = MatchRow.model_validate(row)
+        try:
+            model = MatchRow.model_validate(row)
+        except ValidationError as exc:
+            raise AppError(
+                error_code,
+                "AI 输出不符合契约结构",
+                details=safe_validation_details(exc, MatchRow),
+            ) from exc
         if model.requirement_id not in requirement_ids:
-            raise AppError(error_code, "匹配结果引用了不存在的 JD 要求")
+            raise AppError(
+                error_code,
+                "匹配结果引用了不存在的 JD 要求",
+                ["field=requirement_id", "unknown_count=1"],
+            )
+        if not model.explanation.strip() or not model.suggested_focus.strip():
+            raise AppError(error_code, "匹配说明与准备建议不能为空白", [model.requirement_id])
         if model.requirement_id in seen:
-            raise AppError(error_code, "匹配结果要求重复")
+            raise AppError(error_code, "匹配结果要求重复", [model.requirement_id])
         seen.add(model.requirement_id)
         if model.status == "supported" and not model.resume_evidence:
             raise AppError(

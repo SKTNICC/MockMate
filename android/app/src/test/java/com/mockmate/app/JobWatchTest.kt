@@ -275,4 +275,106 @@ class JobWatchTest {
         assertEquals(0, h.posts.get())
         watch.cancelAll()
     }
+
+    @Test
+    fun onStoppedFiresOnceAcrossProjectIgnoreErrorCancelAndCancelAll() = runTest {
+        // 1. Terminal Project
+        val h1 = Harness()
+        val stopped1 = mutableListOf<Pair<String, String>>()
+        val w1 = JobWatch(this, h1.coordinator, { true }, { h1.effects += it }, interval) { acc, id ->
+            stopped1 += acc to id
+        }
+        h1.ensure(w1)
+        h1.serverState = "succeeded"
+        advanceTimeBy(interval); runCurrent()
+        assertEquals(listOf("account-a" to "job-1"), stopped1)
+        w1.cancelAll()
+        assertEquals(listOf("account-a" to "job-1"), stopped1)
+
+        // 2. Ignore (navigation away)
+        val h2 = Harness()
+        val stopped2 = mutableListOf<Pair<String, String>>()
+        val w2 = JobWatch(this, h2.coordinator, { true }, { h2.effects += it }, interval) { acc, id ->
+            stopped2 += acc to id
+        }
+        h2.ensure(w2)
+        h2.current.set(scope(prep = "prep-2", navigation = 2))
+        advanceTimeBy(interval); runCurrent()
+        assertEquals(listOf("account-a" to "job-1"), stopped2)
+
+        // 3. Ignore (NOT_FOUND)
+        val stopped3 = mutableListOf<Pair<String, String>>()
+        val coordNotFound = RestoreCoordinator(
+            service = RestoreJobService(Ports()),
+            gate = RestoreUiGate({ scope() }) { _, _ -> },
+            fetchJob = { ApiResult.Err("NOT_FOUND", "missing", false) },
+            currentScope = { scope() },
+        )
+        val w3 = JobWatch(this, coordNotFound, { true }, {}, interval) { acc, id ->
+            stopped3 += acc to id
+        }
+        w3.ensure(scope(), job("running", resultId = null))
+        advanceTimeBy(interval); runCurrent()
+        assertEquals(listOf("account-a" to "job-1"), stopped3)
+
+        // 4. Error (network failure)
+        val stopped4 = mutableListOf<Pair<String, String>>()
+        val errorEffects = mutableListOf<RestoreUiEffect>()
+        val coordError = RestoreCoordinator(
+            service = RestoreJobService(Ports()),
+            gate = RestoreUiGate({ scope() }) { _, _ -> },
+            fetchJob = { ApiResult.Err("NETWORK_UNAVAILABLE", "offline", true) },
+            currentScope = { scope() },
+        )
+        val w4 = JobWatch(this, coordError, { true }, { errorEffects += it }, interval) { acc, id ->
+            stopped4 += acc to id
+        }
+        w4.ensure(scope(), job("running", resultId = null))
+        advanceTimeBy(interval); runCurrent()
+        assertTrue(errorEffects.lastOrNull() is RestoreUiEffect.Error)
+        assertEquals(listOf("account-a" to "job-1"), stopped4)
+
+        // 5. cancel & cancelAll
+        val h5 = Harness()
+        val stopped5 = mutableListOf<Pair<String, String>>()
+        val w5 = JobWatch(this, h5.coordinator, { true }, { h5.effects += it }, interval) { acc, id ->
+            stopped5 += acc to id
+        }
+        h5.ensure(w5)
+        w5.cancel("account-a", "job-1")
+        advanceTimeBy(interval * 2); runCurrent()
+        assertEquals(listOf("account-a" to "job-1"), stopped5)
+
+        h5.ensure(w5)
+        w5.cancelAll()
+        advanceTimeBy(interval * 2); runCurrent()
+        assertEquals(listOf("account-a" to "job-1", "account-a" to "job-1"), stopped5)
+    }
+
+    @Test
+    fun cancelThenImmediateReEnsureDoesNotLetOldFinallyStopNewWatch() = runTest {
+        val h = Harness()
+        val stopped = mutableListOf<Pair<String, String>>()
+        val watch = JobWatch(this, h.coordinator, { true }, { h.effects += it }, interval) { acc, id ->
+            stopped += acc to id
+        }
+
+        assertTrue(h.ensure(watch))
+        advanceTimeBy(interval); runCurrent()
+        assertTrue(stopped.isEmpty())
+
+        watch.cancel("account-a", "job-1")
+        assertEquals(1, stopped.size)
+
+        // 立即重新订阅同一个 jobId：旧协程的 finally 不得误触发新订阅的 onStopped
+        assertTrue(h.ensure(watch))
+        advanceTimeBy(interval); runCurrent()
+        assertEquals(1, stopped.size)
+        assertTrue(watch.isWatching("account-a", "job-1"))
+
+        h.serverState = "succeeded"
+        advanceTimeBy(interval); runCurrent()
+        assertEquals(2, stopped.size)
+        watch.cancelAll()
+    }
 }
