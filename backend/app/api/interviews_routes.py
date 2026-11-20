@@ -91,9 +91,12 @@ def start_interview(
         plan_revision=payload.plan_revision,
         external_processing_consent=payload.external_processing_consent,
         allow_test_fixtures=get_settings().allow_test_fixtures,
+        mode=payload.mode,
+        audio_processing_consent=payload.audio_processing_consent,
+        speech_available=get_settings().speech_available,
     )
     body = InterviewStartReceipt(
-        session_id=session.id, revision=session.revision
+        session_id=session.id, revision=session.revision, mode=session.mode
     ).model_dump(mode="json")
     return idem.complete(db, handle, 201 if created else 200, body)
 
@@ -166,6 +169,9 @@ def submit_answer(
         turn_id=payload.turn_id,
         text=payload.text,
         max_attempts=get_settings().max_job_attempts,
+        input_source=payload.input_source,
+        audio_asset_id=payload.audio_asset_id,
+        transcript_revision=payload.transcript_revision,
     )
     status_code = 202 if turn_kind == "main" else 200
     return _receipt_response(db, handle, receipt, status_code)

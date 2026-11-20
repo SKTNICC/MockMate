@@ -475,7 +475,8 @@ class PublicPlan(ContractModel):
 
 class ResultRef(ContractModel):
     entity_type: Literal[
-        "material", "match_report", "plan", "interview_session", "interview_report"
+        "material", "match_report", "plan", "interview_session", "interview_report",
+        "audio_asset", "speech_asset",
     ]
     id: uuid.UUID
 
@@ -494,7 +495,10 @@ class ErrorResponse(ContractModel):
 
 class Job(ContractModel):
     id: uuid.UUID
-    kind: Literal["extract", "parse", "match", "plan", "follow_up", "interview_report"]
+    kind: Literal[
+        "extract", "parse", "match", "plan", "follow_up", "interview_report",
+        "audio_asr", "audio_tts",
+    ]
     target_id: uuid.UUID
     input_revision: int = Field(ge=1)
     state: Literal["queued", "running", "succeeded", "failed", "interrupted", "superseded"]
@@ -548,11 +552,14 @@ class DuplicateReviewOutput(ContractModel):
 class StartInterviewInput(ContractModel):
     plan_revision: int = Field(ge=1)
     external_processing_consent: bool
+    mode: Literal["text", "voice"] = "text"
+    audio_processing_consent: bool = False
 
 
 class InterviewStartReceipt(ContractModel):
     session_id: uuid.UUID
     revision: int = Field(ge=1)
+    mode: Literal["text", "voice"] = "text"
 
 
 class InterviewAnswerInput(ContractModel):
@@ -560,6 +567,9 @@ class InterviewAnswerInput(ContractModel):
     turn_id: uuid.UUID
     # 4000 是 Unicode 码点上限；空白字符串另由服务端校验。
     text: str = Field(min_length=1, max_length=4000)
+    input_source: Literal["text", "asr", "asr_corrected"] = "text"
+    audio_asset_id: uuid.UUID | None = None
+    transcript_revision: int | None = Field(default=None, ge=1)
 
 
 class InterviewSkipInput(ContractModel):
@@ -604,6 +614,9 @@ class InterviewAnswerView(ContractModel):
     answer_id: uuid.UUID
     text: str = Field(min_length=1, max_length=4000)
     submitted_at: datetime
+    input_source: Literal["text", "asr", "asr_corrected"] = "text"
+    audio_asset_id: uuid.UUID | None = None
+    transcript_revision: int | None = Field(default=None, ge=1)
 
 
 class InterviewTurnView(ContractModel):
@@ -630,7 +643,7 @@ class InterviewDetail(ContractModel):
     preparation_id: uuid.UUID
     role_id: str = Field(min_length=1)
     level: Literal["intern", "junior"]
-    mode: Literal["text"]
+    mode: Literal["text", "voice"]
     status: Literal["active", "paused", "ended"]
     phase: Literal["awaiting_answer", "deciding_follow_up", "closed"]
     revision: int = Field(ge=1)
@@ -669,6 +682,7 @@ class InterviewHistoryItem(ContractModel):
     preparation_id: uuid.UUID
     role_id: str = Field(min_length=1)
     level: Literal["intern", "junior"]
+    mode: Literal["text", "voice"] = "text"
     status: Literal["active", "paused", "ended"]
     started_at: datetime
     ended_at: datetime | None = None
@@ -752,6 +766,87 @@ class InterviewReport(ContractModel):
     strengths: list[InterviewFinding] = Field(default_factory=list)
     improvements: list[InterviewFinding] = Field(default_factory=list)
     questions: list[InterviewReportQuestion] = Field(default_factory=list)
+
+
+# --------------------------------------------------------------------------- M3 语音面试
+
+VoiceFormat = Literal["pcm_s16le/16000/mono"]
+
+
+class VoiceConfig(ContractModel):
+    available: bool
+    max_answer_seconds: int = Field(ge=1, le=120)
+    format: VoiceFormat
+    tts_voice_id: str = Field(min_length=1)
+    speech_provider: str = Field(min_length=1)
+
+
+class VoiceAudioAsset(ContractModel):
+    id: uuid.UUID
+    session_id: uuid.UUID
+    turn_id: uuid.UUID
+    take_id: uuid.UUID
+    sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    byte_length: int = Field(ge=2, le=3_840_000)
+    duration_ms: int = Field(ge=1, le=120_000)
+    format: VoiceFormat
+    status: Literal["stored", "expired"]
+    expires_at: datetime
+    created_at: datetime
+
+
+class VoiceTranscript(ContractModel):
+    audio_asset_id: uuid.UUID
+    revision: int = Field(ge=1)
+    status: Literal["processing", "ready", "empty", "failed"]
+    text: str | None = Field(default=None, max_length=20000)
+    provider: str | None = None
+    request_id: str | None = None
+    error_code: str | None = None
+    updated_at: datetime
+
+
+class VoiceDraft(ContractModel):
+    session_id: uuid.UUID
+    turn_id: uuid.UUID
+    voice_revision: int = Field(ge=0)
+    active_audio: VoiceAudioAsset | None = None
+    transcript: VoiceTranscript | None = None
+    asr_job: InterviewJobSummary | None = None
+
+
+class TranscribeInput(ContractModel):
+    expected_voice_revision: int = Field(ge=0)
+
+
+class VoiceUploadReceipt(ContractModel):
+    session_id: uuid.UUID
+    turn_id: uuid.UUID
+    voice_revision: int = Field(ge=1)
+    audio: VoiceAudioAsset
+
+
+class SpeechRequestInput(ContractModel):
+    segment: Literal["opening", "turn", "closing"]
+    turn_id: uuid.UUID | None = None
+
+
+class SpeechAsset(ContractModel):
+    id: uuid.UUID
+    session_id: uuid.UUID
+    segment: Literal["opening", "turn", "closing"]
+    turn_id: uuid.UUID | None = None
+    status: Literal["queued", "generating", "ready", "failed", "expired"]
+    voice_id: str = Field(min_length=1)
+    provider: str = Field(min_length=1)
+    format: str = Field(min_length=1)
+    duration_ms: int | None = Field(default=None, ge=1)
+    sha256: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+    job_id: uuid.UUID | None = None
+    error_code: str | None = None
+    synthetic: bool
+    created_at: datetime
+    updated_at: datetime
 
 
 # --------------------------------------------------------------------------- 模型内部输出（M2）

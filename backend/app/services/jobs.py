@@ -37,6 +37,7 @@ RETRYABLE_JOB_ERRORS = {
     "AI_UNAVAILABLE",
     "AI_RATE_LIMITED",
     "JOB_INTERRUPTED",
+    "SPEECH_PROTOCOL_ERROR",
 }
 VALID_GENERATED_SLOTS = {"generated-1", "generated-2", "generated-3"}
 RETRYABLE_PLAN_FORMAT_REASONS = set(RECOVERABLE_PROVIDER_OUTPUT_REASONS)
@@ -63,6 +64,30 @@ JOB_ERROR_MESSAGES = {
     "DEDUP_UNCERTAIN": "语义去重不确定",
     "GROUNDING_INVALID": "存在无依据陈述",
     "CONSENT_REQUIRED": "未确认材料外发",
+    "AUDIO_CONSENT_REQUIRED": "未确认录音外发",
+    "SPEECH_NOT_CONFIGURED": "语音服务未配置",
+    "SPEECH_INPUT_INVALID": "语音内容不是受支持的音频格式",
+    "SPEECH_INPUT_TOO_LARGE": "语音文件超过供应商限制",
+    "SPEECH_TRANSCRIPT_TOO_LONG": "转写文本过长",
+    "SPEECH_CONTENT_REJECTED": "播报文本未通过语音服务审核",
+    "SPEECH_PROTOCOL_ERROR": "语音服务未返回完整结果",
+    "AUDIO_FORMAT_INVALID": "录音格式不符合固定协议",
+    "AUDIO_TOO_LARGE": "录音超过 120 秒上限",
+    "AUDIO_HASH_MISMATCH": "录音摘要不一致",
+    "AUDIO_TAKE_CONFLICT": "录音 take 冲突",
+    "AUDIO_NOT_ACTIVE": "录音已不是当前 take",
+    "AUDIO_EXPIRED": "录音已过期",
+    "AUDIO_FILE_UNAVAILABLE": "录音文件不可用",
+    "VOICE_REVISION_CONFLICT": "语音草稿版本已变化",
+    "TRANSCRIPT_NOT_FOUND": "尚未创建转写任务",
+    "TRANSCRIPT_NOT_READY": "转写尚未完成",
+    "TRANSCRIPT_REVISION_CONFLICT": "转写版本已变化",
+    "ANSWER_SOURCE_INVALID": "回答来源与录音不一致",
+    "SPEECH_NOT_READY": "语音尚未生成完成",
+    "SPEECH_INTEGRITY_FAILED": "语音文件校验失败",
+    "SPEECH_NOT_AVAILABLE": "没有可播报内容",
+    "SPEECH_SEGMENT_INVALID": "播报片段不合法",
+    "INTERVIEW_MODE_TEXT": "该场是文字面试",
     "JD_LEVEL_CONFLICT": "JD 原文与当前岗位/级别设置冲突",
     "INTERNAL_ERROR": "任务执行失败",
 }
@@ -150,6 +175,80 @@ def lock_job_target(
                     details=[f"current_revision={current}"],
                 )
         return row
+    if kind in ("audio_asr", "audio_tts"):
+        from app.models import (
+            AudioAsset,
+            InterviewSession,
+            InterviewTurn,
+            SpeechAsset,
+            VoiceDraft,
+        )
+
+        if kind == "audio_asr":
+            probe = db.get(AudioAsset, target_id)
+            if probe is None or probe.owner_id != owner_id:
+                raise AppError("NOT_FOUND", "录音不存在", status_code=404)
+            session = db.scalars(
+                select(InterviewSession)
+                .where(InterviewSession.id == probe.session_id)
+                .execution_options(populate_existing=True)
+                .with_for_update()
+            ).one_or_none()
+            if session is None or session.owner_id != owner_id:
+                raise AppError("NOT_FOUND", "录音不存在", status_code=404)
+            turn = db.scalars(
+                select(InterviewTurn)
+                .where(InterviewTurn.id == probe.turn_id)
+                .execution_options(populate_existing=True)
+                .with_for_update()
+            ).one_or_none()
+            if turn is None:
+                raise AppError("NOT_FOUND", "录音不存在", status_code=404)
+            draft = db.scalars(
+                select(VoiceDraft)
+                .where(VoiceDraft.turn_id == turn.id)
+                .execution_options(populate_existing=True)
+                .with_for_update()
+            ).one_or_none()
+            row = db.scalars(
+                select(AudioAsset)
+                .where(AudioAsset.id == target_id)
+                .execution_options(populate_existing=True)
+                .with_for_update()
+            ).one_or_none()
+            if row is None or row.owner_id != owner_id:
+                raise AppError("NOT_FOUND", "录音不存在", status_code=404)
+            if input_revision is not None and row.voice_revision != input_revision:
+                raise AppError(
+                    "REVISION_CONFLICT",
+                    "录音草稿版本已变化，请刷新后重试",
+                    details=[f"current_revision={row.voice_revision}"],
+                )
+            if draft is None or draft.active_take_id != row.id:
+                raise AppError("AUDIO_NOT_ACTIVE", "该录音已不是当前 take")
+            return row
+        probe = db.get(SpeechAsset, target_id)
+        if probe is None or probe.owner_id != owner_id:
+            raise AppError("NOT_FOUND", "语音不存在", status_code=404)
+        session = db.scalars(
+            select(InterviewSession)
+            .where(InterviewSession.id == probe.session_id)
+            .execution_options(populate_existing=True)
+            .with_for_update()
+        ).one_or_none()
+        if session is None or session.owner_id != owner_id:
+            raise AppError("NOT_FOUND", "语音不存在", status_code=404)
+        row = db.scalars(
+            select(SpeechAsset)
+            .where(SpeechAsset.id == target_id)
+            .execution_options(populate_existing=True)
+            .with_for_update()
+        ).one_or_none()
+        if row is None or row.owner_id != owner_id:
+            raise AppError("NOT_FOUND", "语音不存在", status_code=404)
+        if input_revision is not None and input_revision != 1:
+            raise AppError("REVISION_CONFLICT", "语音任务输入已变化，请刷新后重试")
+        return row
     raise AppError("INVALID_INPUT", "未知任务类型")
 
 
@@ -215,6 +314,8 @@ def create_or_get_job(
         target.follow_up_job_id = job.id
     elif kind == "interview_report":
         target.report_job_id = job.id
+    elif kind == "audio_tts":
+        target.job_id = job.id
     return job, created
 
 
@@ -265,6 +366,23 @@ def inputs_current(db: Session, job: Job) -> bool:
             and session.ended_revision == job.input_revision
             and session.status == "ended"
         )
+    if job.kind == "audio_asr":
+        from app.models import AudioAsset, VoiceDraft
+
+        asset = db.get(AudioAsset, job.target_id)
+        if asset is None or asset.owner_id != job.owner_id:
+            return False
+        if asset.voice_revision != job.input_revision or asset.status != "stored":
+            return False
+        draft = db.scalars(
+            select(VoiceDraft).where(VoiceDraft.turn_id == asset.turn_id)
+        ).one_or_none()
+        return draft is not None and draft.active_take_id == asset.id
+    if job.kind == "audio_tts":
+        from app.models import SpeechAsset
+
+        asset = db.get(SpeechAsset, job.target_id)
+        return asset is not None and asset.owner_id == job.owner_id and asset.job_id == job.id
     preparation = db.get(Preparation, job.target_id)
     if preparation is None or preparation.owner_id != job.owner_id:
         return False

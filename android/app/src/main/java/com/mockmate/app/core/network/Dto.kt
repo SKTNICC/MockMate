@@ -279,16 +279,25 @@ data class PublicPlanDto(
 data class StartInterviewRequest(
     val plan_revision: Int,
     val external_processing_consent: Boolean,
+    val mode: String = "text",
+    val audio_processing_consent: Boolean = false,
 )
 
 @Serializable
-data class InterviewStartReceiptDto(val session_id: String, val revision: Int)
+data class InterviewStartReceiptDto(
+    val session_id: String,
+    val revision: Int,
+    val mode: String = "text",
+)
 
 @Serializable
 data class InterviewAnswerRequest(
     val revision: Int,
     val turn_id: String,
     val text: String,
+    val input_source: String = "text",
+    val audio_asset_id: String? = null,
+    val transcript_revision: Int? = null,
 )
 
 @Serializable
@@ -331,6 +340,9 @@ data class InterviewAnswerDto(
     val answer_id: String,
     val text: String,
     val submitted_at: String,
+    val input_source: String = "text",
+    val audio_asset_id: String? = null,
+    val transcript_revision: Int? = null,
 )
 
 @Serializable
@@ -388,6 +400,7 @@ data class InterviewHistoryItemDto(
     val preparation_id: String,
     val role_id: String,
     val level: String,
+    val mode: String = "text",
     val status: String,
     val started_at: String,
     val ended_at: String? = null,
@@ -475,4 +488,88 @@ data class InterviewReportDto(
     val strengths: List<InterviewFindingDto> = emptyList(),
     val improvements: List<InterviewFindingDto> = emptyList(),
     val questions: List<InterviewReportQuestionDto> = emptyList(),
+)
+
+// ------------------------------------------------------------------ M3 语音面试
+
+@Serializable
+data class VoiceConfigDto(
+    val available: Boolean,
+    val max_answer_seconds: Int,
+    val format: String,
+    val tts_voice_id: String,
+    val speech_provider: String,
+)
+
+@Serializable
+data class VoiceAudioAssetDto(
+    val id: String,
+    val session_id: String,
+    val turn_id: String,
+    val take_id: String,
+    val sha256: String,
+    val byte_length: Int,
+    val duration_ms: Int,
+    val format: String,
+    val status: String,
+    val expires_at: String,
+    val created_at: String,
+)
+
+@Serializable
+data class VoiceTranscriptDto(
+    val audio_asset_id: String,
+    val revision: Int,
+    val status: String,
+    val text: String? = null,
+    val provider: String? = null,
+    val request_id: String? = null,
+    val error_code: String? = null,
+    val updated_at: String,
+)
+
+@Serializable
+data class VoiceDraftDto(
+    val session_id: String,
+    val turn_id: String,
+    val voice_revision: Int,
+    val active_audio: VoiceAudioAssetDto? = null,
+    val transcript: VoiceTranscriptDto? = null,
+    val asr_job: InterviewJobSummaryDto? = null,
+)
+
+@Serializable
+data class VoiceUploadReceiptDto(
+    val session_id: String,
+    val turn_id: String,
+    val voice_revision: Int,
+    val audio: VoiceAudioAssetDto,
+)
+
+@Serializable
+data class TranscribeRequest(val expected_voice_revision: Int)
+
+@Serializable
+data class SpeechRequest(
+    val segment: String,
+    val turn_id: String? = null,
+)
+
+@Serializable
+data class SpeechAssetDto(
+    val id: String,
+    val session_id: String,
+    val segment: String,
+    val turn_id: String? = null,
+    val status: String,
+    val voice_id: String,
+    val provider: String,
+    val format: String,
+    val duration_ms: Int? = null,
+    val sha256: String? = null,
+    val job_id: String? = null,
+    val error_code: String? = null,
+    val synthetic: Boolean = false,
+    val created_at: String,
+    val updated_at: String,
 )

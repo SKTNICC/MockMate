@@ -20,7 +20,10 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         // 业务联调端点占位；真实联调由后续任务卡按环境覆盖，不在 APK 内保存任何密钥。
-        buildConfigField("String", "API_BASE_URL", "\"http://127.0.0.1:8000/v1\"")
+        // 隔离模拟器矩阵可用 -PmockmateApiBaseUrl=http://127.0.0.1:8001/v1 覆盖。
+        val apiBaseUrl = providers.gradleProperty("mockmateApiBaseUrl")
+            .orElse("http://127.0.0.1:8000/v1")
+        buildConfigField("String", "API_BASE_URL", "\"${apiBaseUrl.get()}\"")
     }
 
     buildTypes {
@@ -47,6 +50,12 @@ android {
         buildConfig = true
     }
 
+    testOptions {
+        // AppViewModel 的语音路径使用 android.util.Log 记录脱敏元数据；
+        // 本地 JVM 回归需要按 Android 默认返回值处理，而不是让 stub 抛异常中断协程。
+        unitTests.isReturnDefaultValues = true
+    }
+
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
@@ -70,6 +79,8 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.6")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.6")
+    // M3 录音文件使用成熟的 EncryptedFile/Tink 流式加密封装与 Android Keystore。
+    implementation("androidx.security:security-crypto:1.1.0")
 
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
 
@@ -91,5 +102,6 @@ dependencies {
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
     androidTestImplementation("androidx.test:runner:1.6.2")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.7.0")
+    androidTestImplementation("androidx.test.uiautomator:uiautomator:2.3.0")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
 }

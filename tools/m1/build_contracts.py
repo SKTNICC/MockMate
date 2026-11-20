@@ -200,9 +200,11 @@ def build_schema():
                           "details": strings, "request_id": ident})
     s["ErrorResponse"] = obj({"error": ref("ErrorInfo")})
     s["ResultRef"] = obj({"entity_type": enum("material", "match_report", "plan",
-                                               "interview_session", "interview_report"), "id": ident})
+                                               "interview_session", "interview_report",
+                                               "audio_asset", "speech_asset"), "id": ident})
     s["Job"] = obj({"id": ident, "kind": enum("extract", "parse", "match", "plan",
-                                               "follow_up", "interview_report"),
+                                               "follow_up", "interview_report",
+                                               "audio_asr", "audio_tts"),
                     "target_id": ident, "input_revision": revision,
                     "state": enum("queued", "running", "succeeded", "failed", "interrupted", "superseded"),
                     "attempt": {"type": "integer", "minimum": 1, "maximum": 2},
@@ -211,11 +213,20 @@ def build_schema():
 
     # ------------------------------------------------------------------ M2 文字面试
     s["StartInterviewInput"] = obj({
-        "plan_revision": revision, "external_processing_consent": {"type": "boolean"}})
-    s["InterviewStartReceipt"] = obj({"session_id": ident, "revision": revision})
+        "plan_revision": revision, "external_processing_consent": {"type": "boolean"},
+        "mode": {"type": "string", "enum": ["text", "voice"], "default": "text"},
+        "audio_processing_consent": {"type": "boolean", "default": False},
+    }, required=["plan_revision", "external_processing_consent"])
+    s["InterviewStartReceipt"] = obj({"session_id": ident, "revision": revision,
+                                      "mode": enum("text", "voice")})
     s["InterviewAnswerInput"] = obj({
         "revision": revision, "turn_id": ident,
-        "text": string(min_length=1, maxLength=4000)})
+        "text": string(min_length=1, maxLength=4000),
+        "input_source": {"type": "string", "enum": ["text", "asr", "asr_corrected"],
+                         "default": "text"},
+        "audio_asset_id": nullable(ident),
+        "transcript_revision": nullable(revision),
+    }, required=["revision", "turn_id", "text"])
     s["InterviewSkipInput"] = obj({"revision": revision, "turn_id": ident})
     s["InterviewContinueInput"] = obj({"revision": revision, "job_id": ident})
     s["InterviewBasicReportInput"] = obj({"revision": revision, "job_id": ident})
@@ -233,7 +244,10 @@ def build_schema():
         "sample_only": {"type": "boolean"}})
     s["InterviewAnswerView"] = obj({
         "answer_id": ident, "text": string(min_length=1, maxLength=4000),
-        "submitted_at": date})
+        "submitted_at": date,
+        "input_source": enum("text", "asr", "asr_corrected"),
+        "audio_asset_id": nullable(ident),
+        "transcript_revision": nullable(revision)})
     s["InterviewTurnView"] = obj({
         "turn_id": ident, "question_id": ident,
         "position": {"type": "integer", "minimum": 1, "maximum": 6},
@@ -256,7 +270,7 @@ def build_schema():
         "allowed_actions", "transcript", "follow_up_job", "report_job", "report_state"]
     s["InterviewDetail"] = obj({
         "session_id": ident, "plan_id": ident, "preparation_id": ident,
-        "role_id": string(), "level": level, "mode": {"const": "text"},
+        "role_id": string(), "level": level, "mode": enum("text", "voice"),
         "status": enum("active", "paused", "ended"),
         "phase": enum("awaiting_answer", "deciding_follow_up", "closed"),
         "revision": revision, "started_at": date, "ended_at": nullable(date),
@@ -276,6 +290,7 @@ def build_schema():
     s["InterviewHistoryItem"] = obj({
         "session_id": ident, "plan_id": ident, "preparation_id": ident,
         "role_id": string(), "level": level,
+        "mode": enum("text", "voice"),
         "status": enum("active", "paused", "ended"),
         "started_at": date, "ended_at": nullable(date),
         "end_reason": nullable(enum("completed", "early_finish")),
@@ -335,6 +350,71 @@ def build_schema():
         "improvements": array(ref("InterviewFinding")),
         "questions": array(ref("InterviewReportQuestion"))})
 
+    # ------------------------------------------------------------------ M3 语音面试
+    s["VoiceConfig"] = obj({
+        "available": {"type": "boolean"},
+        "max_answer_seconds": {"type": "integer", "minimum": 1, "maximum": 120},
+        "format": ref("VoiceFormat"),
+        "tts_voice_id": string(),
+        "speech_provider": string(),
+    })
+    s["VoiceFormat"] = {"const": "pcm_s16le/16000/mono"}
+    s["VoiceAudioAsset"] = obj({
+        "id": ident, "session_id": ident, "turn_id": ident, "take_id": ident,
+        "sha256": string(pattern="^[a-f0-9]{64}$"),
+        "byte_length": {"type": "integer", "minimum": 2, "maximum": 3840000},
+        "duration_ms": {"type": "integer", "minimum": 1, "maximum": 120000},
+        "format": ref("VoiceFormat"),
+        "status": enum("stored", "expired"),
+        "expires_at": date, "created_at": date,
+    })
+    s["VoiceTranscript"] = obj({
+        "audio_asset_id": ident, "revision": revision,
+        "status": enum("processing", "ready", "empty", "failed"),
+        "text": nullable({"type": "string", "maxLength": 20000}),
+        "provider": nullable(string()), "request_id": nullable(string()),
+        "error_code": nullable(string()), "updated_at": date,
+    })
+    s["VoiceDraft"] = obj({
+        "session_id": ident, "turn_id": ident,
+        "voice_revision": {"type": "integer", "minimum": 0},
+        "active_audio": nullable(ref("VoiceAudioAsset")),
+        "transcript": nullable(ref("VoiceTranscript")),
+        "asr_job": nullable(ref("InterviewJobSummary")),
+    })
+    s["VoiceUploadInput"] = obj({
+        "file": {"type": "string", "format": "binary"},
+        "take_id": ident,
+        "session_revision": revision,
+        "expected_voice_revision": {"type": "integer", "minimum": 0},
+        "sha256": string(pattern="^[a-f0-9]{64}$"),
+        "format": ref("VoiceFormat"),
+    })
+    s["VoiceUploadReceipt"] = obj({
+        "session_id": ident, "turn_id": ident,
+        "voice_revision": revision,
+        "audio": ref("VoiceAudioAsset"),
+    })
+    s["TranscribeInput"] = obj({
+        "expected_voice_revision": {"type": "integer", "minimum": 0}})
+    s["SpeechRequestInput"] = obj({
+        "segment": enum("opening", "turn", "closing"),
+        "turn_id": nullable(ident),
+    }, required=["segment"])
+    s["SpeechAsset"] = obj({
+        "id": ident, "session_id": ident,
+        "segment": enum("opening", "turn", "closing"),
+        "turn_id": nullable(ident),
+        "status": enum("queued", "generating", "ready", "failed", "expired"),
+        "voice_id": string(), "provider": string(),
+        "format": string(),
+        "duration_ms": nullable({"type": "integer", "minimum": 1}),
+        "sha256": nullable(string(pattern="^[a-f0-9]{64}$")),
+        "job_id": nullable(ident), "error_code": nullable(string()),
+        "synthetic": {"type": "boolean"},
+        "created_at": date, "updated_at": date,
+    })
+
     s["User"] = obj({"id": ident, "username": string(pattern="^[a-z0-9_]{3,32}$")})
     s["Credentials"] = obj({"username": string(pattern="^[a-zA-Z0-9_]{3,32}$"),
                             "password": string(min_length=10, maxLength=128)})
@@ -373,7 +453,8 @@ def build_openapi(schema):
 
     def endpoint(path, method, operation, summary, response=None, body=None, status=200,
                  anonymous=False, multipart=False, idempotent=True, query=None,
-                 extra_success=None, errors=(400, 401, 404, 409, 413, 415, 422, 429, 502, 503)):
+                 extra_success=None, errors=(400, 401, 404, 409, 413, 415, 422, 429, 502, 503),
+                 response_content_type="application/json"):
         params = []
         for segment in path.split("/"):
             if segment.startswith("{"):
@@ -390,7 +471,7 @@ def build_openapi(schema):
         for code in [status, *(extra_success or [])]:
             success = {"description": "成功；异步接口返回持久化Job，GET轮询结果" if code == 202 else "成功"}
             if response:
-                success["content"] = {"application/json": {"schema": {"$ref": f"#/components/schemas/{response}"}}}
+                success["content"] = {response_content_type: {"schema": {"$ref": f"#/components/schemas/{response}"}}}
             op["responses"][str(code)] = success
         for code in errors:
             op["responses"][str(code)] = {"description": "统一错误；具体code与语义见M1架构说明",
@@ -472,6 +553,32 @@ def build_openapi(schema):
     endpoint("/interviews/{session_id}/report/basic", "post", "createBasicInterviewReport",
              "报告任务失败后发布基础报告", "InterviewReceipt",
              "InterviewBasicReportInput", errors=M2_ERRORS)
+
+    # ------------------------------------------------------------------ M3 语音面试
+    M3_ERRORS = (400, 401, 404, 409, 413, 415, 422, 429, 503)
+    endpoint("/voice/config", "get", "getVoiceConfig",
+             "语音能力、时长与固定PCM格式；不返回Key", "VoiceConfig", errors=M3_ERRORS)
+    endpoint("/interviews/{session_id}/turns/{turn_id}/voice-draft", "get", "getVoiceDraft",
+             "读取当前回合语音草稿与任务摘要", "VoiceDraft", errors=M3_ERRORS)
+    endpoint("/interviews/{session_id}/turns/{turn_id}/audio", "post", "uploadVoiceAudio",
+             "上传固定16k单声道PCM，CAS激活take；不提交答案", "VoiceUploadReceipt",
+             "VoiceUploadInput", 201, multipart=True, extra_success=[200], errors=M3_ERRORS)
+    endpoint("/audio-assets/{audio_asset_id}/transcriptions", "post", "createAudioTranscription",
+             "为当前take创建唯一ASR任务", "Job", "TranscribeInput", 202, errors=M3_ERRORS)
+    endpoint("/audio-assets/{audio_asset_id}/transcript", "get", "getAudioTranscript",
+             "读取原始转写；202处理中/200终态", "VoiceTranscript", extra_success=[202],
+             errors=M3_ERRORS)
+    endpoint("/interviews/{session_id}/speech", "post", "requestInterviewSpeech",
+             "按服务端允许文本生成或读取语音缓存", "SpeechAsset",
+             "SpeechRequestInput", 202, extra_success=[200], errors=M3_ERRORS)
+    endpoint("/speech-assets/{speech_asset_id}", "get", "getSpeechAsset",
+             "读取语音缓存状态", "SpeechAsset", errors=M3_ERRORS)
+    endpoint("/speech-assets/{speech_asset_id}/content", "get", "getSpeechAssetContent",
+             "鉴权读取完整WAV；无公共路径", status=200,
+             response_content_type="audio/wav", errors=M3_ERRORS)
+    api["paths"]["/speech-assets/{speech_asset_id}/content"]["get"]["responses"]["200"]["content"] = {
+        "audio/wav": {"schema": {"type": "string", "format": "binary"}}
+    }
     return api
 
 
@@ -745,9 +852,11 @@ def build_m2_examples():
         "material_versions": materials, "sample_only": True,
     }
     main_answer = {"answer_id": answer_main, "text": "我先检查相同键是否存在，再决定更新还是插入。",
-                   "submitted_at": STAMP}
+                   "submitted_at": STAMP, "input_source": "text",
+                   "audio_asset_id": None, "transcript_revision": None}
     follow_answer = {"answer_id": answer_follow, "text": "这个判断依赖单线程访问；共享读写时需要外部同步。",
-                     "submitted_at": STAMP}
+                     "submitted_at": STAMP, "input_source": "text",
+                     "audio_asset_id": None, "transcript_revision": None}
     turn_main = {"turn_id": session_turn_main, "question_id": question_main, "position": 1,
                  "kind": "main", "prompt": "图书查询接口使用 HashMap 时，怎样区分不存在的键与键对应空值？",
                  "status": "answered", "answer": main_answer}
@@ -899,8 +1008,8 @@ def build_m2_examples():
     return {
         "test_only": True,
         "start_request": {"plan_revision": 2, "external_processing_consent": True},
-        "start_created": {"session_id": sid, "revision": 1},
-        "start_reopened": {"session_id": sid, "revision": 1},
+        "start_created": {"session_id": sid, "revision": 1, "mode": "text"},
+        "start_reopened": {"session_id": sid, "revision": 1, "mode": "text"},
         "answer_request": {"revision": 1, "turn_id": session_turn_main,
                            "text": "我先检查相同键是否存在，再决定更新还是插入。"},
         "answer_receipt_main": {"session_id": sid, "revision": 2,
@@ -913,7 +1022,7 @@ def build_m2_examples():
         "history": {
             "items": [{"session_id": sid, "plan_id": pid, "preparation_id": prep,
                        "role_id": "java-backend", "level": "intern",
-                       "status": "ended", "started_at": STAMP, "ended_at": STAMP,
+                       "mode": "text", "status": "ended", "started_at": STAMP, "ended_at": STAMP,
                        "end_reason": "completed", "main_question_count": 6,
                        "answered_main_count": 6, "report_state": "ready"}],
             "next_cursor": "eyJzdGFydGVkX2F0IjoiMjAyNi0xMS0xNlQwMDowMDowMCswMDowMCIsImlkIjoiMDAwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwOTAwIn0",
@@ -928,6 +1037,192 @@ def build_m2_examples():
     }
 
 
+def build_m3_examples():
+    """M3 语音请求／回包合成样例：只覆盖协议，不含真实音频或个人材料。"""
+    sid = uid(950)
+    pid = uid(951)
+    prep = uid(952)
+    question = uid(953)
+    turn_main = uid(954)
+    turn_follow = uid(955)
+    answer_main = uid(956)
+    audio = uid(960)
+    speech = uid(961)
+    asr_job = uid(962)
+    tts_job = uid(963)
+    take = uid(964)
+    materials = [
+        {"kind": "resume", "snapshot_id": uid(1), "material_id": uid(101),
+         "title": "虚构学生简历（无工作经历）", "source_revision": 1},
+        {"kind": "jd", "snapshot_id": uid(2), "material_id": uid(102),
+         "title": "内置JD开发样例", "source_revision": 1},
+    ]
+    plan_summary = {
+        "plan_id": pid, "main_question_count": 6,
+        "source_counts": {"bank": 3, "generated": 3},
+        "material_versions": materials, "sample_only": True,
+    }
+    audio_asset = {
+        "id": audio, "session_id": sid, "turn_id": turn_main, "take_id": take,
+        "sha256": "a" * 64, "byte_length": 64000, "duration_ms": 2000,
+        "format": "pcm_s16le/16000/mono", "status": "stored",
+        "expires_at": "2026-11-22T00:00:00Z", "created_at": STAMP,
+    }
+    transcript_ready = {
+        "audio_asset_id": audio, "revision": 1, "status": "ready",
+        "text": "我先检查相同键是否存在，再决定更新还是插入。",
+        "provider": "deepseek", "request_id": "req_synthetic_asr",
+        "error_code": None, "updated_at": STAMP,
+    }
+    transcript_processing = {
+        "audio_asset_id": audio, "revision": 1, "status": "processing",
+        "text": None, "provider": None, "request_id": None,
+        "error_code": None, "updated_at": STAMP,
+    }
+    transcript_empty = {
+        **transcript_ready, "status": "empty", "text": "",
+        "request_id": "req_synthetic_empty",
+    }
+    transcript_failed = {
+        **transcript_ready, "status": "failed", "text": None,
+        "request_id": "req_synthetic_failed", "error_code": "AI_TIMEOUT",
+    }
+    job_queued = {"id": asr_job, "state": "queued", "attempt": 1,
+                  "retryable": False, "error_code": None}
+    job_failed = {"id": asr_job, "state": "failed", "attempt": 2,
+                  "retryable": False, "error_code": "AI_TIMEOUT"}
+    voice_answer = {
+        "answer_id": answer_main,
+        "text": "我先检查相同键是否存在，再决定更新还是插入。",
+        "submitted_at": STAMP, "input_source": "asr_corrected",
+        "audio_asset_id": audio, "transcript_revision": 1,
+    }
+    voice_turn_main = {
+        "turn_id": turn_main, "question_id": question, "position": 1,
+        "kind": "main", "prompt": "图书查询接口使用 HashMap 时，怎样区分不存在的键与键对应空值？",
+        "status": "answered", "answer": voice_answer,
+    }
+    voice_turn_follow = {
+        "turn_id": turn_follow, "question_id": question, "position": 1,
+        "kind": "follow_up",
+        "prompt": "你提到先检查相同键是否存在，能进一步说明判断依据和适用边界吗？",
+        "status": "pending", "answer": None,
+    }
+    detail_voice = {
+        "session_id": sid, "plan_id": pid, "preparation_id": prep,
+        "role_id": "java-backend", "level": "intern", "mode": "voice",
+        "status": "active", "phase": "awaiting_answer", "revision": 4,
+        "started_at": STAMP, "ended_at": None, "end_reason": None,
+        "plan_summary": plan_summary,
+        "opening_text": "本次语音模拟面试共 6 道主问题。回答问题前会先播报题干，录音最多 120 秒。",
+        "closing_text": None, "current_main_position": 1,
+        "answered_main_count": 1, "skipped_main_count": 0,
+        "current_turn": voice_turn_follow,
+        "allowed_actions": ["pause", "finish", "answer", "skip"],
+        "transcript": [voice_turn_main, voice_turn_follow],
+        "follow_up_job": {"id": asr_job, "state": "succeeded", "attempt": 1,
+                          "retryable": False, "error_code": None},
+        "report_job": None, "report_state": "not_requested",
+    }
+    speech_base = {
+        "id": speech, "session_id": sid, "segment": "turn", "turn_id": turn_main,
+        "voice_id": "stella", "provider": "deepseek",
+        "format": "pcm_s16le/24000/mono",
+        "created_at": STAMP, "updated_at": STAMP, "synthetic": False,
+    }
+    speech_ready = {
+        **speech_base, "status": "ready", "duration_ms": 3200,
+        "sha256": "b" * 64, "job_id": tts_job, "error_code": None,
+    }
+    speech_queued = {
+        **speech_base, "status": "queued", "duration_ms": None,
+        "sha256": None, "job_id": tts_job, "error_code": None,
+    }
+    speech_failed = {
+        **speech_base, "status": "failed", "duration_ms": None,
+        "sha256": None, "job_id": tts_job, "error_code": "AI_TIMEOUT",
+    }
+    speech_synthetic = {
+        **speech_ready, "provider": "test", "synthetic": True,
+        "sha256": "c" * 64,
+    }
+    return {
+        "test_only": True,
+        "voice_config": {
+            "available": True, "max_answer_seconds": 120,
+            "format": "pcm_s16le/16000/mono",
+            "tts_voice_id": "stella", "speech_provider": "deepseek",
+        },
+        "voice_start_request": {
+            "plan_revision": 2, "external_processing_consent": True,
+            "mode": "voice", "audio_processing_consent": True,
+        },
+        "voice_start_created": {"session_id": sid, "revision": 1, "mode": "voice"},
+        "voice_start_reopened_text": {"session_id": sid, "revision": 7, "mode": "text"},
+        "voice_upload_request": {
+            "take_id": take, "session_revision": 3, "expected_voice_revision": 0,
+            "sha256": "a" * 64, "format": "pcm_s16le/16000/mono",
+        },
+        "voice_upload_receipt": {
+            "session_id": sid, "turn_id": turn_main, "voice_revision": 1,
+            "audio": audio_asset,
+        },
+        "voice_draft_active": {
+            "session_id": sid, "turn_id": turn_main, "voice_revision": 1,
+            "active_audio": audio_asset, "transcript": transcript_ready,
+            "asr_job": {**job_queued, "state": "succeeded"},
+        },
+        "voice_draft_processing": {
+            "session_id": sid, "turn_id": turn_main, "voice_revision": 1,
+            "active_audio": audio_asset, "transcript": None, "asr_job": job_queued,
+        },
+        "voice_draft_empty": {
+            "session_id": sid, "turn_id": turn_main, "voice_revision": 2,
+            "active_audio": {**audio_asset, "id": uid(965), "take_id": uid(966)},
+            "transcript": transcript_empty, "asr_job": {**job_queued, "state": "succeeded"},
+        },
+        "voice_draft_failed": {
+            "session_id": sid, "turn_id": turn_main, "voice_revision": 2,
+            "active_audio": {**audio_asset, "id": uid(965), "take_id": uid(966)},
+            "transcript": transcript_failed, "asr_job": job_failed,
+        },
+        "transcript_processing": transcript_processing,
+        "transcript_ready": transcript_ready,
+        "transcript_empty": transcript_empty,
+        "transcript_failed": transcript_failed,
+        "answer_request_asr": {
+            "revision": 3, "turn_id": turn_main,
+            "text": "我先检查相同键是否存在，再决定更新还是插入。",
+            "input_source": "asr", "audio_asset_id": audio, "transcript_revision": 1,
+        },
+        "answer_request_asr_corrected": {
+            "revision": 3, "turn_id": turn_main,
+            "text": "我先检查相同键是否存在，再决定更新、插入还是报错。",
+            "input_source": "asr_corrected", "audio_asset_id": audio,
+            "transcript_revision": 1,
+        },
+        "answer_request_voice_text_fallback": {
+            "revision": 3, "turn_id": turn_main,
+            "text": "改用文字回答：先检查键是否存在，再决定更新还是插入。",
+            "input_source": "text",
+        },
+        "voice_detail_active": detail_voice,
+        "voice_history": {
+            "items": [{"session_id": sid, "plan_id": pid, "preparation_id": prep,
+                       "role_id": "java-backend", "level": "intern", "mode": "voice",
+                       "status": "active", "started_at": STAMP, "ended_at": None,
+                       "end_reason": None, "main_question_count": 6,
+                       "answered_main_count": 1, "report_state": "not_requested"}],
+            "next_cursor": None,
+        },
+        "speech_request_turn": {"segment": "turn", "turn_id": turn_main},
+        "speech_asset_ready": speech_ready,
+        "speech_asset_queued": speech_queued,
+        "speech_asset_failed": speech_failed,
+        "speech_asset_synthetic": speech_synthetic,
+    }
+
+
 def outputs():
     schema = build_schema()
     materials = build_materials()
@@ -939,7 +1234,8 @@ def outputs():
             "fixtures/m1/content-reviews.json": reviews,
             "fixtures/m1/internal-plan.example.json": internal,
             "fixtures/m1/public-plan.example.json": public, "fixtures/m1/rule-cases.json": build_cases(internal),
-            "fixtures/m1/m2-examples.json": build_m2_examples()}
+            "fixtures/m1/m2-examples.json": build_m2_examples(),
+            "fixtures/m1/m3-examples.json": build_m3_examples()}
 
 
 def main():
@@ -958,7 +1254,7 @@ def main():
             target.write_text(expected, encoding="utf-8", newline="\n")
     if stale:
         raise SystemExit("生成物不同步，请运行 build_contracts.py：" + ", ".join(stale))
-    print("M1/M2 generated artifacts are current" if args.check else "M1/M2 artifacts generated (11 files)")
+    print("M1/M2/M3 generated artifacts are current" if args.check else "M1/M2/M3 artifacts generated (12 files)")
 
 
 if __name__ == "__main__":

@@ -54,9 +54,9 @@ fun AuthScreen(vm: AppViewModel, state: AppState) {
         ) {
             item {
                 Spacer(Modifier.height(12.dp))
-                Text("面试准备与文字模拟面试", style = MaterialTheme.typography.titleLarge)
+                Text("面试准备与语音/文字模拟面试", style = MaterialTheme.typography.titleLarge)
                 Text(
-                    "登录后准备并核对简历与 JD，确认一份 3+3 计划，完成文字面试，并查看带原话证据的报告。",
+                    "登录后准备并核对简历与 JD，确认一份 3+3 计划，完成语音或文字面试，并查看带原话证据的报告。",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

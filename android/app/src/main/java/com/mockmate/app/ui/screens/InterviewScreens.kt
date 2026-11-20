@@ -1,5 +1,9 @@
 package com.mockmate.app.ui.screens
 
+import android.Manifest
+import android.content.pm.PackageManager
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.layout.Arrangement
@@ -40,6 +44,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextLayoutResult
@@ -50,6 +55,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
+import com.mockmate.app.core.audio.VoicePhase
 import com.mockmate.app.core.network.InterviewDetailDto
 import com.mockmate.app.core.network.InterviewDimensionResultDto
 import com.mockmate.app.core.network.InterviewHistoryItemDto
@@ -136,7 +142,7 @@ fun InterviewHistoryScreen(vm: AppViewModel, state: AppState) {
                 Spacer(Modifier.height(8.dp))
             }
             if (state.interviewHistory.isEmpty() && !state.interviewHistoryLoading) {
-                item { EmptyHint("还没有面试记录。确认计划后可从计划页开始文字面试。") }
+                item { EmptyHint("还没有面试记录。确认计划后可从计划页开始语音或文字面试。") }
             }
             items(state.interviewHistory, key = { it.session_id }) { item ->
                 InterviewHistoryCard(
@@ -172,6 +178,7 @@ private fun InterviewHistoryCard(item: InterviewHistoryItemDto, onOpen: () -> Un
     ) {
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             StatusChip(interviewStatusLabel(item.status), MaterialTheme.colorScheme.primary)
+            StatusChip(if (item.mode == "voice") "语音场" else "文字场", MaterialTheme.colorScheme.secondary)
             StatusChip("已答 ${item.answered_main_count}/${item.main_question_count}")
             StatusChip("报告：${reportStateLabel(item.report_state)}", MaterialTheme.colorScheme.secondary)
         }
@@ -197,6 +204,21 @@ fun InterviewRoomScreen(vm: AppViewModel, state: AppState, sessionId: String) {
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
     val clipboard = LocalClipboardManager.current
+    val context = LocalContext.current
+    val micPermission = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) vm.startVoiceRecording(sessionId) else vm.onVoicePermissionDenied()
+    }
+    val requestMicrophone: () -> Unit = {
+        if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) ==
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            vm.startVoiceRecording(sessionId)
+        } else {
+            micPermission.launch(Manifest.permission.RECORD_AUDIO)
+        }
+    }
     var text by rememberSaveable(sessionId) { mutableStateOf("") }
     var loadedTurnId by rememberSaveable(sessionId) { mutableStateOf<String?>(null) }
     var showSkip by rememberSaveable { mutableStateOf(false) }
@@ -227,6 +249,17 @@ fun InterviewRoomScreen(vm: AppViewModel, state: AppState, sessionId: String) {
         }
     }
 
+    LaunchedEffect(detail?.mode, detail?.status, turn?.turn_id, state.voicePhase) {
+        if (detail?.mode == "voice" && detail.status == "active" && turn != null &&
+            detail.phase == "awaiting_answer"
+        ) {
+            vm.ensureVoicePrompt(sessionId, turn.turn_id)
+        }
+    }
+    DisposableEffect(Unit) {
+        onDispose { vm.stopVoicePlayback() }
+    }
+
     val pendingTurnId = state.pendingInterviewTurnId
     val pendingNotCurrent = pendingTurnId != null && pendingTurnId != turn?.turn_id
     val orphanDrafts = state.interviewOrphanDrafts
@@ -240,7 +273,7 @@ fun InterviewRoomScreen(vm: AppViewModel, state: AppState, sessionId: String) {
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("文字模拟面试") },
+                title = { Text(if (detail?.mode == "voice") "语音模拟面试" else "文字模拟面试") },
                 navigationIcon = { TextButton(onClick = { vm.back() }) { Text("返回") } },
                 actions = { TextButton(onClick = { vm.loadInterview(sessionId) }) { Text("刷新") } },
             )
@@ -277,6 +310,14 @@ fun InterviewRoomScreen(vm: AppViewModel, state: AppState, sessionId: String) {
                     subtitle = "来源 ${detail.plan_summary.source_counts.bank} 题库 + ${detail.plan_summary.source_counts.generated} 生成",
                 ) {
                     Text(detail.opening_text, style = MaterialTheme.typography.bodySmall)
+                    if (detail.mode == "voice") {
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            "录音只用于整段转写；报告按你确认提交的文字评分，不评价口音、音色或情绪。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                     if (detail.plan_summary.sample_only) {
                         Spacer(Modifier.height(6.dp))
                         Text(
@@ -287,6 +328,7 @@ fun InterviewRoomScreen(vm: AppViewModel, state: AppState, sessionId: String) {
                     }
                     Spacer(Modifier.height(8.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        StatusChip(if (detail.mode == "voice") "语音场" else "文字场", MaterialTheme.colorScheme.secondary)
                         StatusChip(interviewStatusLabel(detail.status), MaterialTheme.colorScheme.primary)
                         StatusChip("已答 ${detail.answered_main_count}/${detail.plan_summary.main_question_count}")
                         if (detail.skipped_main_count > 0) {
@@ -316,12 +358,34 @@ fun InterviewRoomScreen(vm: AppViewModel, state: AppState, sessionId: String) {
                 when {
                     detail.status == "ended" -> EndedCard(vm, detail, sessionId)
                     detail.phase == "deciding_follow_up" -> DecidingCard(vm, detail, sessionId)
+                    turn != null && detail.mode == "voice" && !state.voiceTextFallback ->
+                        VoiceAnswerCard(
+                            state = state,
+                            detail = detail,
+                            turn = turn,
+                            onRequestMicrophone = requestMicrophone,
+                            onPlay = { vm.playVoiceSegment(sessionId, "turn", turn.turn_id) },
+                            onStopPlayback = { vm.stopVoicePlayback() },
+                            onStopRecording = { vm.stopVoiceRecording(sessionId) },
+                            onUpload = { vm.uploadVoiceTake(sessionId) },
+                            onTranscribeExisting = { vm.transcribeExisting(sessionId) },
+                            onRetryTranscription = { vm.retryVoiceTranscription(sessionId) },
+                            onReviewChange = { vm.updateVoiceReviewText(it) },
+                            onRetryReviewSave = { vm.retryVoiceReviewPersistence() },
+                            onSubmit = { vm.submitVoiceReview(sessionId) },
+                            onRecordAgain = requestMicrophone,
+                            onDiscard = { vm.discardVoiceTake(sessionId) },
+                            onUseServerVoice = { vm.useServerVoiceDraft(sessionId) },
+                            onTextFallback = { vm.useVoiceTextFallback() },
+                        )
                     turn != null -> AnswerCard(
                         detail = detail,
                         turn = turn,
                         text = if (draftReady) text else "",
                         draftReady = draftReady,
                         pending = state.pendingInterviewTurnId == turn.turn_id,
+                        voiceFallback = detail.mode == "voice" && state.voiceTextFallback,
+                        onLeaveVoiceFallback = { vm.leaveVoiceTextFallback() },
                         onTextChange = { next ->
                             if (next.codePointCount(0, next.length) <= 4000) text = next
                         },
@@ -424,6 +488,16 @@ private fun TurnCard(turn: InterviewTurnDto) {
                         fontWeight = FontWeight.SemiBold,
                         color = MaterialTheme.colorScheme.primary,
                     )
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        StatusChip(
+                            when (answer.input_source) {
+                                "asr" -> "来源：语音转写（原样提交）"
+                                "asr_corrected" -> "来源：语音转写（人工核对）"
+                                else -> "来源：文字输入"
+                            },
+                            MaterialTheme.colorScheme.secondary,
+                        )
+                    }
                     Spacer(Modifier.height(4.dp))
                     Text(answer.text, style = MaterialTheme.typography.bodySmall)
                 }
@@ -472,6 +546,8 @@ private fun AnswerCard(
     text: String,
     draftReady: Boolean,
     pending: Boolean,
+    voiceFallback: Boolean = false,
+    onLeaveVoiceFallback: () -> Unit = {},
     onTextChange: (String) -> Unit,
     onSubmit: () -> Unit,
     onConfirmPending: () -> Unit,
@@ -493,6 +569,15 @@ private fun AnswerCard(
             )
         },
     ) {
+        if (voiceFallback) {
+            Text(
+                "已显式改用文字回答；本回合来源会记为 text，不冒充语音转写。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            TextButton(onClick = onLeaveVoiceFallback) { Text("返回语音作答") }
+            Spacer(Modifier.height(4.dp))
+        }
         Surface(
             shape = RoundedCornerShape(10.dp),
             color = MaterialTheme.colorScheme.background,
@@ -538,6 +623,281 @@ private fun AnswerCard(
         }
         Spacer(Modifier.height(6.dp))
         SecondaryAction(text = "重看本题（不写入）", onClick = onReview)
+    }
+}
+
+@Composable
+private fun VoiceAnswerCard(
+    state: AppState,
+    detail: InterviewDetailDto,
+    turn: InterviewTurnDto,
+    onRequestMicrophone: () -> Unit,
+    onPlay: () -> Unit,
+    onStopPlayback: () -> Unit,
+    onStopRecording: () -> Unit,
+    onUpload: () -> Unit,
+    onTranscribeExisting: () -> Unit,
+    onRetryTranscription: () -> Unit,
+    onReviewChange: (String) -> Unit,
+    onRetryReviewSave: () -> Unit,
+    onSubmit: () -> Unit,
+    onRecordAgain: () -> Unit,
+    onDiscard: () -> Unit,
+    onUseServerVoice: () -> Unit,
+    onTextFallback: () -> Unit,
+) {
+    val phase = state.voicePhase
+    val active = detail.status == "active"
+    val transcript = state.voiceDraft?.transcript
+    val title = if (turn.kind == "follow_up") "语音追问" else
+        "语音作答 · 第 ${turn.position}/${detail.plan_summary.main_question_count} 题"
+    InfoCard(
+        title = title,
+        subtitle = when (phase) {
+            VoicePhase.RECORDING -> "正在录音；到时自动停止，不会自动提交"
+            VoicePhase.TRANSCRIBING -> "正在转写；等待时间不计入作答时限"
+            VoicePhase.REVIEW -> "请核对原始转写，确认后冻结并提交"
+            VoicePhase.LOCAL_READY -> "录音已保存到本机，可上传转写"
+            VoicePhase.INTERRUPTED -> "录音已中断并保存；回前台后可继续或重录"
+            else -> "先听题干，再开始录音；播放与录音互斥"
+        },
+        accentColor = when (phase) {
+            VoicePhase.ERROR -> MaterialTheme.colorScheme.error
+            VoicePhase.RECORDING -> MaterialTheme.colorScheme.tertiary
+            else -> MaterialTheme.colorScheme.primary
+        },
+        headerTrailing = {
+            StatusChip(
+                if (turn.kind == "follow_up") "语音追问" else "语音主问题",
+                MaterialTheme.colorScheme.primary,
+            )
+        },
+    ) {
+        Surface(
+            shape = RoundedCornerShape(10.dp),
+            color = MaterialTheme.colorScheme.background,
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text(
+                text = turn.prompt,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Medium,
+                modifier = Modifier.padding(10.dp),
+            )
+        }
+        Spacer(Modifier.height(8.dp))
+        Text(
+            "录音格式 16kHz / 单声道 / PCM16 · 每次最多 120 秒；仅用于转写。",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        if (state.voiceSpeechSynthetic) {
+            Text(
+                "当前播放为测试合成语音，不是真实语音服务结果。",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.error,
+            )
+        }
+        if (state.voiceFixtureActive) {
+            Text(
+                "当前录音来自调试 fixture，不是实时麦克风采集；仅用于模拟器链路验证。",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.error,
+            )
+        }
+        Spacer(Modifier.height(8.dp))
+        when (phase) {
+            VoicePhase.LOADING -> Text("正在读取语音草稿…", style = MaterialTheme.typography.bodySmall)
+            VoicePhase.TTS_LOADING -> Text("正在生成题目语音…", style = MaterialTheme.typography.bodySmall)
+            VoicePhase.PLAYING -> {
+                Text("正在播放题目；播放期间不能录音。", style = MaterialTheme.typography.bodySmall)
+                Spacer(Modifier.height(6.dp))
+                SecondaryAction("停止播放", onClick = onStopPlayback)
+            }
+            VoicePhase.RECORDING -> {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    StatusChip("录音中", MaterialTheme.colorScheme.error)
+                    StatusChip("剩余 ${state.voiceRemainingSeconds}s", MaterialTheme.colorScheme.primary)
+                    StatusChip("已录 ${state.voiceRecordedSeconds}s")
+                }
+                Spacer(Modifier.height(8.dp))
+                PrimaryAction(
+                    text = "停止录音（不自动提交）",
+                    enabled = true,
+                    onClick = onStopRecording,
+                )
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "达到 120 秒会停止采集并保留音频，随后进入转写核对；不会替你提交答案。",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            VoicePhase.LOCAL_READY, VoicePhase.INTERRUPTED -> {
+                val take = state.voiceTake
+                if (take != null) {
+                    Text(
+                        "本地录音已保存：${take.durationMs / 1000} 秒 · ${take.byteLength} 字节" +
+                            if (take.interrupted) " · 已中断" else "",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                } else if (state.voiceDraft?.active_audio != null) {
+                    Text(
+                        "服务端已保存本回合录音，可继续转写。",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                } else {
+                    Text("本地录音暂不可用。", style = MaterialTheme.typography.bodySmall)
+                }
+                Spacer(Modifier.height(8.dp))
+                if (take != null) {
+                    PrimaryAction("上传并转写", enabled = active, onClick = onUpload)
+                    Spacer(Modifier.height(6.dp))
+                } else if (state.voiceDraft?.active_audio != null &&
+                    transcript == null
+                ) {
+                    PrimaryAction("继续转写", enabled = active, onClick = onTranscribeExisting)
+                    Spacer(Modifier.height(6.dp))
+                }
+                SecondaryAction("重新录音", onClick = onRecordAgain)
+                if (take != null) {
+                    Spacer(Modifier.height(4.dp))
+                    TextButton(onClick = onDiscard) { Text("清除本地未提交录音") }
+                }
+            }
+            VoicePhase.UPLOADING -> Text("正在上传录音…", style = MaterialTheme.typography.bodySmall)
+            VoicePhase.TRANSCRIBING -> {
+                Text("正在转写；不会自动提交答案。", style = MaterialTheme.typography.bodySmall)
+                Spacer(Modifier.height(6.dp))
+                SecondaryAction("刷新转写状态", onClick = onTranscribeExisting)
+            }
+            VoicePhase.REVIEW -> {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton(onClick = onPlay) { Text("重播题目") }
+                    TextButton(onClick = onStopPlayback) { Text("停止播放") }
+                }
+                Text(
+                    "原始转写（只读，保留识别结果）",
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = MaterialTheme.colorScheme.background,
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(
+                        transcript?.text.orEmpty(),
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.padding(10.dp),
+                    )
+                }
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "核对后提交文本（可修正识别错误；不得静默截断）",
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                OutlinedTextField(
+                    value = state.voiceReviewText,
+                    onValueChange = onReviewChange,
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = active,
+                    minLines = 4,
+                    maxLines = 10,
+                    placeholder = { Text("核对转写；可修正错字后再提交。") },
+                )
+                Text(
+                    "${state.voiceReviewText.codePointCount(0, state.voiceReviewText.length)}/4000 字符",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                if (state.voiceReviewText.codePointCount(0, state.voiceReviewText.length) > 4000) {
+                    Text(
+                        "提交文本超过 4000 字符；请精简，不会静默截断。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+                state.voiceReviewStorageIssue?.let { issue ->
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        issue,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    SecondaryAction("重试保存核对修改", onClick = onRetryReviewSave)
+                }
+                Spacer(Modifier.height(8.dp))
+                PrimaryAction(
+                    text = if (state.voiceReviewText == transcript?.text) {
+                        "确认提交（原样转写）"
+                    } else {
+                        "确认提交（人工核对文本）"
+                    },
+                    enabled = active && state.voiceReviewText.isNotBlank() &&
+                        state.voiceReviewText.codePointCount(0, state.voiceReviewText.length) <= 4000,
+                    onClick = onSubmit,
+                )
+                Spacer(Modifier.height(6.dp))
+                SecondaryAction("重录本题", onClick = onRecordAgain)
+                Spacer(Modifier.height(4.dp))
+                TextButton(onClick = onTextFallback) { Text("改用文字回答") }
+            }
+            VoicePhase.SUBMITTING -> Text("正在提交已确认文本…", style = MaterialTheme.typography.bodySmall)
+            VoicePhase.ERROR -> {
+                Text(
+                    state.voiceError ?: state.voiceTakeIssue ?: "语音处理未完成",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+                transcript?.error_code?.let {
+                    Text("错误码：$it", style = MaterialTheme.typography.labelSmall)
+                }
+                Spacer(Modifier.height(8.dp))
+                if (state.voiceConflict) {
+                    SecondaryAction("使用服务端当前录音", onClick = onUseServerVoice)
+                    Spacer(Modifier.height(6.dp))
+                }
+                if (state.voiceTake != null && !state.voiceConflict) {
+                    SecondaryAction("重新上传本地录音", onClick = onUpload)
+                    Spacer(Modifier.height(6.dp))
+                } else if (state.voiceDraft?.active_audio != null) {
+                    if (state.voiceDraft.asr_job?.retryable == true) {
+                        SecondaryAction("重试转写任务", onClick = onRetryTranscription)
+                    } else {
+                        SecondaryAction("重新转写", onClick = onTranscribeExisting)
+                    }
+                    Spacer(Modifier.height(6.dp))
+                }
+                SecondaryAction("授权并重新录音", onClick = onRequestMicrophone)
+                Spacer(Modifier.height(4.dp))
+                TextButton(onClick = onTextFallback) { Text("改用文字回答") }
+            }
+            else -> {
+                PrimaryAction(
+                    text = "开始录音（最多 120 秒）",
+                    enabled = active,
+                    onClick = onRequestMicrophone,
+                )
+                Spacer(Modifier.height(6.dp))
+                SecondaryAction("播放题目", onClick = onPlay)
+                Spacer(Modifier.height(4.dp))
+                TextButton(onClick = onTextFallback) { Text("改用文字回答") }
+            }
+        }
+        if (state.voiceTakeIssue != null && phase != VoicePhase.ERROR) {
+            Spacer(Modifier.height(6.dp))
+            Text(
+                state.voiceTakeIssue,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+            )
+        }
     }
 }
 
@@ -972,6 +1332,16 @@ private fun ReportQuestionCard(
                 )
                 turn.answer?.let { answer ->
                     val selected = answer.answer_id == selectedAnswer
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        StatusChip(
+                            when (answer.input_source) {
+                                "asr" -> "来源：语音转写（原样提交）"
+                                "asr_corrected" -> "来源：语音转写（人工核对）"
+                                else -> "来源：文字输入"
+                            },
+                            MaterialTheme.colorScheme.secondary,
+                        )
+                    }
                     Column(Modifier.fillMaxWidth()) {
                         AnswerText(
                             answerId = answer.answer_id,

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import hashlib
 import logging
 import os
 import re
@@ -17,6 +18,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.ai.provider import get_provider
+from app.ai.speech import get_speech_provider
 from app.core.config import Settings, get_settings
 from app.core.db import SessionLocal
 from app.core.diagnostics import (
@@ -33,6 +35,8 @@ from app.core.diagnostics import (
 )
 from app.core.errors import AppError
 from app.models import (
+    AudioAsset,
+    AudioTranscript,
     InterviewAnswer,
     InterviewQuestion,
     InterviewSession,
@@ -44,11 +48,14 @@ from app.models import (
     MatchReport,
     Plan,
     Preparation,
+    SpeechAsset,
+    VoiceDraft,
 )
 from app.schemas import Anchor, DuplicateReviewOutput, MatchRow, SemanticReview
 from app.services import catalog
 from app.services import interviews as interviews_service
 from app.services import jobs as jobs_service
+from app.services import voice as voice_service
 from app.services.bank import content_digest, eligible_bank_questions, eligible_fact_cards
 from app.services.materials import read_file
 from app.services.planning import (
@@ -148,6 +155,7 @@ class JobWorker:
     def run_forever(self, poll_interval: float = 1.0) -> None:  # pragma: no cover - 长驻进程
         LOG.info("worker started id=%s", self.worker_id)
         last_reap = 0.0
+        last_cleanup = 0.0
         while True:
             try:
                 if time.monotonic() - last_reap > 15:
@@ -155,6 +163,17 @@ class JobWorker:
                     db = SessionLocal()
                     try:
                         jobs_service.reap_expired_leases(db)
+                    finally:
+                        db.close()
+                if time.monotonic() - last_cleanup > 900:
+                    last_cleanup = time.monotonic()
+                    db = SessionLocal()
+                    try:
+                        voice_service.cleanup_expired(db, self.settings)
+                        db.commit()
+                    except Exception:
+                        db.rollback()
+                        LOG.exception("audio cleanup failed")
                     finally:
                         db.close()
                 processed = self.run_once()
@@ -190,6 +209,8 @@ class JobWorker:
                     "plan": self._handle_plan,
                     "follow_up": self._handle_follow_up,
                     "interview_report": self._handle_interview_report,
+                    "audio_asr": self._handle_audio_asr,
+                    "audio_tts": self._handle_audio_tts,
                 }[job.kind]
                 handler(job)
             except AppError as exc:
@@ -214,6 +235,9 @@ class JobWorker:
             "AI_AUTH_FAILED": "auth_failed",
             "AI_REQUEST_REJECTED": "request_rejected",
             "AI_INVALID_OUTPUT": "known_invalid",
+            "SPEECH_PROTOCOL_ERROR": "known_invalid",
+            "SPEECH_CONTENT_REJECTED": "request_rejected",
+            "SPEECH_INPUT_INVALID": "request_rejected",
         }.get(code or "", "unknown")
 
     @staticmethod
@@ -1649,6 +1673,290 @@ class JobWorker:
                 db.commit()
         finally:
             db.close()
+
+    # -- M3 语音转写与播报
+
+    def _handle_audio_asr(self, job: Job) -> None:
+        provider = get_speech_provider(self.settings)
+        db = SessionLocal()
+        try:
+            asset = db.get(AudioAsset, job.target_id)
+            if asset is None or asset.owner_id != job.owner_id:
+                return
+            if not jobs_service.inputs_current(db, job):
+                self._supersede_if_fenced(job)
+                return
+            existing = db.scalars(
+                select(AudioTranscript).where(
+                    AudioTranscript.audio_asset_id == asset.id,
+                    AudioTranscript.revision == voice_service.TRANSCRIPT_REVISION,
+                )
+            ).one_or_none()
+            if existing is not None and existing.status in ("ready", "empty"):
+                self._finish_asr_job(job, asset)
+                return
+            wav = voice_service._safe_read(
+                self.settings.private_file_root, asset.storage_path
+            )
+        finally:
+            db.close()
+
+        try:
+            result = self._call_ai(
+                job,
+                provider,
+                stage="audio_asr",
+                slot=str(asset.id),
+                func=provider.transcribe,
+                wav_bytes=wav,
+            )
+        except AppError as exc:
+            self._record_transcript_failure(job, asset.id, exc.code)
+            raise
+
+        db = SessionLocal()
+        try:
+            locked = self._lock_audio_context(db, asset)
+            if locked is None:
+                return
+            fenced = self._fence(db, job)
+            if fenced is None:
+                return
+            voice_service.publish_transcription(
+                db,
+                asset=locked,
+                job=fenced,
+                text=result.text,
+                request_id=result.request_id,
+                provider=provider.name,
+            )
+            jobs_service.mark_succeeded(
+                fenced, entity_type="audio_asset", entity_id=locked.id
+            )
+            db.commit()
+            LOG.info(
+                "job published id=%s kind=audio_asr attempt=%s asset=%s status=%s",
+                job.id,
+                job.attempt,
+                locked.id,
+                "empty" if not result.text.strip() else "ready",
+            )
+        finally:
+            db.close()
+
+    def _handle_audio_tts(self, job: Job) -> None:
+        db = SessionLocal()
+        try:
+            asset = db.get(SpeechAsset, job.target_id)
+            if asset is None or asset.owner_id != job.owner_id or asset.job_id != job.id:
+                return
+            provider = get_speech_provider(self.settings, provider_name=asset.provider)
+            if asset.status == "ready" and asset.storage_path:
+                jobs_service.mark_succeeded(
+                    job, entity_type="speech_asset", entity_id=asset.id
+                )
+                db.commit()
+                return
+            if (
+                hashlib.sha256(asset.text.encode("utf-8")).hexdigest()
+                != asset.content_hash
+            ):
+                raise AppError("SPEECH_PROTOCOL_ERROR", "播报缓存输入摘要不一致")
+            text = asset.text
+        finally:
+            db.close()
+
+        try:
+            result = self._call_ai(
+                job,
+                provider,
+                stage="audio_tts",
+                slot=str(asset.id),
+                func=provider.synthesize,
+                text=text,
+            )
+        except AppError as exc:
+            self._mark_speech_failure(job, asset.id, exc.code)
+            raise
+
+        db = SessionLocal()
+        path: str | None = None
+        try:
+            session = db.scalars(
+                select(InterviewSession)
+                .where(InterviewSession.id == asset.session_id)
+                .execution_options(populate_existing=True)
+                .with_for_update()
+            ).one_or_none()
+            if session is None or session.owner_id != job.owner_id:
+                return
+            locked = db.scalars(
+                select(SpeechAsset)
+                .where(SpeechAsset.id == asset.id)
+                .execution_options(populate_existing=True)
+                .with_for_update()
+            ).one_or_none()
+            if locked is None or locked.job_id != job.id:
+                return
+            fenced = self._fence(db, job)
+            if fenced is None:
+                return
+            path, sha, duration_ms = voice_service.publish_speech(
+                db,
+                settings=self.settings,
+                asset=locked,
+                pcm=result.pcm,
+                request_id=result.request_id,
+            )
+            locked.status = "ready"
+            locked.storage_path = path
+            locked.sha256 = sha
+            locked.duration_ms = duration_ms
+            locked.error_code = None
+            locked.updated_at = voice_service.utcnow()
+            jobs_service.mark_succeeded(
+                fenced, entity_type="speech_asset", entity_id=locked.id
+            )
+            db.commit()
+            LOG.info(
+                "job published id=%s kind=audio_tts attempt=%s asset=%s duration_ms=%s",
+                job.id,
+                job.attempt,
+                locked.id,
+                duration_ms,
+            )
+        except Exception:
+            db.rollback()
+            if path:
+                voice_service._delete_private(self.settings.private_file_root, path)
+            raise
+        finally:
+            db.close()
+
+    def _record_transcript_failure(
+        self, job: Job, asset_id: uuid.UUID, code: str
+    ) -> None:
+        db = SessionLocal()
+        try:
+            asset = db.get(AudioAsset, asset_id)
+            if asset is None:
+                return
+            locked = self._lock_audio_context(db, asset)
+            if locked is None:
+                return
+            fenced = self._fence(db, job)
+            if fenced is None:
+                return
+            row = db.scalars(
+                select(AudioTranscript).where(
+                    AudioTranscript.audio_asset_id == locked.id,
+                    AudioTranscript.revision == voice_service.TRANSCRIPT_REVISION,
+                )
+            ).one_or_none()
+            if row is None:
+                row = AudioTranscript(
+                    id=uuid.uuid4(),
+                    audio_asset_id=locked.id,
+                    revision=voice_service.TRANSCRIPT_REVISION,
+                    text="",
+                    status="failed",
+                    provider="speech",
+                    request_id=None,
+                    error_code=code,
+                )
+                db.add(row)
+            else:
+                row.status = "failed"
+                row.error_code = code
+                row.updated_at = voice_service.utcnow()
+            db.commit()
+        except Exception:
+            db.rollback()
+            LOG.error("transcript failure record failed job=%s", job.id)
+        finally:
+            db.close()
+
+    def _mark_speech_failure(self, job: Job, asset_id: uuid.UUID, code: str) -> None:
+        db = SessionLocal()
+        try:
+            asset = db.get(SpeechAsset, asset_id)
+            if asset is None:
+                return
+            session = db.scalars(
+                select(InterviewSession)
+                .where(InterviewSession.id == asset.session_id)
+                .execution_options(populate_existing=True)
+                .with_for_update()
+            ).one_or_none()
+            if session is None:
+                return
+            locked = db.scalars(
+                select(SpeechAsset)
+                .where(SpeechAsset.id == asset_id)
+                .execution_options(populate_existing=True)
+                .with_for_update()
+            ).one_or_none()
+            if locked is None or locked.job_id != job.id:
+                return
+            fenced = self._fence(db, job)
+            if fenced is None:
+                return
+            voice_service.mark_speech_failed(db, locked, code)
+            db.commit()
+        except Exception:
+            db.rollback()
+            LOG.error("speech failure record failed job=%s", job.id)
+        finally:
+            db.close()
+
+    def _finish_asr_job(self, job: Job, asset: AudioAsset) -> None:
+        db = SessionLocal()
+        try:
+            locked = self._lock_audio_context(db, asset)
+            if locked is None:
+                return
+            fenced = self._fence(db, job)
+            if fenced is None:
+                return
+            jobs_service.mark_succeeded(
+                fenced, entity_type="audio_asset", entity_id=locked.id
+            )
+            db.commit()
+        finally:
+            db.close()
+
+    def _lock_audio_context(self, db: Session, asset: AudioAsset) -> AudioAsset | None:
+        session = db.scalars(
+            select(InterviewSession)
+            .where(InterviewSession.id == asset.session_id)
+            .execution_options(populate_existing=True)
+            .with_for_update()
+        ).one_or_none()
+        if session is None:
+            return None
+        turn = db.scalars(
+            select(InterviewTurn)
+            .where(InterviewTurn.id == asset.turn_id)
+            .execution_options(populate_existing=True)
+            .with_for_update()
+        ).one_or_none()
+        if turn is None:
+            return None
+        draft = db.scalars(
+            select(VoiceDraft)
+            .where(VoiceDraft.turn_id == turn.id)
+            .execution_options(populate_existing=True)
+            .with_for_update()
+        ).one_or_none()
+        if draft is None or draft.active_take_id != asset.id:
+            return None
+        locked = db.scalars(
+            select(AudioAsset)
+            .where(AudioAsset.id == asset.id)
+            .execution_options(populate_existing=True)
+            .with_for_update()
+        ).one_or_none()
+        return locked
 
     def _save_slot(
         self, job: Job, slot_key: str, package: dict, content_hash: str

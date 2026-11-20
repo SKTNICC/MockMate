@@ -57,6 +57,7 @@ os.environ.update(
         "PRIVATE_FILE_ROOT": str(BACKEND_ROOT / "runtime" / "test-private"),
         "AI_PROVIDER": "test",
         "ALLOW_TEST_FIXTURES": "true",
+        "SPEECH_PROVIDER": "test",
         "M1_SAMPLE_CATALOG": "true",
         "MAX_JOB_ATTEMPTS": "2",
         "LOGIN_RATE_LIMIT_ATTEMPTS": "1000",

@@ -250,7 +250,35 @@ def main():
     assert m2["report_partial"]["questions"][0]["question_score"] is None
     assert any(path.startswith("/interviews") for path in api["paths"])
     assert api["paths"]["/interviews/{session_id}/answers"]["post"]["responses"].keys() >= {"200", "202"}
-    print(f"PASS: {len(schema['$defs'])} schemas, {operations} API operations, 4 material snapshots, 6 draft candidates, {len(cases)} rule vectors, M2 examples")
+
+    m3 = read("fixtures/m1/m3-examples.json")
+    assert m3["test_only"] is True
+    validator(schema, "VoiceConfig").validate(m3["voice_config"])
+    validator(schema, "StartInterviewInput").validate(m3["voice_start_request"])
+    for name in ("voice_start_created", "voice_start_reopened_text"):
+        validator(schema, "InterviewStartReceipt").validate(m3[name])
+    validator(schema, "VoiceUploadReceipt").validate(m3["voice_upload_receipt"])
+    for name in ("voice_draft_active", "voice_draft_processing", "voice_draft_empty",
+                 "voice_draft_failed"):
+        validator(schema, "VoiceDraft").validate(m3[name])
+    for name in ("transcript_processing", "transcript_ready", "transcript_empty",
+                 "transcript_failed"):
+        validator(schema, "VoiceTranscript").validate(m3[name])
+    for name in ("answer_request_asr", "answer_request_asr_corrected",
+                 "answer_request_voice_text_fallback"):
+        validator(schema, "InterviewAnswerInput").validate(m3[name])
+    validator(schema, "InterviewDetail").validate(m3["voice_detail_active"])
+    validator(schema, "InterviewHistory").validate(m3["voice_history"])
+    validator(schema, "SpeechRequestInput").validate(m3["speech_request_turn"])
+    for name in ("speech_asset_ready", "speech_asset_queued", "speech_asset_failed",
+                 "speech_asset_synthetic"):
+        validator(schema, "SpeechAsset").validate(m3[name])
+    assert m3["voice_detail_active"]["mode"] == "voice"
+    assert m3["voice_detail_active"]["transcript"][0]["answer"]["input_source"] == "asr_corrected"
+    assert m3["speech_asset_synthetic"]["synthetic"] is True
+    assert api["paths"]["/interviews/{session_id}/turns/{turn_id}/audio"]["post"]["requestBody"]["content"].keys() == {"multipart/form-data"}
+    assert api["paths"]["/speech-assets/{speech_asset_id}/content"]["get"]["responses"]["200"]["content"].keys() == {"audio/wav"}
+    print(f"PASS: {len(schema['$defs'])} schemas, {operations} API operations, 4 material snapshots, 6 draft candidates, {len(cases)} rule vectors, M2/M3 examples")
     print("Scope: foundation checks only; no backend, PostgreSQL, Android, human approval or real AI verified.")
 
 

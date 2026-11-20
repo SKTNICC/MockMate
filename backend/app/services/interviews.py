@@ -55,11 +55,12 @@ from app.services import jobs as jobs_service
 from app.services import planning
 
 CONSENT_VERSION = "m2-external-processing-v1"
+AUDIO_CONSENT_VERSION = "m3-voice-processing-v1"
 OPENING_VERSION = "m2-opening-v1"
 CLOSING_VERSION = "m2-closing-v1"
 RUBRIC_POLICY_VERSION = "m2-rubric-policy-v1"
-FOLLOW_UP_PROMPT_VERSION = "m2-follow-up-v1"
-SCORE_PROMPT_VERSION = "m2-score-v2"
+FOLLOW_UP_PROMPT_VERSION = "m2-follow-up-v2"
+SCORE_PROMPT_VERSION = "m2-score-v3"
 MAX_ANSWER_CODEPOINTS = 4000
 EXPRESSION_DIMENSION_ID = "expression_structure"
 EXPRESSION_DIMENSION_NAME = "表达结构"
@@ -95,8 +96,15 @@ def _require_text(raw: str) -> str:
 # --------------------------------------------------------------------------- 开场文本
 
 
-def opening_text(main_question_count: int) -> str:
+def opening_text(main_question_count: int, mode: str = "text") -> str:
     half = main_question_count // 2
+    if mode == "voice":
+        return (
+            f"本次语音模拟面试共 {main_question_count} 道主问题，题库与现场生成各 {half} 道。"
+            "你会先听到题干，再开始录音；每次回答最多 120 秒，停止后先核对转写再提交。"
+            "播题和识别等待不计入作答时限。每道主问题至多有一次追问；你可以暂停、跳过或提前结束。"
+            "录音与必要上下文会由配置的语音和文字 AI 处理，用于转写、追问判定与面后评分。"
+        )
     return (
         f"本次文字模拟面试共 {main_question_count} 道主问题，题库与现场生成各 {half} 道。"
         "每道主问题至多有一次相关追问；你可以暂停、跳过当前题或提前结束。"
@@ -104,7 +112,9 @@ def opening_text(main_question_count: int) -> str:
     )
 
 
-def closing_text() -> str:
+def closing_text(mode: str = "text") -> str:
+    if mode == "voice":
+        return "本次语音面试已结束，问答已锁定。报告只依据你确认提交的文字与原话证据生成，不评价口音、音色或情绪。"
     return "本次文字面试已结束，问答已锁定。报告会基于你的原话证据生成，可稍后在面试记录中重开。"
 
 
@@ -182,6 +192,9 @@ def _turn_view(
                 answer_id=answer.id,
                 text=answer.text,
                 submitted_at=answer.submitted_at,
+                input_source=answer.input_source or "text",
+                audio_asset_id=answer.audio_asset_id,
+                transcript_revision=answer.transcript_revision,
             )
             if answer is not None
             else None
@@ -305,16 +318,28 @@ def start_interview(
     plan_revision: int,
     external_processing_consent: bool,
     allow_test_fixtures: bool,
+    mode: str = "text",
+    audio_processing_consent: bool = False,
+    speech_available: bool = False,
 ) -> tuple[InterviewSession, bool]:
     """返回 (session, created)。同 owner + plan 只创建一场，重复进入只读打开。"""
     existing = find_session_for_plan(db, owner_id, plan_id)
     if existing is not None:
         return existing, False
 
+    if mode not in ("text", "voice"):
+        raise AppError("VALIDATION_ERROR", "面试模式不合法", status_code=422)
+    if mode == "voice" and not speech_available:
+        raise AppError("SPEECH_NOT_CONFIGURED", "语音服务未配置，不能开始语音面试", status_code=503)
     if not external_processing_consent:
         raise AppError(
             "CONSENT_REQUIRED",
-            "文字面试会把回答及必要上下文发送给配置的外部模型，需要先确认本场处理说明",
+            "面试会把回答及必要上下文发送给配置的外部模型，需要先确认本场处理说明",
+        )
+    if mode == "voice" and not audio_processing_consent:
+        raise AppError(
+            "AUDIO_CONSENT_REQUIRED",
+            "语音面试会把录音发送给配置的语音服务转写，需要单独确认音频处理说明",
         )
 
     candidate = db.get(Plan, plan_id)
@@ -423,6 +448,8 @@ def start_interview(
         "closing_version": CLOSING_VERSION,
     }
 
+    opening_version = "m3-opening-voice-v1" if mode == "voice" else OPENING_VERSION
+    plan_snapshot["opening_version"] = opening_version
     now = utcnow()
     session = InterviewSession(
         id=uuid.uuid4(),
@@ -432,15 +459,17 @@ def start_interview(
         plan_revision=plan.revision,
         role_id=internal.role_id,
         level=internal.level,
-        mode="text",
+        mode=mode,
         status="active",
         phase="awaiting_answer",
         revision=1,
-        opening_text=opening_text(internal.main_question_count),
+        opening_text=opening_text(internal.main_question_count, mode),
         closing_text=None,
         plan_snapshot=plan_snapshot,
         external_processing_consented_at=now,
         consent_version=CONSENT_VERSION,
+        audio_processing_consented_at=now if mode == "voice" else None,
+        audio_consent_version=AUDIO_CONSENT_VERSION if mode == "voice" else None,
         started_at=now,
     )
     db.add(session)
@@ -500,7 +529,7 @@ def build_detail(db: Session, session: InterviewSession, max_attempts: int) -> I
         preparation_id=session.preparation_id,
         role_id=session.role_id,
         level=session.level,
-        mode="text",
+        mode=session.mode,
         status=session.status,
         phase=session.phase,
         revision=session.revision,
@@ -651,6 +680,7 @@ def list_history(
             preparation_id=row.preparation_id,
             role_id=row.role_id,
             level=row.level,
+            mode=row.mode,
             status=row.status,
             started_at=row.started_at,
             ended_at=row.ended_at,
@@ -740,7 +770,7 @@ def _finish_session_locked(
     session.ended_at = now
     session.ended_revision = session.revision
     session.end_reason = end_reason
-    session.closing_text = closing_text()
+    session.closing_text = closing_text(session.mode)
 
     questions = _questions(db, session.id)
     turns = list(
@@ -871,6 +901,9 @@ def submit_answer(
     turn_id: uuid.UUID,
     text: str,
     max_attempts: int,
+    input_source: str = "text",
+    audio_asset_id: uuid.UUID | None = None,
+    transcript_revision: int | None = None,
 ) -> tuple[InterviewReceipt, str]:
     session = _lock_session(db, owner_id, session_id)
     if session.status != "active":
@@ -880,10 +913,30 @@ def submit_answer(
     _check_revision(session, revision)
     turn, question = _current_turn_locked(db, session, turn_id)
     body = _require_text(text)
+    if input_source not in ("text", "asr", "asr_corrected"):
+        raise AppError("ANSWER_SOURCE_INVALID", "回答来源不合法")
+    from app.services import voice as voice_service
+
+    frozen_asset_id, frozen_transcript_revision = voice_service.validate_answer_source(
+        db,
+        owner_id=owner_id,
+        session=session,
+        turn=turn,
+        input_source=input_source,
+        audio_asset_id=audio_asset_id,
+        transcript_revision=transcript_revision,
+        text=body,
+    )
     now = utcnow()
 
     answer = InterviewAnswer(
-        id=uuid.uuid4(), turn_id=turn.id, text=body, submitted_at=now
+        id=uuid.uuid4(),
+        turn_id=turn.id,
+        text=body,
+        input_source=input_source,
+        audio_asset_id=frozen_asset_id,
+        transcript_revision=frozen_transcript_revision,
+        submitted_at=now,
     )
     db.add(answer)
     turn.status = "answered"

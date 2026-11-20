@@ -22,6 +22,7 @@ from app.api import (
     materials_routes,
     plans_routes,
     preparations_routes,
+    voice_routes,
 )
 from app.core.config import get_settings
 from app.core.db import SessionLocal
@@ -143,6 +144,7 @@ def create_app() -> FastAPI:
     app.include_router(preparations_routes.router, prefix="/v1")
     app.include_router(plans_routes.router, prefix="/v1")
     app.include_router(interviews_routes.router, prefix="/v1")
+    app.include_router(voice_routes.router, prefix="/v1")
     app.include_router(jobs_routes.router, prefix="/v1")
 
     @app.get("/healthz", include_in_schema=False)

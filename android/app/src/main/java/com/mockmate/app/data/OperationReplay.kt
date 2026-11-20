@@ -164,7 +164,15 @@ class RepositoryOperationReplayExecutor(
             is UploadFilePayload -> needsUser("文件上传需要重新选择同一文件（摘要 ${payload.fileSha256.take(10)}…）")
             is StartInterviewPayload -> {
                 if (target == null) return needsUser("缺少计划 ID")
-                classify(repository.startInterview(target, payload.planRevision, op.operationKey))
+                classify(
+                    repository.startInterview(
+                        target,
+                        payload.planRevision,
+                        op.operationKey,
+                        payload.mode,
+                        payload.audioProcessingConsent,
+                    )
+                )
             }
             is InterviewAnswerPayload -> classify(
                 repository.submitInterviewAnswer(
@@ -173,6 +181,9 @@ class RepositoryOperationReplayExecutor(
                     payload.turnId,
                     payload.text,
                     op.operationKey,
+                    payload.inputSource,
+                    payload.audioAssetId,
+                    payload.transcriptRevision,
                 )
             )
             is InterviewSkipPayload -> classify(

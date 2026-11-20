@@ -70,5 +70,9 @@ def retry_job(
         input_revision=None,
     )
     job = jobs_service.retry_job(db, job, payload.expected_attempt, get_settings().max_job_attempts)
+    if job.kind in ("audio_asr", "audio_tts"):
+        from app.services import voice as voice_service
+
+        voice_service.on_retry_attempt(db, job)
     body = jobs_service.job_to_schema(db, job, get_settings().max_job_attempts).model_dump(mode="json")
     return idem.complete(db, handle, 202, body)

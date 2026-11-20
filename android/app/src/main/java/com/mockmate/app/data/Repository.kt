@@ -29,6 +29,12 @@ import com.mockmate.app.core.network.InterviewReportDto
 import com.mockmate.app.core.network.InterviewSkipRequest
 import com.mockmate.app.core.network.InterviewStartReceiptDto
 import com.mockmate.app.core.network.StartInterviewRequest
+import com.mockmate.app.core.network.SpeechAssetDto
+import com.mockmate.app.core.network.SpeechRequest
+import com.mockmate.app.core.network.VoiceConfigDto
+import com.mockmate.app.core.network.VoiceDraftDto
+import com.mockmate.app.core.network.VoiceTranscriptDto
+import com.mockmate.app.core.network.VoiceUploadReceiptDto
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
@@ -216,10 +222,12 @@ class M1Repository(private val api: MockMateApi) {
         planId: String,
         planRevision: Int,
         operationKey: String,
+        mode: String = "text",
+        audioProcessingConsent: Boolean = false,
     ): ApiResult<InterviewStartReceiptDto> = call {
         api.startInterview(
             planId,
-            StartInterviewRequest(planRevision, true),
+            StartInterviewRequest(planRevision, true, mode, audioProcessingConsent),
             operationKey,
         )
     }
@@ -239,10 +247,15 @@ class M1Repository(private val api: MockMateApi) {
         turnId: String,
         text: String,
         operationKey: String,
+        inputSource: String = "text",
+        audioAssetId: String? = null,
+        transcriptRevision: Int? = null,
     ): ApiResult<InterviewReceiptDto> = call {
         api.submitInterviewAnswer(
             sessionId,
-            InterviewAnswerRequest(revision, turnId, text),
+            InterviewAnswerRequest(
+                revision, turnId, text, inputSource, audioAssetId, transcriptRevision
+            ),
             operationKey,
         )
     }
@@ -308,6 +321,62 @@ class M1Repository(private val api: MockMateApi) {
             operationKey,
         )
     }
+
+    // ---------------------------------------------------------------- M3 语音面试
+
+    suspend fun voiceConfig(): ApiResult<VoiceConfigDto> = call { api.voiceConfig() }
+
+    suspend fun voiceDraft(sessionId: String, turnId: String): ApiResult<VoiceDraftDto> =
+        call { api.voiceDraft(sessionId, turnId) }
+
+    suspend fun uploadVoiceAudio(
+        sessionId: String,
+        turnId: String,
+        takeId: String,
+        sessionRevision: Int,
+        expectedVoiceRevision: Int,
+        sha256: String,
+        bytes: ByteArray,
+        operationKey: String,
+    ): ApiResult<VoiceUploadReceiptDto> = call {
+        api.uploadVoiceAudio(
+            sessionId,
+            turnId,
+            takeId,
+            sessionRevision,
+            expectedVoiceRevision,
+            sha256,
+            "pcm_s16le/16000/mono",
+            bytes,
+            operationKey,
+        )
+    }
+
+    suspend fun createAudioTranscription(
+        assetId: String,
+        expectedVoiceRevision: Int,
+        operationKey: String,
+    ): ApiResult<JobDto> = call {
+        api.createAudioTranscription(assetId, expectedVoiceRevision, operationKey)
+    }
+
+    suspend fun audioTranscript(assetId: String): ApiResult<VoiceTranscriptDto> =
+        call { api.audioTranscript(assetId) }
+
+    suspend fun requestSpeech(
+        sessionId: String,
+        segment: String,
+        turnId: String?,
+        operationKey: String,
+    ): ApiResult<SpeechAssetDto> = call {
+        api.requestSpeech(sessionId, SpeechRequest(segment, turnId), operationKey)
+    }
+
+    suspend fun speechAsset(assetId: String): ApiResult<SpeechAssetDto> =
+        call { api.speechAsset(assetId) }
+
+    suspend fun speechContent(assetId: String): ApiResult<ByteArray> =
+        call { api.speechContent(assetId) }
 
     suspend fun job(id: String): ApiResult<JobDto> = call { api.job(id) }
 

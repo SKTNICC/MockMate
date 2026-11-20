@@ -124,7 +124,11 @@ data class UploadFilePayload(
 
 @Serializable
 @SerialName("startInterview")
-data class StartInterviewPayload(val planRevision: Int) : OperationPayload
+data class StartInterviewPayload(
+    val planRevision: Int,
+    val mode: String = "text",
+    val audioProcessingConsent: Boolean = false,
+) : OperationPayload
 
 @Serializable
 @SerialName("interviewAnswer")
@@ -133,6 +137,9 @@ data class InterviewAnswerPayload(
     val revision: Int,
     val turnId: String,
     val text: String,
+    val inputSource: String = "text",
+    val audioAssetId: String? = null,
+    val transcriptRevision: Int? = null,
 ) : OperationPayload
 
 @Serializable

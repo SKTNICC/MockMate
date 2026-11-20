@@ -6,6 +6,17 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.mockmate.app.BuildConfig
+import com.mockmate.app.core.audio.AndroidVoiceFileCipher
+import com.mockmate.app.core.audio.QuestionPlayer
+import com.mockmate.app.core.audio.VoicePhase
+import com.mockmate.app.core.audio.VoiceRecorder
+import com.mockmate.app.core.audio.VoiceReviewDraft
+import com.mockmate.app.core.audio.VoiceReviewRead
+import com.mockmate.app.core.audio.VoiceReviewStore
+import com.mockmate.app.core.audio.VoiceServices
+import com.mockmate.app.core.audio.VoiceTakeMeta
+import com.mockmate.app.core.audio.VoiceTakeRead
+import com.mockmate.app.core.audio.VoiceTakeStore
 import com.mockmate.app.core.network.JdTemplateDto
 import com.mockmate.app.core.network.JobDto
 import com.mockmate.app.core.network.MaterialDraftDto
@@ -21,6 +32,10 @@ import com.mockmate.app.core.network.InterviewDetailDto
 import com.mockmate.app.core.network.InterviewHistoryItemDto
 import com.mockmate.app.core.network.InterviewReceiptDto
 import com.mockmate.app.core.network.InterviewReportDto
+import com.mockmate.app.core.network.SpeechAssetDto
+import com.mockmate.app.core.network.VoiceConfigDto
+import com.mockmate.app.core.network.VoiceDraftDto
+import com.mockmate.app.core.network.VoiceTranscriptDto
 import com.mockmate.app.core.operation.ActiveJob
 import com.mockmate.app.core.operation.ConfirmMaterialPayload
 import com.mockmate.app.core.operation.ConfirmPlanPayload
@@ -77,9 +92,14 @@ import com.mockmate.app.data.RestoreUiEffect
 import com.mockmate.app.data.RestoreUiGate
 import com.mockmate.app.ui.screens.PlanErrorFormatter
 import io.ktor.client.engine.HttpClientEngine
+import java.io.File
+import java.security.MessageDigest
+import java.util.UUID
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.cancelChildren
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -201,6 +221,26 @@ data class AppState(
     val interviewForPlan: InterviewHistoryItemDto? = null,
     val pendingInterviewTurnId: String? = null,
     val interviewOrphanDrafts: List<LocalInterviewDraft> = emptyList(),
+    val voiceConfig: VoiceConfigDto? = null,
+    val voiceDraft: VoiceDraftDto? = null,
+    val voicePhase: VoicePhase = VoicePhase.IDLE,
+    val voiceTurnId: String? = null,
+    val voiceTake: VoiceTakeMeta? = null,
+    val voiceTakeIssue: String? = null,
+    /** 本地录音与服务端已确认录音/版本冲突；需要用户显式选择，不静默覆盖。 */
+    val voiceConflict: Boolean = false,
+    /** 核对草稿读取/保存失败的可见状态；与“没有草稿”不同。 */
+    val voiceReviewStorageIssue: String? = null,
+    /** 当前内存文本有尚未成功持久化的修改。 */
+    val voiceReviewDirty: Boolean = false,
+    val voiceRemainingSeconds: Int = 120,
+    val voiceRecordedSeconds: Int = 0,
+    val voiceReviewText: String = "",
+    val voiceSpeechSynthetic: Boolean = false,
+    val voicePlaybackTurnId: String? = null,
+    val voiceError: String? = null,
+    val voiceTextFallback: Boolean = false,
+    val voiceFixtureActive: Boolean = false,
 )
 
 class AppViewModel internal constructor(
@@ -213,6 +253,7 @@ class AppViewModel internal constructor(
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
     keyFactory: () -> String = { java.util.UUID.randomUUID().toString() },
     bootstrapOnInit: Boolean = true,
+    private val voiceServices: VoiceServices? = null,
 ) : ViewModel() {
     constructor(application: Application) : this(
         sessionStore = SecureSessionStore(application),
@@ -222,6 +263,28 @@ class AppViewModel internal constructor(
         uriReader = { uri ->
             application.contentResolver.openInputStream(uri)?.use { it.readBytes() }
         },
+        voiceServices = VoiceServices(
+            recorder = VoiceRecorder(AndroidVoiceFileCipher(application)),
+            player = QuestionPlayer(application),
+            takes = VoiceTakeStore(application, cipher = AndroidVoiceFileCipher(application)),
+            reviews = VoiceReviewStore(application),
+            cacheRoot = application.cacheDir,
+            fixtureProvider = {
+                if (!BuildConfig.DEBUG) {
+                    null
+                } else {
+                    val prefs = application.getSharedPreferences(
+                        "mockmate_voice_test", android.content.Context.MODE_PRIVATE
+                    )
+                    if (!prefs.getBoolean("fixture_enabled", false)) {
+                        null
+                    } else {
+                        val path = prefs.getString("fixture_path", null)
+                        if (path == null) null else File(path).takeIf { it.exists() }
+                    }
+                }
+            },
+        ),
     )
 
     private val operations = OperationCoordinator(
@@ -272,6 +335,13 @@ class AppViewModel internal constructor(
     private val confirmedInterviewTurns = java.util.concurrent.ConcurrentHashMap<String, Boolean>()
     private val inFlightMaterialActionKeys = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
     private val supersededMaterialRecoveries = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    private var voiceTimerJob: kotlinx.coroutines.Job? = null
+    private var voiceStopJob: kotlinx.coroutines.Job? = null
+    private var lastAutoPlayedTurnId: String? = null
+    private var voicePlaybackGeneration: Long = 0L
+    private var voicePollGeneration: Long = 0L
+    private var voiceDraftLoadGeneration: Long = 0L
+    private var voiceOperationGeneration: Long = 0L
     @Volatile
     private var appVisible = true
 
@@ -309,8 +379,177 @@ class AppViewModel internal constructor(
         return true
     }
 
+    /**
+     * 一次语音操作冻结的身份。挂起返回后必须同时核对账号/导航/场次/回合/take/asset/
+     * revision 与操作代次，成功、失败和迟到 401 都不例外。
+     */
+    private enum class VoiceOperationKind {
+        /** 只绑定场次/回合，例如播报。 */
+        SESSION,
+
+        /**
+         * 新 take 上传。旧 active 资产在服务端 CAS 成功前存在是正常状态，
+         * 这里只核对本地待上传 take 仍是同一段录音；expected revision 在请求体内冻结。
+         */
+        UPLOAD_TAKE,
+
+        /** 已激活资产上的 ASR/播报操作，必须核对 active asset 与 voice revision。 */
+        ACTIVE_ASSET,
+    }
+
+    private data class VoiceOperation(
+        val ctx: RequestContext,
+        val page: RestoreScope,
+        val sessionId: String,
+        val turnId: String?,
+        val takeId: String? = null,
+        val assetId: String? = null,
+        val voiceRevision: Int? = null,
+        val kind: VoiceOperationKind = VoiceOperationKind.SESSION,
+        val operationGeneration: Long,
+    )
+
+    private val voiceOperationScope: Long
+        get() = voiceOperationGeneration
+
+    private fun isVoiceSessionCurrent(op: VoiceOperation): Boolean {
+        if (!isScopeCurrent(op.page)) return false
+        val detail = state.value.interviewDetail ?: return false
+        return detail.session_id == op.sessionId
+    }
+
+    private fun isVoiceTurnCurrent(op: VoiceOperation): Boolean {
+        if (!isVoiceSessionCurrent(op)) return false
+        if (op.turnId == null) return true
+        return state.value.interviewDetail?.current_turn?.turn_id == op.turnId
+    }
+
+    private fun isVoiceOperationCurrent(
+        op: VoiceOperation,
+        pollGeneration: Long? = null,
+    ): Boolean {
+        if (op.operationGeneration != voiceOperationGeneration) return false
+        if (pollGeneration != null && pollGeneration != voicePollGeneration) return false
+        if (!isVoiceTurnCurrent(op)) return false
+        val draft = state.value.voiceDraft
+        if (op.kind == VoiceOperationKind.UPLOAD_TAKE) {
+            // 重录替换：服务端旧 active take 仍存在是 CAS 成功前的正常状态。
+            // 只要求本机待上传 take 未被新录音替换；旧资产是否等于新 take 不能作为发送前提。
+            if (op.takeId != null && state.value.voiceTake?.takeId != op.takeId) return false
+            return true
+        }
+        if (op.assetId != null && draft?.active_audio?.id != op.assetId) return false
+        if (op.voiceRevision != null && draft?.voice_revision != op.voiceRevision) return false
+        if (op.takeId != null) {
+            val activeTake = draft?.active_audio?.take_id
+            val localTake = state.value.voiceTake?.takeId
+            if (activeTake != null && activeTake != op.takeId) return false
+            if (activeTake == null && localTake != null && localTake != op.takeId) return false
+        }
+        return true
+    }
+
+    /** 本地已保存/已加载的核对内容；读取失败必须与“没有草稿”区分。 */
+    private sealed interface StoredVoiceReview {
+        data object Absent : StoredVoiceReview
+        data class Present(val text: String) : StoredVoiceReview
+        data class Unavailable(val message: String) : StoredVoiceReview
+    }
+
+    private fun storedVoiceReview(
+        accountId: String,
+        sessionId: String,
+        turnId: String,
+        assetId: String,
+        takeId: String,
+        transcriptRevision: Int,
+    ): StoredVoiceReview {
+        val reviews = voiceServices?.reviews ?: return StoredVoiceReview.Absent
+        return when (val read = reviews.read(accountId, sessionId, turnId)) {
+            is VoiceReviewRead.Present -> {
+                val matches = read.draft.let {
+                    it.sessionId == sessionId &&
+                        it.turnId == turnId &&
+                        it.assetId == assetId &&
+                        it.takeId == takeId &&
+                        it.transcriptRevision == transcriptRevision
+                }
+                if (matches) StoredVoiceReview.Present(read.draft.text)
+                else StoredVoiceReview.Absent
+            }
+            is VoiceReviewRead.Corrupt -> StoredVoiceReview.Unavailable(
+                "本机核对草稿损坏或无法解密：${read.message}。原始数据仍保留，当前显示原始转写；可重试读取或继续修改后显式保存。",
+            )
+            is VoiceReviewRead.Failed -> StoredVoiceReview.Unavailable(
+                "本机核对草稿读取失败：${read.message}。原始数据仍保留，当前显示原始转写；可重试读取或继续修改后显式保存。",
+            )
+            VoiceReviewRead.Absent -> StoredVoiceReview.Absent
+        }
+    }
+
+    /** 同一回合/资产/版本下，内存中已有人工修改时不得被远程/存储重读覆盖。 */
+    private fun hasInMemoryReviewEdit(
+        base: AppState,
+        turnId: String?,
+        activeAssetId: String?,
+        voiceRevision: Int?,
+        originalText: String,
+    ): Boolean =
+        base.voiceTurnId == turnId &&
+            base.voiceDraft?.active_audio?.id == activeAssetId &&
+            base.voiceDraft?.voice_revision == voiceRevision &&
+            base.voiceReviewText.isNotBlank() &&
+            base.voiceReviewText != originalText
+
+    /** 把核对修改写入加密存储；失败时必须让用户看到，而不是只写日志或假装已保存。 */
+    private fun persistVoiceReviewText(text: String) {
+        val services = voiceServices ?: return
+        val account = accountId ?: return
+        val detail = state.value.interviewDetail ?: return
+        val turn = detail.current_turn ?: return
+        val draft = state.value.voiceDraft ?: return
+        val asset = draft.active_audio ?: return
+        val transcript = draft.transcript ?: return
+        if (transcript.status != "ready") return
+        val review = VoiceReviewDraft(
+            sessionId = detail.session_id,
+            turnId = turn.turn_id,
+            takeId = asset.take_id,
+            assetId = asset.id,
+            transcriptRevision = transcript.revision,
+            text = text,
+            edited = text != transcript.text.orEmpty(),
+        )
+        when (val write = services.reviews.write(account, detail.session_id, turn.turn_id, review)) {
+            is SecureWrite.Ok -> update {
+                it.copy(voiceReviewStorageIssue = null, voiceReviewDirty = false)
+            }
+            is SecureWrite.Failed -> update {
+                it.copy(
+                    voiceReviewStorageIssue =
+                        "核对修改未保存到本机：${write.message}。当前文本仍保留在本次会话中，可重试保存；离开页面或冷启动后可能丢失。",
+                )
+            }
+        }
+    }
+
+    private fun clearVoiceReview(
+        accountId: String,
+        sessionId: String,
+        turnId: String,
+        takeId: String? = null,
+    ) {
+        voiceServices?.reviews?.clear(accountId, sessionId, turnId, takeId)
+    }
+
     private fun bumpNavigation() {
         contextGeneration.bumpNavigation()
+        voiceOperationGeneration += 1
+        voiceDraftLoadGeneration += 1
+        stopVoicePlaybackInternal()
+        if (state.value.voicePhase == VoicePhase.RECORDING) {
+            viewModelScope.launch { finishVoiceRecordingInterrupted() }
+        }
         // 页面/账号切换后旧订阅立即停止；回到目标页时由恢复路径重新建立唯一订阅。
         jobWatch.cancelAll()
         clearOngoingStatus()
@@ -321,7 +560,14 @@ class AppViewModel internal constructor(
         if (visible) {
             resumeInterviewAfterForeground()
             restoreActiveJobs()
+            loadVoiceConfig()
         } else {
+            stopVoicePlaybackInternal()
+            if (state.value.voicePhase == VoicePhase.RECORDING) {
+                viewModelScope.launch {
+                    finishVoiceRecordingInterrupted()
+                }
+            }
             jobWatch.cancelAll()
             clearOngoingStatus()
         }
@@ -614,11 +860,18 @@ class AppViewModel internal constructor(
         }
         refreshCatalog()
         refreshPreparations()
+        loadVoiceConfig()
         restoreOperations(user.id)
     }
 
     fun logout() {
         val old = session.current ?: return
+        stopVoicePlaybackInternal()
+        if (state.value.voicePhase == VoicePhase.RECORDING) {
+            voiceTimerJob?.cancel()
+            voiceTimerJob = null
+            voiceServices?.recorder?.stop(interrupted = true)
+        }
         // 先使旧账号代数失效、取消在途请求/轮询并清空可见私有状态；
         // 旧 401 或旧 logout 回包不能注销新账号。
         session.signOut()
@@ -710,6 +963,12 @@ class AppViewModel internal constructor(
     fun back(): Boolean {
         val stack = state.value.stack
         if (stack.size <= 1) return false
+        if (stack.lastOrNull() is Screen.InterviewRoom) {
+            stopVoicePlaybackInternal()
+            if (state.value.voicePhase == VoicePhase.RECORDING) {
+                viewModelScope.launch { finishVoiceRecordingInterrupted() }
+            }
+        }
         bumpNavigation()
         update {
             it.copy(
@@ -2548,6 +2807,7 @@ class AppViewModel internal constructor(
     }
 
     fun openInterview(sessionId: String) {
+        stopVoicePlaybackInternal()
         update {
             it.copy(
                 interviewDetail = null,
@@ -2555,8 +2815,19 @@ class AppViewModel internal constructor(
                 interviewReportError = null,
                 pendingInterviewTurnId = null,
                 interviewOrphanDrafts = emptyList(),
+                voiceDraft = null,
+                voicePhase = VoicePhase.IDLE,
+                voiceTurnId = null,
+                voiceTake = null,
+                voiceTakeIssue = null,
+                voiceReviewText = "",
+                voiceSpeechSynthetic = false,
+                voicePlaybackTurnId = null,
+                voiceError = null,
+                voiceTextFallback = false,
             )
         }
+        lastAutoPlayedTurnId = null
         push(Screen.InterviewRoom(sessionId))
         refreshInterviewSession(sessionId, includeReport = false)
     }
@@ -2621,6 +2892,21 @@ class AppViewModel internal constructor(
                     clearLoading = !includeReport,
                 )
                 if (!isScopeCurrent(page)) return
+                if (result.value.mode == "voice") {
+                    val currentTurn = result.value.current_turn
+                    if (currentTurn != null) {
+                        loadVoiceDraftFor(ctx, page, sessionId, currentTurn.turn_id)
+                    } else if (result.value.status == "ended") {
+                        update {
+                            it.copy(
+                                voicePhase = VoicePhase.IDLE,
+                                voiceDraft = null,
+                                voiceReviewText = "",
+                                voiceTurnId = null,
+                            )
+                        }
+                    }
+                }
                 restoreInterviewJobs(sessionId, page)
             }
             is ApiResult.Err -> {
@@ -2837,19 +3123,29 @@ class AppViewModel internal constructor(
         }
     }
 
-    fun startInterviewForPlan(preparationId: String, plan: PublicPlanDto) {
+    fun startInterviewForPlan(preparationId: String, plan: PublicPlanDto, mode: String = "text") {
         val ctx = currentRequestContext() ?: return
         val page = pageSnapshot() ?: return
-        update { it.copy(loading = true, busyLabel = "开始文字面试…") }
+        val voice = mode == "voice"
+        if (voice && state.value.voiceConfig?.available != true) {
+            notify("语音服务未配置，不能开始语音面试", isError = true)
+            return
+        }
+        update {
+            it.copy(
+                loading = true,
+                busyLabel = if (voice) "开始语音面试…" else "开始文字面试…",
+            )
+        }
         viewModelScope.launch {
             val result = performWrite(
                 ctx,
                 "startInterview",
-                StartInterviewPayload(plan.revision),
+                StartInterviewPayload(plan.revision, mode, voice),
                 targetId = plan.id,
                 revision = plan.revision,
                 preparationId = preparationId,
-            ) { key -> repository.startInterview(plan.id, plan.revision, key) }
+            ) { key -> repository.startInterview(plan.id, plan.revision, key, mode, voice) }
             if (!isAccountCurrent(ctx)) return@launch
             // 回执已经落到原账号；只有仍停留在原计划页且目标计划未变时才允许导航。
             if (!isScopeCurrent(page) || state.value.plan?.id != plan.id) return@launch
@@ -2857,13 +3153,30 @@ class AppViewModel internal constructor(
                 is ApiResult.Err -> showError(result, ctx, page)
                 is ApiResult.Ok -> {
                     update { it.copy(loading = false, busyLabel = null) }
+                    if (mode == "voice" && result.value.mode != "voice") {
+                        update {
+                            it.copy(
+                                message = UiMessage(
+                                    "本计划已有原场（${if (result.value.mode == "voice") "语音" else "文字"}），同计划不会复制第二场。",
+                                    isError = false,
+                                    code = "INTERVIEW_ORIGINAL_MODE",
+                                ),
+                            )
+                        }
+                    }
                     openInterview(result.value.session_id)
                 }
             }
         }
     }
 
-    fun submitInterviewAnswer(sessionId: String, text: String) {
+    fun submitInterviewAnswer(
+        sessionId: String,
+        text: String,
+        inputSource: String = "text",
+        audioAssetId: String? = null,
+        transcriptRevision: Int? = null,
+    ) {
         val detail = state.value.interviewDetail
         val turn = detail?.current_turn
         if (detail == null || detail.session_id != sessionId || turn == null) {
@@ -2879,18 +3192,38 @@ class AppViewModel internal constructor(
             return
         }
         if (text.codePointCount(0, text.length) > 4000) {
-            notify("回答不能超过 4000 个字符")
+            notify("回答不能超过 4000 个字符；请先精简核对文本")
+            return
+        }
+        if (inputSource != "text" && (audioAssetId == null || transcriptRevision == null)) {
+            notify("语音来源缺少录音或转写版本，请刷新后重试")
             return
         }
         val ctx = currentRequestContext() ?: return
         val page = pageSnapshot() ?: return
+        val submittedTakeId = if (inputSource == "text") null
+        else state.value.voiceDraft?.active_audio?.take_id
         val jobKind = if (turn.kind == "main") "follow_up" else "interview_report"
-        update { it.copy(loading = true, busyLabel = "提交回答…") }
+        update {
+            it.copy(
+                loading = true,
+                busyLabel = "提交回答…",
+                voicePhase = if (inputSource == "text") it.voicePhase else VoicePhase.SUBMITTING,
+            )
+        }
         viewModelScope.launch {
             val result = performWrite(
                 ctx,
                 "interviewAnswer",
-                InterviewAnswerPayload(sessionId, detail.revision, turn.turn_id, text),
+                InterviewAnswerPayload(
+                    sessionId,
+                    detail.revision,
+                    turn.turn_id,
+                    text,
+                    inputSource,
+                    audioAssetId,
+                    transcriptRevision,
+                ),
                 targetId = sessionId,
                 revision = detail.revision,
                 onResult = { receipt ->
@@ -2903,6 +3236,9 @@ class AppViewModel internal constructor(
                     turn.turn_id,
                     text,
                     key,
+                    inputSource,
+                    audioAssetId,
+                    transcriptRevision,
                 )
             }
             if (!isAccountCurrent(ctx)) return@launch
@@ -2910,11 +3246,29 @@ class AppViewModel internal constructor(
             if (okReceipt != null && okReceipt.session_id == sessionId) {
                 // 已确认的回执只清理匹配回合的草稿；草稿键归原账号原场。
                 clearInterviewDraft(sessionId, turn.turn_id)
+                if (inputSource != "text") {
+                    // 只清理本次提交确认的 take；若用户已开始新录音，不能误删新草稿。
+                    if (submittedTakeId != null) {
+                        val cleared = clearVoiceTake(
+                            ctx.accountId, sessionId, turn.turn_id, submittedTakeId,
+                        )
+                        if (!cleared) {
+                            notify(
+                                "回答已提交，但本机草稿清理失败；未删除已确认回答，请稍后刷新并重试",
+                                isError = true,
+                            )
+                        }
+                    }
+                    resetVoiceUi()
+                }
             }
             if (!isScopeCurrent(page)) return@launch
             when (result) {
                 is ApiResult.Err -> {
                     showError(result, ctx, page)
+                    if (inputSource != "text") {
+                        update { it.copy(voicePhase = VoicePhase.REVIEW) }
+                    }
                     if (OperationCoordinator.isUncertain(
                             result.code,
                             result.httpStatus,
@@ -2941,6 +3295,14 @@ class AppViewModel internal constructor(
                             loading = false,
                             busyLabel = null,
                             pendingInterviewTurnId = null,
+                            voicePhase = VoicePhase.IDLE,
+                            voiceReviewText = "",
+                            voiceReviewStorageIssue = null,
+                            voiceReviewDirty = false,
+                            voiceConflict = false,
+                            voiceError = null,
+                            voiceTextFallback = false,
+                            voiceFixtureActive = false,
                         )
                     }
                     loadInterview(sessionId)
@@ -2951,6 +3313,11 @@ class AppViewModel internal constructor(
     }
 
     fun skipInterviewTurn(sessionId: String) {
+        if (state.value.voicePhase == VoicePhase.RECORDING) {
+            notify("请先停止录音，再跳过当前题", isError = true)
+            return
+        }
+        stopVoicePlaybackInternal()
         val detail = state.value.interviewDetail
         val turn = detail?.current_turn
         if (detail == null || detail.session_id != sessionId || turn == null) {
@@ -2988,6 +3355,11 @@ class AppViewModel internal constructor(
     }
 
     fun pauseInterview(sessionId: String) {
+        if (state.value.voicePhase == VoicePhase.RECORDING) {
+            notify("请先停止录音，再暂停面试", isError = true)
+            return
+        }
+        stopVoicePlaybackInternal()
         val ctx = currentRequestContext() ?: return
         val detail = state.value.interviewDetail ?: return
         val page = pageSnapshot() ?: return
@@ -3036,6 +3408,11 @@ class AppViewModel internal constructor(
     }
 
     fun finishInterview(sessionId: String) {
+        if (state.value.voicePhase == VoicePhase.RECORDING) {
+            notify("请先停止录音，再结束面试", isError = true)
+            return
+        }
+        stopVoicePlaybackInternal()
         val ctx = currentRequestContext() ?: return
         val detail = state.value.interviewDetail ?: return
         val page = pageSnapshot() ?: return
@@ -3335,7 +3712,1296 @@ class AppViewModel internal constructor(
         interviewDrafts.clear(accountId, sessionId, turnId)
     }
 
-    // ------------------------------------------------------------ 冷启恢复：只读查询 / 原 key 回放
+    // ------------------------------------------------------------ M3 语音面试
+
+    fun loadVoiceConfig() {
+        val ctx = currentRequestContext() ?: return
+        viewModelScope.launch {
+            when (val result = repository.voiceConfig()) {
+                is ApiResult.Ok -> if (isAccountCurrent(ctx)) {
+                    update { it.copy(voiceConfig = result.value) }
+                }
+                is ApiResult.Err -> if (isAccountCurrent(ctx)) {
+                    update { it.copy(voiceConfig = null) }
+                }
+            }
+        }
+    }
+
+    fun onVoiceRoomOpened(sessionId: String) {
+        val detail = state.value.interviewDetail?.takeIf { it.session_id == sessionId } ?: return
+        val turn = detail.current_turn ?: return
+        if (detail.mode != "voice") return
+        val ctx = currentRequestContext() ?: return
+        val page = pageSnapshot() ?: return
+        viewModelScope.launch {
+            loadVoiceDraftFor(ctx, page, sessionId, turn.turn_id)
+        }
+    }
+
+    fun ensureVoicePrompt(sessionId: String, turnId: String) {
+        val detail = state.value.interviewDetail ?: return
+        if (detail.mode != "voice" || detail.status != "active") return
+        if (lastAutoPlayedTurnId == turnId) return
+        if (state.value.voicePhase !in setOf(
+                VoicePhase.IDLE,
+                VoicePhase.ERROR,
+                VoicePhase.LOCAL_READY,
+                VoicePhase.INTERRUPTED,
+            )
+        ) return
+        lastAutoPlayedTurnId = turnId
+        playVoiceSegment(sessionId, "turn", turnId)
+    }
+
+    fun playVoiceSegment(sessionId: String, segment: String, turnId: String?) {
+        val ctx = currentRequestContext() ?: return
+        val page = pageSnapshot() ?: return
+        if (state.value.voicePhase == VoicePhase.RECORDING) {
+            notify("录音期间不能播放题目；请先停止录音", isError = true)
+            return
+        }
+        stopVoicePlaybackInternal()
+        val op = VoiceOperation(
+            ctx = ctx,
+            page = page,
+            sessionId = sessionId,
+            turnId = turnId,
+            operationGeneration = voiceOperationScope,
+        )
+        val generation = ++voicePlaybackGeneration
+        update {
+            it.copy(
+                voicePhase = VoicePhase.TTS_LOADING,
+                voicePlaybackTurnId = turnId,
+                voiceError = null,
+            )
+        }
+        viewModelScope.launch {
+            val requested = repository.requestSpeech(
+                sessionId,
+                segment,
+                turnId,
+                UUID.randomUUID().toString(),
+            )
+            if (!isVoiceTurnCurrent(op) || generation != voicePlaybackGeneration) return@launch
+            var asset: SpeechAssetDto? = when (requested) {
+                is ApiResult.Ok -> requested.value
+                is ApiResult.Err -> {
+                    update { it.copy(voicePhase = VoicePhase.IDLE, voicePlaybackTurnId = null) }
+                    showError(requested, ctx, page)
+                    return@launch
+                }
+            }
+            var polls = 0
+            while (asset != null && asset.status != "ready" &&
+                asset.status != "failed" && asset.status != "expired" && polls < 90
+            ) {
+                delay(1_000)
+                polls += 1
+                if (!isVoiceTurnCurrent(op) || generation != voicePlaybackGeneration) return@launch
+                asset = when (val polled = repository.speechAsset(asset.id)) {
+                    is ApiResult.Ok -> polled.value
+                    is ApiResult.Err -> null
+                }
+            }
+            if (!isVoiceTurnCurrent(op) || generation != voicePlaybackGeneration) return@launch
+            if (asset == null || asset.status != "ready") {
+                update { it.copy(voicePhase = VoicePhase.IDLE, voicePlaybackTurnId = null) }
+                notify(
+                    when (asset?.status) {
+                        "failed" -> "语音生成失败：${asset.error_code ?: "未知错误"}；可再次播放以受控重试"
+                        "expired" -> "语音缓存已过期，请重新播放"
+                        else -> "语音尚未生成完成，请稍后重试"
+                    },
+                    isError = true,
+                )
+                return@launch
+            }
+            val readyAsset = asset
+            val bytes = when (val content = repository.speechContent(readyAsset.id)) {
+                is ApiResult.Ok -> content.value
+                is ApiResult.Err -> {
+                    if (isVoiceTurnCurrent(op) && generation == voicePlaybackGeneration) {
+                        update { it.copy(voicePhase = VoicePhase.IDLE, voicePlaybackTurnId = null) }
+                        showError(content, ctx, page)
+                    }
+                    return@launch
+                }
+            }
+            if (!isVoiceTurnCurrent(op) || generation != voicePlaybackGeneration) return@launch
+            val file = try {
+                val owner = ctx.accountId
+                val dir = File(File(File(filesCacheRoot(), "voice-speech"), owner), sessionId)
+                dir.mkdirs()
+                val target = File(dir, "${readyAsset.id}.wav")
+                if (target.length() != bytes.size.toLong()) {
+                    target.writeBytes(bytes)
+                }
+                target
+            } catch (e: Exception) {
+                update { it.copy(voicePhase = VoicePhase.IDLE, voicePlaybackTurnId = null) }
+                notify("语音缓存写入失败：${e.javaClass.simpleName}", isError = true)
+                return@launch
+            }
+            if (!isVoiceTurnCurrent(op) || generation != voicePlaybackGeneration) return@launch
+            update {
+                it.copy(
+                    voicePhase = VoicePhase.PLAYING,
+                    voicePlaybackTurnId = turnId,
+                    voiceSpeechSynthetic = readyAsset.synthetic,
+                    voiceError = null,
+                )
+            }
+            val started = voiceServices?.player?.play(
+                file = file,
+                tag = "$generation/${readyAsset.id}",
+                onFinished = { tag ->
+                    if (tag.startsWith("$generation/") &&
+                        generation == voicePlaybackGeneration &&
+                        isVoiceTurnCurrent(op)
+                    ) {
+                        update {
+                            if (it.voicePhase == VoicePhase.PLAYING) {
+                                it.copy(
+                                    voicePhase = phaseAfterPlayback(),
+                                    voicePlaybackTurnId = null,
+                                )
+                            } else it
+                        }
+                    }
+                },
+                onError = { tag, message ->
+                    if (tag.startsWith("$generation/") &&
+                        generation == voicePlaybackGeneration &&
+                        isVoiceTurnCurrent(op)
+                    ) {
+                        update {
+                            it.copy(
+                                voicePhase = phaseAfterPlayback(),
+                                voicePlaybackTurnId = null,
+                                voiceError = message,
+                            )
+                        }
+                    }
+                },
+            ) ?: false
+            if (started != true && isVoiceTurnCurrent(op) && generation == voicePlaybackGeneration) {
+                update {
+                    it.copy(
+                        voicePhase = phaseAfterPlayback(),
+                        voicePlaybackTurnId = null,
+                    )
+                }
+            }
+        }
+    }
+
+    fun stopVoicePlayback() {
+        stopVoicePlaybackInternal()
+        update {
+            if (it.voicePhase == VoicePhase.PLAYING || it.voicePhase == VoicePhase.TTS_LOADING) {
+                it.copy(
+                    voicePhase = phaseAfterPlayback(),
+                    voicePlaybackTurnId = null,
+                )
+            } else it
+        }
+    }
+
+    private fun phaseAfterPlayback(): VoicePhase =
+        if (state.value.voiceDraft?.transcript?.status == "ready") VoicePhase.REVIEW
+        else VoicePhase.IDLE
+
+    private fun stopVoicePlaybackInternal() {
+        voicePlaybackGeneration += 1
+        voiceServices?.player?.stop()
+    }
+
+    fun startVoiceRecording(sessionId: String) {
+        val services = voiceServices ?: run {
+            notify("本机录音组件不可用", isError = true)
+            return
+        }
+        val recorder = services.recorder ?: run {
+            notify("本机录音组件不可用", isError = true)
+            return
+        }
+        val detail = state.value.interviewDetail?.takeIf { it.session_id == sessionId } ?: return
+        val turn = detail.current_turn
+        if (detail.mode != "voice" || detail.status != "active" || turn == null ||
+            detail.phase != "awaiting_answer"
+        ) {
+            notify("当前没有可录音的语音回合，请刷新")
+            return
+        }
+        if (state.value.pendingInterviewTurnId == turn.turn_id) {
+            android.util.Log.w("M3VoiceFlow", "record blocked: pending submit turn=${turn.turn_id}")
+            notify("正在确认上一回合提交结果，不能开始新录音", isError = true)
+            return
+        }
+        val account = accountId ?: return
+        if (voiceStopJob?.isActive == true) {
+            notify("正在保存上一段录音，请稍后再开始新录音", isError = true)
+            return
+        }
+        // 先记住旧 take，但只有新录音真正启动后才清理；启动失败不能丢掉可恢复草稿。
+        val previousTakeId = when (val prior = services.takes.read(account, sessionId, turn.turn_id)) {
+            is VoiceTakeRead.Present -> prior.meta.takeId
+            is VoiceTakeRead.MissingFile -> prior.meta.takeId
+            is VoiceTakeRead.Corrupt -> prior.meta?.takeId
+            else -> null
+        }
+        voiceOperationGeneration += 1
+        voicePollGeneration += 1
+        voiceDraftLoadGeneration += 1
+        stopVoicePlaybackInternal()
+        voiceTimerJob?.cancel()
+        val takeId = UUID.randomUUID().toString()
+        val file = services.takes.file(account, sessionId, turn.turn_id, takeId)
+        val fixture = services.fixtureProvider()
+        val started = if (fixture != null) {
+            recorder.startFromFixture(file, fixture)
+        } else {
+            recorder.start(file)
+        }
+        if (!started.ok) {
+            update {
+                it.copy(
+                    voicePhase = VoicePhase.ERROR,
+                    voiceError = started.message,
+                    voiceTurnId = turn.turn_id,
+                )
+            }
+            return
+        }
+        if (previousTakeId != null) {
+            services.takes.clear(account, sessionId, turn.turn_id, previousTakeId)
+        }
+        services.reviews.clear(account, sessionId, turn.turn_id)
+        lastAutoPlayedTurnId = turn.turn_id
+        android.util.Log.i(
+            "M3VoiceFlow",
+            "record started turn=${turn.turn_id} take=$takeId fixture=${fixture != null}",
+        )
+        update {
+            it.copy(
+                voicePhase = VoicePhase.RECORDING,
+                voiceTurnId = turn.turn_id,
+                voiceTake = null,
+                voiceTakeIssue = null,
+                voiceConflict = false,
+                voiceDraft = it.voiceDraft?.copy(
+                    active_audio = null,
+                    transcript = null,
+                    asr_job = null,
+                ),
+                voiceRemainingSeconds = 120,
+                voiceRecordedSeconds = 0,
+                voiceReviewText = "",
+                voiceReviewStorageIssue = null,
+                voiceReviewDirty = false,
+                voiceError = null,
+                voiceTextFallback = false,
+                voiceFixtureActive = fixture != null,
+            )
+        }
+        voiceTimerJob = viewModelScope.launch {
+            while (isActive && state.value.voicePhase == VoicePhase.RECORDING) {
+                delay(200)
+                val snapshot = recorder.snapshot()
+                if (!isActive || state.value.voicePhase != VoicePhase.RECORDING) break
+                val remaining = ((120_000 - snapshot.elapsedMs).coerceAtLeast(0) / 1000).toInt()
+                update {
+                    if (it.voicePhase == VoicePhase.RECORDING) {
+                        it.copy(
+                            voiceRemainingSeconds = remaining,
+                            voiceRecordedSeconds = (snapshot.elapsedMs / 1000).toInt(),
+                            voiceError = snapshot.error,
+                        )
+                    } else it
+                }
+                if (snapshot.error != null) {
+                    stopVoiceRecording(sessionId, interrupted = false)
+                    break
+                }
+                if (snapshot.reachedLimit || snapshot.elapsedMs >= 120_000) {
+                    stopVoiceRecording(sessionId, interrupted = false)
+                    break
+                }
+            }
+        }
+    }
+
+    fun stopVoiceRecording(sessionId: String, interrupted: Boolean = false) {
+        android.util.Log.i("M3VoiceFlow", "stop requested session=$sessionId phase=${state.value.voicePhase} interrupted=$interrupted")
+        if (state.value.voicePhase != VoicePhase.RECORDING) {
+            android.util.Log.w(
+                "M3VoiceFlow",
+                "stop ignored: phase=${state.value.voicePhase}",
+            )
+            return
+        }
+        val turnId = state.value.voiceTurnId ?: return
+        val services = voiceServices ?: return
+        val recorder = services.recorder ?: return
+        val account = accountId ?: return
+        val sessionRevision = state.value.interviewDetail
+            ?.takeIf { it.session_id == sessionId }?.revision
+        val expectedVoiceRevision = state.value.voiceDraft?.voice_revision ?: 0
+        val recordGeneration = voiceOperationGeneration
+        voiceTimerJob?.cancel()
+        voiceTimerJob = null
+        update { it.copy(voicePhase = VoicePhase.LOCAL_READY) }
+        val job = viewModelScope.launch {
+            fun stillThisRecording(): Boolean =
+                voiceOperationGeneration == recordGeneration &&
+                    accountId == account &&
+                    state.value.interviewDetail?.session_id == sessionId &&
+                    state.value.interviewDetail?.current_turn?.turn_id == turnId
+
+            val stop = withContext(ioDispatcher) { recorder.stop(interrupted) }
+            android.util.Log.i("M3VoiceFlow", "recorder stop file=${stop.file?.name} bytes=${stop.byteLength} error=${stop.error}")
+            if (!stillThisRecording()) {
+                android.util.Log.w("M3VoiceFlow", "recorder stop superseded take=${stop.file?.name}")
+                return@launch
+            }
+            val file = stop.file
+            if (file == null || stop.byteLength <= 0 || !file.exists()) {
+                if (stillThisRecording()) {
+                    update {
+                        it.copy(
+                            voicePhase = VoicePhase.ERROR,
+                            voiceError = if (stop.interrupted) "录音已中断且没有可保存的音频"
+                            else "没有录到有效音频，请重新录音",
+                        )
+                    }
+                }
+                return@launch
+            }
+            val sha = try {
+                withContext(ioDispatcher) {
+                    MessageDigest.getInstance("SHA-256").digest(
+                        services.takes.readAudio(
+                            account,
+                            sessionId,
+                            turnId,
+                            VoiceTakeMeta(
+                                takeId = file.nameWithoutExtension,
+                                operationKey = "",
+                                sha256 = "",
+                                byteLength = stop.byteLength,
+                                durationMs = stop.durationMs.toInt(),
+                                interrupted = stop.interrupted,
+                                reachedLimit = stop.reachedLimit,
+                                encrypted = true,
+                            ),
+                        ),
+                    ).joinToString("") { "%02x".format(it) }
+                }
+            } catch (e: Exception) {
+                android.util.Log.e("M3VoiceFlow", "read local recording failed ${e.javaClass.simpleName}")
+                if (stillThisRecording()) {
+                    update {
+                        it.copy(
+                            voicePhase = VoicePhase.ERROR,
+                            voiceError = "读取本地录音失败：${e.javaClass.simpleName}",
+                        )
+                    }
+                }
+                return@launch
+            }
+            if (!stillThisRecording()) return@launch
+            val meta = VoiceTakeMeta(
+                takeId = file.nameWithoutExtension,
+                operationKey = UUID.randomUUID().toString(),
+                sha256 = sha,
+                byteLength = stop.byteLength,
+                durationMs = stop.durationMs.toInt(),
+                interrupted = stop.interrupted,
+                reachedLimit = stop.reachedLimit,
+                format = "pcm_s16le/16000/mono",
+                sessionRevision = sessionRevision,
+                expectedVoiceRevision = expectedVoiceRevision,
+                encrypted = true,
+            )
+            when (val written = services.takes.write(account, sessionId, turnId, meta)) {
+                is com.mockmate.app.core.session.SecureWrite.Ok -> {
+                    android.util.Log.i("M3VoiceFlow", "local take persisted take=${meta.takeId} sha=${meta.sha256.take(8)}")
+                }
+                is com.mockmate.app.core.session.SecureWrite.Failed -> {
+                    android.util.Log.e("M3VoiceFlow", "local take persist failed ${written.message}")
+                    if (stillThisRecording()) {
+                        update {
+                            it.copy(
+                                voicePhase = VoicePhase.ERROR,
+                                voiceError = "本地录音记录未保存：${written.message}",
+                            )
+                        }
+                    }
+                    return@launch
+                }
+            }
+            val stillCurrent = stillThisRecording()
+            if (stillCurrent) {
+                update {
+                    it.copy(
+                        voicePhase = if (stop.interrupted) VoicePhase.INTERRUPTED else VoicePhase.LOCAL_READY,
+                        voiceTake = meta,
+                        voiceTakeIssue = null,
+                        voiceConflict = false,
+                        voiceError = stop.error,
+                        voiceRemainingSeconds = if (stop.reachedLimit) 0 else it.voiceRemainingSeconds,
+                        voiceRecordedSeconds = (stop.durationMs / 1000).toInt(),
+                    )
+                }
+            }
+            android.util.Log.i(
+                "M3VoiceFlow",
+                "recording stopped turn=$turnId bytes=${stop.byteLength} phase=${state.value.voicePhase} current=$stillCurrent",
+            )
+            if (stop.interrupted) {
+                if (stillCurrent) {
+                    notify("录音已停止并保存；回前台后可继续上传或重录，不会自动开始采集", isError = false)
+                }
+            } else if (stop.error == null && stillCurrent) {
+                uploadVoiceTake(sessionId)
+            }
+        }
+        voiceStopJob = job
+        job.invokeOnCompletion { if (voiceStopJob === job) voiceStopJob = null }
+    }
+
+    private suspend fun finishVoiceRecordingInterrupted() {
+        if (state.value.voicePhase != VoicePhase.RECORDING) return
+        stopVoiceRecording(state.value.interviewDetail?.session_id ?: return, interrupted = true)
+    }
+
+    fun uploadVoiceTake(sessionId: String) {
+        val detail = state.value.interviewDetail?.takeIf { it.session_id == sessionId }
+        if (detail == null) {
+            android.util.Log.w("M3VoiceFlow", "upload skipped: detail missing")
+            return
+        }
+        val turn = detail.current_turn
+        if (turn == null) {
+            android.util.Log.w("M3VoiceFlow", "upload skipped: current turn null phase=${detail.phase}")
+            return
+        }
+        val services = voiceServices ?: return
+        val account = accountId ?: return
+        val ctx = currentRequestContext() ?: return
+        val page = pageSnapshot() ?: return
+        val read = services.takes.read(account, sessionId, turn.turn_id)
+        if (read !is VoiceTakeRead.Present) {
+            android.util.Log.w("M3VoiceFlow", "upload skipped: local take unreadable type=${read::class.simpleName}")
+            val message = when (read) {
+                is VoiceTakeRead.MissingFile -> "本地录音文件已不存在，不能按空文件重发；请重新录音"
+                is VoiceTakeRead.Corrupt -> "${read.message}；请重新录音"
+                is VoiceTakeRead.UnsealedPart -> "发现上次录制中断留下的未封存片段，不能作为完整回答上传；请重新录音"
+                is VoiceTakeRead.Failed -> read.message
+                else -> "本地录音不可用，请重新录音"
+            }
+            update {
+                it.copy(
+                    voicePhase = VoicePhase.ERROR,
+                    voiceTake = null,
+                    voiceTakeIssue = message,
+                    voiceError = message,
+                )
+            }
+            return
+        }
+
+        // 首次网络发送前冻结完整请求；冷启动只能原 key、原 body 重放。
+        val frozen = read.meta.copy(
+            format = read.meta.format.ifBlank { "pcm_s16le/16000/mono" },
+            sessionRevision = read.meta.sessionRevision ?: detail.revision,
+            expectedVoiceRevision = read.meta.expectedVoiceRevision
+                ?: state.value.voiceDraft?.voice_revision
+                ?: 0,
+            encrypted = read.meta.encrypted,
+        )
+        if (frozen != read.meta) {
+            when (val written = services.takes.write(account, sessionId, turn.turn_id, frozen)) {
+                is com.mockmate.app.core.session.SecureWrite.Ok -> Unit
+                is com.mockmate.app.core.session.SecureWrite.Failed -> {
+                    update {
+                        it.copy(
+                            voicePhase = VoicePhase.ERROR,
+                            voiceError = "上传前无法保存原请求上下文：${written.message}",
+                        )
+                    }
+                    return
+                }
+            }
+        }
+        update { it.copy(voiceTake = frozen, voicePhase = VoicePhase.UPLOADING, voiceError = null) }
+        val op = VoiceOperation(
+            ctx = ctx,
+            page = page,
+            sessionId = sessionId,
+            turnId = turn.turn_id,
+            takeId = frozen.takeId,
+            kind = VoiceOperationKind.UPLOAD_TAKE,
+            operationGeneration = voiceOperationScope,
+        )
+        viewModelScope.launch {
+            val bytes = try {
+                withContext(ioDispatcher) {
+                    services.takes.readAudio(account, sessionId, turn.turn_id, frozen)
+                }
+            } catch (e: Exception) {
+                if (isVoiceOperationCurrent(op)) {
+                    update { it.copy(voicePhase = VoicePhase.ERROR, voiceError = "读取本地录音失败") }
+                }
+                return@launch
+            }
+            val actualSha = withContext(ioDispatcher) {
+                MessageDigest.getInstance("SHA-256").digest(bytes)
+                    .joinToString("") { "%02x".format(it) }
+            }
+            if (actualSha != frozen.sha256 || bytes.size != frozen.byteLength) {
+                if (isVoiceOperationCurrent(op)) {
+                    update {
+                        it.copy(
+                            voicePhase = VoicePhase.ERROR,
+                            voiceTake = null,
+                            voiceTakeIssue = "本地录音摘要不一致，不能按原文件重发；请重新录音",
+                            voiceError = "本地录音摘要不一致",
+                        )
+                    }
+                }
+                return@launch
+            }
+            if (!isVoiceOperationCurrent(op)) return@launch
+            android.util.Log.i(
+                "M3VoiceFlow",
+                "upload posting turn=${turn.turn_id} take=${frozen.takeId} expected=${frozen.expectedVoiceRevision} revision=${frozen.sessionRevision}",
+            )
+            val result = repository.uploadVoiceAudio(
+                sessionId = sessionId,
+                turnId = turn.turn_id,
+                takeId = frozen.takeId,
+                sessionRevision = frozen.sessionRevision ?: detail.revision,
+                expectedVoiceRevision = frozen.expectedVoiceRevision ?: 0,
+                sha256 = frozen.sha256,
+                bytes = bytes,
+                operationKey = frozen.operationKey,
+            )
+            when (result) {
+                is ApiResult.Err -> {
+                    if (!isVoiceOperationCurrent(op)) return@launch
+                    if (result.code == "VOICE_REVISION_CONFLICT" ||
+                        result.code == "AUDIO_TAKE_CONFLICT"
+                    ) {
+                        // 服务端可能已保存过原 take；重读草稿后决定是否继续转写。
+                        val drafts = repository.voiceDraft(sessionId, turn.turn_id)
+                        if (!isVoiceOperationCurrent(op)) return@launch
+                        if (drafts is ApiResult.Ok) {
+                            val active = drafts.value.active_audio
+                            if (active != null && active.take_id == frozen.takeId) {
+                                persistUploadedTake(account, sessionId, turn.turn_id, frozen, active.id, drafts.value.voice_revision)
+                                update {
+                                    it.copy(
+                                        voiceDraft = drafts.value,
+                                        voiceTake = state.value.voiceTake?.copy(
+                                            uploaded = true,
+                                            uploadedAssetId = active.id,
+                                            uploadedVoiceRevision = drafts.value.voice_revision,
+                                        ),
+                                        voicePhase = VoicePhase.TRANSCRIBING,
+                                    )
+                                }
+                                startTranscription(
+                                    sessionId, turn.turn_id, active.id, drafts.value.voice_revision
+                                )
+                                return@launch
+                            }
+                        }
+                    }
+                    update { it.copy(voicePhase = VoicePhase.LOCAL_READY) }
+                    val uncertain = result.code == "NETWORK_UNAVAILABLE" && result.requestSent
+                    if (uncertain) {
+                        notify(
+                            "录音上传回执未确认；已保留原 key 和原请求，回到本回合或冷启动会按原请求恢复，不会换空文件重发。",
+                            isError = false,
+                        )
+                    } else {
+                        showError(result, ctx, page)
+                    }
+                }
+                is ApiResult.Ok -> {
+                    val receipt = result.value
+                    if (receipt.audio.take_id != frozen.takeId) {
+                        if (isVoiceOperationCurrent(op)) {
+                            update {
+                                it.copy(
+                                    voicePhase = VoicePhase.ERROR,
+                                    voiceError = "上传回执与本地 take 不一致，已保留本地录音",
+                                )
+                            }
+                        }
+                        return@launch
+                    }
+                    persistUploadedTake(
+                        account, sessionId, turn.turn_id, frozen,
+                        receipt.audio.id, receipt.voice_revision,
+                    )
+                    if (!isVoiceOperationCurrent(op)) return@launch
+                    update {
+                        it.copy(
+                            voiceDraft = VoiceDraftDto(
+                                session_id = sessionId,
+                                turn_id = turn.turn_id,
+                                voice_revision = receipt.voice_revision,
+                                active_audio = receipt.audio,
+                                transcript = null,
+                                asr_job = null,
+                            ),
+                            voiceTake = state.value.voiceTake?.copy(
+                                uploaded = true,
+                                uploadedAssetId = receipt.audio.id,
+                                uploadedVoiceRevision = receipt.voice_revision,
+                            ),
+                            voicePhase = VoicePhase.TRANSCRIBING,
+                        )
+                    }
+                    startTranscription(
+                        sessionId, turn.turn_id, receipt.audio.id, receipt.voice_revision
+                    )
+                }
+            }
+        }
+    }
+
+    private fun persistUploadedTake(
+        accountId: String,
+        sessionId: String,
+        turnId: String,
+        meta: VoiceTakeMeta,
+        assetId: String,
+        voiceRevision: Int,
+    ) {
+        // 迟到的上传回执不能覆盖已经开始的新录音元数据。
+        val currentTakeId = when (val current = voiceServices?.takes?.read(accountId, sessionId, turnId)) {
+            is VoiceTakeRead.Present -> current.meta.takeId
+            is VoiceTakeRead.MissingFile -> current.meta.takeId
+            is VoiceTakeRead.Corrupt -> current.meta?.takeId
+            else -> null
+        }
+        if (currentTakeId != meta.takeId) {
+            android.util.Log.w("M3VoiceFlow", "upload receipt ignored: local take changed or cleared")
+            return
+        }
+        val stored = meta.copy(
+            uploaded = true,
+            uploadedAssetId = assetId,
+            uploadedVoiceRevision = voiceRevision,
+        )
+        when (val written = voiceServices?.takes?.write(accountId, sessionId, turnId, stored)) {
+            is com.mockmate.app.core.session.SecureWrite.Ok -> Unit
+            is com.mockmate.app.core.session.SecureWrite.Failed -> android.util.Log.w(
+                "M3VoiceFlow",
+                "upload receipt persist failed: ${written.message}",
+            )
+            else -> Unit
+        }
+    }
+
+    private fun startTranscription(
+        sessionId: String,
+        turnId: String,
+        assetId: String,
+        voiceRevision: Int,
+    ) {
+        val ctx = currentRequestContext() ?: return
+        val page = pageSnapshot() ?: return
+        val op = VoiceOperation(
+            ctx = ctx,
+            page = page,
+            sessionId = sessionId,
+            turnId = turnId,
+            assetId = assetId,
+            voiceRevision = voiceRevision,
+            kind = VoiceOperationKind.ACTIVE_ASSET,
+            operationGeneration = voiceOperationScope,
+        )
+        val generation = ++voicePollGeneration
+        update { it.copy(voicePhase = VoicePhase.TRANSCRIBING) }
+        viewModelScope.launch {
+            val created = repository.createAudioTranscription(
+                assetId,
+                voiceRevision,
+                UUID.randomUUID().toString(),
+            )
+            if (!isVoiceOperationCurrent(op, generation)) return@launch
+            when (created) {
+                is ApiResult.Err -> {
+                    update { it.copy(voicePhase = VoicePhase.ERROR) }
+                    showError(created, ctx, page)
+                }
+                is ApiResult.Ok -> pollTranscript(op, generation)
+            }
+        }
+    }
+
+    private suspend fun pollTranscript(op: VoiceOperation, generation: Long) {
+        val assetId = op.assetId ?: return
+        for (attempt in 0 until 90) {
+            if (!isVoiceOperationCurrent(op, generation)) return
+            if (!appVisible) return
+            when (val result = repository.audioTranscript(assetId)) {
+                is ApiResult.Err -> {
+                    if (!isVoiceOperationCurrent(op, generation)) return
+                    update { it.copy(voicePhase = VoicePhase.ERROR) }
+                    showError(result, op.ctx, op.page)
+                    return
+                }
+                is ApiResult.Ok -> {
+                    if (!isVoiceOperationCurrent(op, generation)) return
+                    val transcript = result.value
+                    if (transcript.audio_asset_id != assetId) return
+                    when (transcript.status) {
+                        "processing" -> Unit
+                        "ready" -> {
+                            val active = state.value.voiceDraft?.active_audio
+                            val takeId = active?.take_id
+                            val restored = if (active != null && takeId != null) {
+                                storedVoiceReview(
+                                    op.ctx.accountId,
+                                    op.sessionId,
+                                    op.turnId ?: return,
+                                    active.id,
+                                    takeId,
+                                    transcript.revision,
+                                )
+                            } else StoredVoiceReview.Absent
+                            val base = state.value
+                            val keepMemory = hasInMemoryReviewEdit(
+                                base,
+                                op.turnId,
+                                active?.id,
+                                op.voiceRevision,
+                                transcript.text.orEmpty(),
+                            )
+                            val text = when {
+                                keepMemory -> base.voiceReviewText
+                                restored is StoredVoiceReview.Present -> restored.text
+                                else -> transcript.text.orEmpty()
+                            }
+                            update {
+                                it.copy(
+                                    voicePhase = VoicePhase.REVIEW,
+                                    voiceReviewText = text,
+                                    voiceReviewStorageIssue =
+                                        (restored as? StoredVoiceReview.Unavailable)?.message,
+                                    voiceReviewDirty = if (keepMemory) base.voiceReviewDirty else false,
+                                    voiceDraft = it.voiceDraft?.copy(transcript = transcript),
+                                    voiceError = null,
+                                )
+                            }
+                            return
+                        }
+                        "empty" -> {
+                            update {
+                                it.copy(
+                                    voicePhase = VoicePhase.ERROR,
+                                    voiceDraft = it.voiceDraft?.copy(transcript = transcript),
+                                    voiceError = "未识别到有效语音；可以重录或显式改用文字回答",
+                                )
+                            }
+                            return
+                        }
+                        else -> {
+                            val refreshed = when (
+                                val loaded = repository.voiceDraft(op.sessionId, op.turnId ?: return)
+                            ) {
+                                is ApiResult.Ok -> loaded.value
+                                is ApiResult.Err -> null
+                            }
+                            if (!isVoiceOperationCurrent(op, generation)) return
+                            update {
+                                val draft = refreshed?.takeIf { it.active_audio?.id == assetId }
+                                it.copy(
+                                    voicePhase = VoicePhase.ERROR,
+                                    voiceDraft = (draft ?: it.voiceDraft?.copy(transcript = transcript))
+                                        ?.copy(transcript = transcript),
+                                    voiceError = "语音转写失败（${transcript.error_code ?: "未知错误"}）；原录音已保留，可显式重试或重录",
+                                )
+                            }
+                            return
+                        }
+                    }
+                }
+            }
+            delay(1_000)
+        }
+        if (isVoiceOperationCurrent(op, generation)) {
+            update { it.copy(voicePhase = VoicePhase.ERROR, voiceError = "转写等待超时，原录音仍保留") }
+        }
+    }
+
+    fun transcribeExisting(sessionId: String) {
+        val detail = state.value.interviewDetail?.takeIf { it.session_id == sessionId } ?: return
+        val turn = detail.current_turn ?: return
+        val draft = state.value.voiceDraft ?: run {
+            onVoiceRoomOpened(sessionId)
+            notify("正在读取语音草稿，请稍后重试", isError = false)
+            return
+        }
+        val asset = draft.active_audio ?: return
+        startTranscription(sessionId, turn.turn_id, asset.id, draft.voice_revision)
+    }
+
+    fun retryVoiceTranscription(sessionId: String) {
+        val detail = state.value.interviewDetail?.takeIf { it.session_id == sessionId } ?: return
+        val turn = detail.current_turn ?: return
+        val job = state.value.voiceDraft?.asr_job
+        if (job == null) {
+            transcribeExisting(sessionId)
+            return
+        }
+        val ctx = currentRequestContext() ?: return
+        val page = pageSnapshot() ?: return
+        val asset = state.value.voiceDraft?.active_audio ?: return
+        val voiceRevision = state.value.voiceDraft?.voice_revision ?: 0
+        val op = VoiceOperation(
+            ctx = ctx,
+            page = page,
+            sessionId = sessionId,
+            turnId = turn.turn_id,
+            assetId = asset.id,
+            voiceRevision = voiceRevision,
+            kind = VoiceOperationKind.ACTIVE_ASSET,
+            operationGeneration = voiceOperationScope,
+        )
+        val generation = ++voicePollGeneration
+        update { it.copy(voicePhase = VoicePhase.TRANSCRIBING) }
+        viewModelScope.launch {
+            // 轮询失败后内存中的 job 可能仍是旧 attempt；重试前读取当前任务状态。
+            val current = when (val loaded = repository.job(job.id)) {
+                is ApiResult.Ok -> loaded.value
+                is ApiResult.Err -> {
+                    if (!isVoiceOperationCurrent(op, generation)) return@launch
+                    update { it.copy(voicePhase = VoicePhase.ERROR) }
+                    showError(loaded, ctx, page)
+                    return@launch
+                }
+            }
+            if (!isVoiceOperationCurrent(op, generation)) return@launch
+            if (!current.retryable) {
+                update { it.copy(voicePhase = VoicePhase.ERROR) }
+                notify(
+                    "转写任务不可再自动重试（attempt=${current.attempt}，${current.error?.code ?: "无错误码"}）；请重录或改用文字回答",
+                    isError = true,
+                )
+                return@launch
+            }
+            when (val result = repository.retryJob(current.id, current.attempt, UUID.randomUUID().toString())) {
+                is ApiResult.Err -> {
+                    if (!isVoiceOperationCurrent(op, generation)) return@launch
+                    update { it.copy(voicePhase = VoicePhase.ERROR) }
+                    showError(result, ctx, page)
+                }
+                is ApiResult.Ok -> {
+                    if (!isVoiceOperationCurrent(op, generation)) return@launch
+                    // 服务端已接受新 attempt；状态查询必须立即可见 queued/running。
+                    pollTranscript(op, generation)
+                }
+            }
+        }
+    }
+
+    fun submitVoiceReview(sessionId: String) {
+        val detail = state.value.interviewDetail?.takeIf { it.session_id == sessionId } ?: return
+        val turn = detail.current_turn ?: return
+        val transcript = state.value.voiceDraft?.transcript ?: return
+        val asset = state.value.voiceDraft?.active_audio ?: return
+        if (transcript.status != "ready") {
+            notify("转写尚未完成，不能提交", isError = true)
+            return
+        }
+        val text = state.value.voiceReviewText
+        if (text.isBlank()) {
+            notify("核对文本不能为空白；可重录或改用文字回答", isError = true)
+            return
+        }
+        val source = if (text == transcript.text) "asr" else "asr_corrected"
+        submitInterviewAnswer(
+            sessionId,
+            text,
+            inputSource = source,
+            audioAssetId = asset.id,
+            transcriptRevision = transcript.revision,
+        )
+    }
+
+    fun updateVoiceReviewText(text: String) {
+        if (text.codePointCount(0, text.length) <= 4000) {
+            update { it.copy(voiceReviewText = text, voiceReviewDirty = true) }
+            persistVoiceReviewText(text)
+        }
+    }
+
+    /** 保存失败后用户显式重试；不删除原密文，也不静默降级为明文。 */
+    fun retryVoiceReviewPersistence() {
+        val text = state.value.voiceReviewText
+        if (text.isBlank()) return
+        persistVoiceReviewText(text)
+    }
+
+    /** 冲突后显式采用服务端当前录音，并丢弃本机已被取代的旧 take。 */
+    fun useServerVoiceDraft(sessionId: String) {
+        val account = accountId ?: return
+        val turnId = state.value.voiceTurnId
+            ?: state.value.interviewDetail?.current_turn?.turn_id
+            ?: return
+        voiceOperationGeneration += 1
+        voicePollGeneration += 1
+        voiceDraftLoadGeneration += 1
+        state.value.voiceTake?.takeId?.let { takeId ->
+            voiceServices?.takes?.clear(account, sessionId, turnId, takeId)
+        }
+        update {
+            it.copy(
+                voiceTake = null,
+                voiceConflict = false,
+                voiceTakeIssue = null,
+                voiceError = null,
+                voiceReviewStorageIssue = null,
+                voiceReviewDirty = false,
+            )
+        }
+        onVoiceRoomOpened(sessionId)
+    }
+
+    fun useVoiceTextFallback() {
+        update { it.copy(voiceTextFallback = true, voicePhase = VoicePhase.IDLE) }
+    }
+
+    fun leaveVoiceTextFallback() {
+        update { it.copy(voiceTextFallback = false) }
+        val sessionId = (state.value.stack.lastOrNull() as? Screen.InterviewRoom)?.sessionId
+        if (sessionId != null) onVoiceRoomOpened(sessionId)
+    }
+
+    fun discardVoiceTake(sessionId: String) {
+        val account = accountId ?: return
+        val turnId = state.value.voiceTurnId ?: state.value.interviewDetail?.current_turn?.turn_id
+            ?: return
+        val takeId = state.value.voiceTake?.takeId
+        voiceOperationGeneration += 1
+        voicePollGeneration += 1
+        voiceServices?.takes?.clear(account, sessionId, turnId, takeId)
+        voiceServices?.reviews?.clear(account, sessionId, turnId, takeId)
+        update {
+            it.copy(
+                voiceTake = null,
+                voicePhase = VoicePhase.IDLE,
+                voiceTakeIssue = null,
+                voiceConflict = false,
+                voiceReviewText = "",
+                voiceReviewStorageIssue = null,
+                voiceReviewDirty = false,
+                voiceError = null,
+                voiceTextFallback = false,
+            )
+        }
+    }
+
+    fun onVoicePermissionDenied() {
+        update {
+            it.copy(
+                voicePhase = VoicePhase.ERROR,
+                voiceError = "未获得麦克风权限。可重新授权录音，或显式改用文字回答；不会假装已录音",
+            )
+        }
+    }
+
+    private suspend fun loadVoiceDraftFor(
+        ctx: RequestContext,
+        page: RestoreScope,
+        sessionId: String,
+        turnId: String,
+    ) {
+        if (!isScopeCurrent(page)) return
+        if (state.value.voicePhase == VoicePhase.RECORDING) return
+        if (state.value.voicePhase == VoicePhase.UPLOADING ||
+            state.value.voicePhase == VoicePhase.TRANSCRIBING
+        ) return
+        val loadGeneration = ++voiceDraftLoadGeneration
+        update { it.copy(voicePhase = VoicePhase.LOADING, voiceError = null) }
+        val account = ctx.accountId
+        val services = voiceServices
+        val local = if (services == null) VoiceTakeRead.Absent else withContext(ioDispatcher) {
+            services.takes.read(account, sessionId, turnId)
+        }
+        if (!isScopeCurrent(page) || loadGeneration != voiceDraftLoadGeneration) return
+        var localTake: VoiceTakeMeta? = null
+        var localIssue: String? = null
+        when (local) {
+            is VoiceTakeRead.Present -> {
+                localTake = local.meta
+                update { it.copy(voiceTake = local.meta, voiceTakeIssue = null) }
+            }
+            is VoiceTakeRead.MissingFile -> {
+                update {
+                    it.copy(
+                        voiceTake = null,
+                        voiceTakeIssue = "本地录音文件已不存在，不能按空文件重发；服务端已保存的录音仍可继续转写",
+                    )
+                }
+            }
+            is VoiceTakeRead.Corrupt -> {
+                update {
+                    it.copy(
+                        voiceTake = null,
+                        voiceTakeIssue = "${local.message}；请重新录音",
+                    )
+                }
+            }
+            is VoiceTakeRead.UnsealedPart -> {
+                localIssue = "发现上次录制中断留下的未封存片段，不能作为完整回答；请重新录音"
+                update { it.copy(voiceTake = null, voiceTakeIssue = localIssue) }
+            }
+            is VoiceTakeRead.Failed -> {
+                localIssue = local.message
+                update { it.copy(voiceTake = null, voiceTakeIssue = localIssue) }
+            }
+            VoiceTakeRead.Absent -> update {
+                it.copy(voiceTake = null, voiceTakeIssue = null)
+            }
+        }
+        if (!isScopeCurrent(page) || loadGeneration != voiceDraftLoadGeneration) return
+        when (val result = repository.voiceDraft(sessionId, turnId)) {
+            is ApiResult.Err -> {
+                if (isScopeCurrent(page) && loadGeneration == voiceDraftLoadGeneration) {
+                    update { it.copy(voicePhase = VoicePhase.IDLE) }
+                    showError(result, ctx, page)
+                }
+            }
+            is ApiResult.Ok -> {
+                if (!isScopeCurrent(page) || loadGeneration != voiceDraftLoadGeneration) return
+                val draft = result.value
+                if (draft.session_id != sessionId || draft.turn_id != turnId) return
+                val transcript = draft.transcript
+                val active = draft.active_audio
+                val base = state.value
+                val sameTakeConfirmed = localTake != null && active?.take_id == localTake.takeId
+                val pendingNewTake = localTake != null && !sameTakeConfirmed && !localTake.uploaded &&
+                    (active == null || localTake.expectedVoiceRevision == draft.voice_revision)
+                val staleLocalTake = localTake != null && !sameTakeConfirmed && !pendingNewTake
+                val restoredReview = if (transcript?.status == "ready" && active != null) {
+                    storedVoiceReview(
+                        account,
+                        sessionId,
+                        turnId,
+                        active.id,
+                        active.take_id,
+                        transcript.revision,
+                    )
+                } else StoredVoiceReview.Absent
+
+                if (sameTakeConfirmed &&
+                    (!localTake.uploaded ||
+                        localTake.uploadedAssetId != active?.id ||
+                        localTake.uploadedVoiceRevision != draft.voice_revision)
+                ) {
+                    // 上传 201 丢失后，服务端已确认同一 take：补记回执，后续只续 ASR，不重复入库。
+                    val confirmed = localTake.copy(
+                        uploaded = true,
+                        uploadedAssetId = active?.id,
+                        uploadedVoiceRevision = draft.voice_revision,
+                    )
+                    when (val written = voiceServices?.takes
+                        ?.write(account, sessionId, turnId, confirmed)) {
+                        is SecureWrite.Ok -> localTake = confirmed
+                        is SecureWrite.Failed -> localIssue =
+                            "服务端已确认本段录音，但本机记录未保存：${written.message}；重启后仍可从服务端恢复"
+                        else -> Unit
+                    }
+                }
+
+                val keepMemory = hasInMemoryReviewEdit(
+                    base,
+                    turnId,
+                    active?.id,
+                    draft.voice_revision,
+                    transcript?.text.orEmpty(),
+                )
+                val next = when {
+                    pendingNewTake -> base.copy(
+                        voiceDraft = draft,
+                        voicePhase = if (localTake?.interrupted == true) VoicePhase.INTERRUPTED
+                        else VoicePhase.LOCAL_READY,
+                        voiceTake = localTake,
+                        voiceTakeIssue = null,
+                        voiceConflict = false,
+                        voiceReviewText = "",
+                        voiceReviewStorageIssue = null,
+                        voiceReviewDirty = false,
+                        voiceTurnId = turnId,
+                    )
+                    staleLocalTake -> base.copy(
+                        voiceDraft = draft,
+                        voicePhase = VoicePhase.ERROR,
+                        voiceTake = localTake,
+                        voiceConflict = true,
+                        voiceError = "本机有一段旧版本录音，服务端已保存另一段录音；不会用旧 take 覆盖当前结果，也不会自动提交旧转写。请显式使用服务端当前录音或重新录音。",
+                        voiceTakeIssue = null,
+                        voiceReviewText = "",
+                        voiceReviewStorageIssue = null,
+                        voiceReviewDirty = false,
+                        voiceTurnId = turnId,
+                    )
+                    transcript?.status == "ready" -> base.copy(
+                        voiceDraft = draft,
+                        voicePhase = VoicePhase.REVIEW,
+                        voiceReviewText = when {
+                            keepMemory -> base.voiceReviewText
+                            restoredReview is StoredVoiceReview.Present -> restoredReview.text
+                            else -> transcript.text.orEmpty()
+                        },
+                        voiceReviewStorageIssue =
+                            (restoredReview as? StoredVoiceReview.Unavailable)?.message,
+                        voiceReviewDirty = if (keepMemory) base.voiceReviewDirty else false,
+                        voiceTake = if (sameTakeConfirmed) localTake else null,
+                        voiceTakeIssue = localIssue,
+                        voiceConflict = false,
+                        voiceTurnId = turnId,
+                    )
+                    transcript?.status == "empty" -> base.copy(
+                        voiceDraft = draft,
+                        voicePhase = VoicePhase.ERROR,
+                        voiceError = "未识别到有效语音；可以重录或显式改用文字回答",
+                        voiceTake = if (sameTakeConfirmed) localTake else null,
+                        voiceTakeIssue = localIssue,
+                        voiceConflict = false,
+                        voiceTurnId = turnId,
+                    )
+                    transcript?.status == "failed" -> base.copy(
+                        voiceDraft = draft,
+                        voicePhase = VoicePhase.ERROR,
+                        voiceError = "语音转写失败（${transcript.error_code ?: "未知错误"}）；原录音已保留，可显式重试或重录",
+                        voiceTake = if (sameTakeConfirmed) localTake else null,
+                        voiceTakeIssue = localIssue,
+                        voiceConflict = false,
+                        voiceTurnId = turnId,
+                    )
+                    draft.asr_job?.state == "queued" || draft.asr_job?.state == "running" -> base.copy(
+                        voiceDraft = draft,
+                        voicePhase = VoicePhase.TRANSCRIBING,
+                        voiceTake = if (sameTakeConfirmed) localTake else null,
+                        voiceTakeIssue = localIssue,
+                        voiceConflict = false,
+                        voiceTurnId = turnId,
+                    )
+                    active != null -> base.copy(
+                        voiceDraft = draft,
+                        voicePhase = VoicePhase.LOCAL_READY,
+                        voiceTake = if (sameTakeConfirmed) localTake else null,
+                        voiceTakeIssue = localIssue,
+                        voiceConflict = false,
+                        voiceTurnId = turnId,
+                    )
+                    localTake != null -> base.copy(
+                        voiceDraft = draft,
+                        voicePhase = if (localTake.interrupted) VoicePhase.INTERRUPTED
+                        else VoicePhase.LOCAL_READY,
+                        voiceTake = localTake,
+                        voiceTakeIssue = localIssue,
+                        voiceConflict = false,
+                        voiceTurnId = turnId,
+                    )
+                    else -> base.copy(
+                        voiceDraft = draft,
+                        voicePhase = VoicePhase.IDLE,
+                        voiceTake = null,
+                        voiceTakeIssue = localIssue,
+                        voiceConflict = false,
+                        voiceTurnId = turnId,
+                    )
+                }
+                update { current -> if (!isScopeCurrent(page)) current else next }
+                when {
+                    pendingNewTake -> {
+                        // 未发送/回执未知的新 take：按冻结的原 key/body 恢复上传，不先展示旧转写。
+                        uploadVoiceTake(sessionId)
+                    }
+                    staleLocalTake -> Unit
+                    draft.asr_job?.state == "queued" || draft.asr_job?.state == "running" -> {
+                        if (active != null) {
+                            val op = VoiceOperation(
+                                ctx = ctx,
+                                page = page,
+                                sessionId = sessionId,
+                                turnId = turnId,
+                                assetId = active.id,
+                                voiceRevision = draft.voice_revision,
+                                kind = VoiceOperationKind.ACTIVE_ASSET,
+                                operationGeneration = voiceOperationScope,
+                            )
+                            val generation = ++voicePollGeneration
+                            viewModelScope.launch { pollTranscript(op, generation) }
+                        }
+                    }
+                    active != null && transcript == null && draft.asr_job == null -> {
+                        // 上传已确认但回执/后续 ASR 在进程死亡时丢失：继续原操作，不重新上传。
+                        startTranscription(sessionId, turnId, active.id, draft.voice_revision)
+                    }
+                }
+            }
+        }
+    }
+
+    private fun resetVoiceUi() {
+        voiceTimerJob?.cancel()
+        voiceTimerJob = null
+        voiceOperationGeneration += 1
+        voicePollGeneration += 1
+        voiceDraftLoadGeneration += 1
+        update {
+            it.copy(
+                voiceDraft = null,
+                voicePhase = VoicePhase.IDLE,
+                voiceTurnId = null,
+                voiceTake = null,
+                voiceTakeIssue = null,
+                voiceConflict = false,
+                voiceReviewText = "",
+                voiceReviewStorageIssue = null,
+                voiceReviewDirty = false,
+                voiceError = null,
+                voiceSpeechSynthetic = false,
+                voicePlaybackTurnId = null,
+                voiceTextFallback = false,
+                voiceFixtureActive = false,
+            )
+        }
+    }
+
+    private fun clearVoiceTake(
+        accountId: String,
+        sessionId: String,
+        turnId: String,
+        takeId: String? = null,
+    ): Boolean {
+        val takeCleared = voiceServices?.takes?.clear(accountId, sessionId, turnId, takeId) ?: true
+        val reviewCleared = voiceServices?.reviews?.clear(accountId, sessionId, turnId, takeId) ?: true
+        if (!takeCleared || !reviewCleared) {
+            android.util.Log.w(
+                "M3VoiceFlow",
+                "voice draft cleanup incomplete takeCleared=$takeCleared reviewCleared=$reviewCleared",
+            )
+        }
+        return takeCleared && reviewCleared
+    }
+
+    private fun filesCacheRoot(): File =
+        voiceServices?.cacheRoot ?: File(System.getProperty("java.io.tmpdir") ?: ".")
+
+
 
     private fun restoreOperations(accountId: String) {
         viewModelScope.launch {

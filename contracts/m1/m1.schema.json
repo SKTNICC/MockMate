@@ -2153,7 +2153,9 @@
             "match_report",
             "plan",
             "interview_session",
-            "interview_report"
+            "interview_report",
+            "audio_asset",
+            "speech_asset"
           ]
         },
         "id": {
@@ -2182,7 +2184,9 @@
             "match",
             "plan",
             "follow_up",
-            "interview_report"
+            "interview_report",
+            "audio_asr",
+            "audio_tts"
           ]
         },
         "target_id": {
@@ -2265,6 +2269,18 @@
         },
         "external_processing_consent": {
           "type": "boolean"
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "text",
+            "voice"
+          ],
+          "default": "text"
+        },
+        "audio_processing_consent": {
+          "type": "boolean",
+          "default": false
         }
       },
       "required": [
@@ -2283,11 +2299,19 @@
         "revision": {
           "type": "integer",
           "minimum": 1
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "text",
+            "voice"
+          ]
         }
       },
       "required": [
         "session_id",
-        "revision"
+        "revision",
+        "mode"
       ]
     },
     "InterviewAnswerInput": {
@@ -2306,6 +2330,37 @@
           "type": "string",
           "minLength": 1,
           "maxLength": 4000
+        },
+        "input_source": {
+          "type": "string",
+          "enum": [
+            "text",
+            "asr",
+            "asr_corrected"
+          ],
+          "default": "text"
+        },
+        "audio_asset_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "transcript_revision": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "required": [
@@ -2518,12 +2573,45 @@
         "submitted_at": {
           "type": "string",
           "format": "date-time"
+        },
+        "input_source": {
+          "type": "string",
+          "enum": [
+            "text",
+            "asr",
+            "asr_corrected"
+          ]
+        },
+        "audio_asset_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "transcript_revision": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "required": [
         "answer_id",
         "text",
-        "submitted_at"
+        "submitted_at",
+        "input_source",
+        "audio_asset_id",
+        "transcript_revision"
       ]
     },
     "InterviewTurnView": {
@@ -2659,7 +2747,11 @@
           ]
         },
         "mode": {
-          "const": "text"
+          "type": "string",
+          "enum": [
+            "text",
+            "voice"
+          ]
         },
         "status": {
           "type": "string",
@@ -2869,6 +2961,13 @@
             "junior"
           ]
         },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "text",
+            "voice"
+          ]
+        },
         "status": {
           "type": "string",
           "enum": [
@@ -2932,6 +3031,7 @@
         "preparation_id",
         "role_id",
         "level",
+        "mode",
         "status",
         "started_at",
         "ended_at",
@@ -3386,6 +3486,480 @@
         "strengths",
         "improvements",
         "questions"
+      ]
+    },
+    "VoiceConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "available": {
+          "type": "boolean"
+        },
+        "max_answer_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 120
+        },
+        "format": {
+          "$ref": "#/$defs/VoiceFormat"
+        },
+        "tts_voice_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "speech_provider": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "available",
+        "max_answer_seconds",
+        "format",
+        "tts_voice_id",
+        "speech_provider"
+      ]
+    },
+    "VoiceFormat": {
+      "const": "pcm_s16le/16000/mono"
+    },
+    "VoiceAudioAsset": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "session_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "turn_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "take_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "sha256": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "byte_length": {
+          "type": "integer",
+          "minimum": 2,
+          "maximum": 3840000
+        },
+        "duration_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 120000
+        },
+        "format": {
+          "$ref": "#/$defs/VoiceFormat"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "stored",
+            "expired"
+          ]
+        },
+        "expires_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "session_id",
+        "turn_id",
+        "take_id",
+        "sha256",
+        "byte_length",
+        "duration_ms",
+        "format",
+        "status",
+        "expires_at",
+        "created_at"
+      ]
+    },
+    "VoiceTranscript": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "audio_asset_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "processing",
+            "ready",
+            "empty",
+            "failed"
+          ]
+        },
+        "text": {
+          "anyOf": [
+            {
+              "type": "string",
+              "maxLength": 20000
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "provider": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "request_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "error_code": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "updated_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "audio_asset_id",
+        "revision",
+        "status",
+        "text",
+        "provider",
+        "request_id",
+        "error_code",
+        "updated_at"
+      ]
+    },
+    "VoiceDraft": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "session_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "turn_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "voice_revision": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "active_audio": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/VoiceAudioAsset"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "transcript": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/VoiceTranscript"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "asr_job": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/InterviewJobSummary"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "session_id",
+        "turn_id",
+        "voice_revision",
+        "active_audio",
+        "transcript",
+        "asr_job"
+      ]
+    },
+    "VoiceUploadInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "file": {
+          "type": "string",
+          "format": "binary"
+        },
+        "take_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "session_revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "expected_voice_revision": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "sha256": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "format": {
+          "$ref": "#/$defs/VoiceFormat"
+        }
+      },
+      "required": [
+        "file",
+        "take_id",
+        "session_revision",
+        "expected_voice_revision",
+        "sha256",
+        "format"
+      ]
+    },
+    "VoiceUploadReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "session_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "turn_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "voice_revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "audio": {
+          "$ref": "#/$defs/VoiceAudioAsset"
+        }
+      },
+      "required": [
+        "session_id",
+        "turn_id",
+        "voice_revision",
+        "audio"
+      ]
+    },
+    "TranscribeInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "expected_voice_revision": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "expected_voice_revision"
+      ]
+    },
+    "SpeechRequestInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "segment": {
+          "type": "string",
+          "enum": [
+            "opening",
+            "turn",
+            "closing"
+          ]
+        },
+        "turn_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "segment"
+      ]
+    },
+    "SpeechAsset": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "session_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "segment": {
+          "type": "string",
+          "enum": [
+            "opening",
+            "turn",
+            "closing"
+          ]
+        },
+        "turn_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "queued",
+            "generating",
+            "ready",
+            "failed",
+            "expired"
+          ]
+        },
+        "voice_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "provider": {
+          "type": "string",
+          "minLength": 1
+        },
+        "format": {
+          "type": "string",
+          "minLength": 1
+        },
+        "duration_ms": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "sha256": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "job_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "error_code": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "synthetic": {
+          "type": "boolean"
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updated_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "session_id",
+        "segment",
+        "turn_id",
+        "status",
+        "voice_id",
+        "provider",
+        "format",
+        "duration_ms",
+        "sha256",
+        "job_id",
+        "error_code",
+        "synthetic",
+        "created_at",
+        "updated_at"
       ]
     },
     "User": {

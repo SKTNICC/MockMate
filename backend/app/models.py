@@ -249,7 +249,7 @@ class Job(Base):
     __table_args__ = (
         UniqueConstraint("target_id", "kind", "input_revision", name="uq_job_target_kind_revision"),
         CheckConstraint(
-            "kind in ('extract','parse','match','plan','follow_up','interview_report')",
+            "kind in ('extract','parse','match','plan','follow_up','interview_report','audio_asr','audio_tts')",
             name="ck_job_kind",
         ),
         CheckConstraint(
@@ -422,6 +422,10 @@ class InterviewSession(Base):
         DateTime(timezone=True), nullable=False
     )
     consent_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    audio_processing_consented_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    audio_consent_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
     # 循环指针不加外键，由服务层事务内校验属于本场且符合阶段。
     current_turn_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(as_uuid=True), nullable=True)
     follow_up_job_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(as_uuid=True), nullable=True)
@@ -440,9 +444,14 @@ class InterviewSession(Base):
             "started_at",
             "id",
         ),
-        CheckConstraint("mode = 'text'", name="ck_interview_mode"),
+        CheckConstraint("mode in ('text','voice')", name="ck_interview_mode"),
         CheckConstraint("level in ('intern','junior')", name="ck_interview_level"),
         CheckConstraint("status in ('active','paused','ended')", name="ck_interview_status"),
+        CheckConstraint(
+            "(mode = 'text') or (audio_processing_consented_at is not null "
+            "and audio_consent_version is not null)",
+            name="ck_interview_audio_consent",
+        ),
         CheckConstraint(
             "phase in ('awaiting_answer','deciding_follow_up','closed')",
             name="ck_interview_phase",
@@ -535,10 +544,176 @@ class InterviewAnswer(Base):
         unique=True,
     )
     text: Mapped[str] = mapped_column(Text, nullable=False)
+    input_source: Mapped[str] = mapped_column(String(16), nullable=False, default="text")
+    audio_asset_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("audio_assets.id", ondelete="SET NULL"), nullable=True
+    )
+    transcript_revision: Mapped[int | None] = mapped_column(Integer, nullable=True)
     submitted_at: Mapped[datetime] = _created_at()
 
     __table_args__ = (
         CheckConstraint("char_length(text) between 1 and 4000", name="ck_interview_answer_len"),
+        CheckConstraint(
+            "input_source in ('text','asr','asr_corrected')", name="ck_interview_answer_source"
+        ),
+        CheckConstraint(
+            "(input_source = 'text') = (audio_asset_id is null and transcript_revision is null)",
+            name="ck_interview_answer_source_refs",
+        ),
+    )
+
+
+class VoiceDraft(Base):
+    __tablename__ = "voice_drafts"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    owner_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    session_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("interview_sessions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    turn_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("interview_turns.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+    )
+    voice_revision: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    active_take_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(as_uuid=True), nullable=True)
+    created_at: Mapped[datetime] = _created_at()
+    updated_at: Mapped[datetime] = _updated_at()
+
+    __table_args__ = (
+        CheckConstraint("voice_revision >= 0", name="ck_voice_draft_revision"),
+    )
+
+
+class AudioAsset(Base):
+    __tablename__ = "audio_assets"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    owner_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    session_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("interview_sessions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    turn_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("interview_turns.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    take_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    voice_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    byte_length: Mapped[int] = mapped_column(Integer, nullable=False)
+    duration_ms: Mapped[int] = mapped_column(Integer, nullable=False)
+    format: Mapped[str] = mapped_column(String(32), nullable=False)
+    storage_path: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="stored")
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = _created_at()
+
+    __table_args__ = (
+        UniqueConstraint("owner_id", "take_id", name="uq_audio_owner_take"),
+        UniqueConstraint("session_id", "turn_id", "voice_revision", name="uq_audio_turn_revision"),
+        CheckConstraint("voice_revision >= 1", name="ck_audio_revision"),
+        CheckConstraint("byte_length between 2 and 3840000", name="ck_audio_bytes"),
+        CheckConstraint("duration_ms between 1 and 120000", name="ck_audio_duration"),
+        CheckConstraint("format = 'pcm_s16le/16000/mono'", name="ck_audio_format"),
+        CheckConstraint("status in ('stored','expired')", name="ck_audio_status"),
+    )
+
+
+class AudioTranscript(Base):
+    __tablename__ = "audio_transcripts"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    audio_asset_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("audio_assets.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    text: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    provider: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    request_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = _created_at()
+    updated_at: Mapped[datetime] = _updated_at()
+
+    __table_args__ = (
+        UniqueConstraint("audio_asset_id", "revision", name="uq_transcript_asset_revision"),
+        CheckConstraint("revision >= 1", name="ck_transcript_revision"),
+        CheckConstraint("status in ('ready','empty','failed')", name="ck_transcript_status"),
+        CheckConstraint("char_length(text) <= 20000", name="ck_transcript_len"),
+    )
+
+
+class SpeechAsset(Base):
+    __tablename__ = "speech_assets"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    owner_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    session_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("interview_sessions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    segment: Mapped[str] = mapped_column(String(16), nullable=False)
+    segment_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    turn_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("interview_turns.id", ondelete="CASCADE"), nullable=True
+    )
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    voice_id: Mapped[str] = mapped_column(String(16), nullable=False)
+    provider: Mapped[str] = mapped_column(String(32), nullable=False)
+    format: Mapped[str] = mapped_column(String(32), nullable=False)
+    adapter_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="queued")
+    storage_path: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    job_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(as_uuid=True), nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    synthetic: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = _created_at()
+    updated_at: Mapped[datetime] = _updated_at()
+
+    __table_args__ = (
+        UniqueConstraint(
+            "session_id",
+            "segment_key",
+            "provider",
+            "voice_id",
+            "format",
+            "adapter_version",
+            "content_hash",
+            name="uq_speech_cache_key",
+        ),
+        CheckConstraint("segment in ('opening','turn','closing')", name="ck_speech_segment"),
+        CheckConstraint(
+            "status in ('queued','generating','ready','failed','expired')",
+            name="ck_speech_status",
+        ),
+        CheckConstraint(
+            "(segment = 'turn') = (turn_id is not null)", name="ck_speech_turn_group"
+        ),
     )
 
 

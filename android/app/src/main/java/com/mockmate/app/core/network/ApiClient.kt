@@ -6,6 +6,7 @@ import io.ktor.client.engine.HttpClientEngine
 import io.ktor.client.engine.okhttp.OkHttp
 import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
+import io.ktor.client.plugins.timeout
 import io.ktor.client.request.delete
 import io.ktor.client.request.forms.MultiPartFormDataContent
 import io.ktor.client.request.forms.formData
@@ -434,6 +435,109 @@ class MockMateApi(
         operationKey: String,
     ): InterviewReceiptDto =
         writeJson("/interviews/$sessionId/report/basic", "POST", request, operationKey)
+
+    // ---------------------------------------------------------------- M3 语音面试
+
+    suspend fun voiceConfig(): VoiceConfigDto = getJson("/voice/config")
+
+    suspend fun voiceDraft(sessionId: String, turnId: String): VoiceDraftDto =
+        getJson("/interviews/$sessionId/turns/$turnId/voice-draft")
+
+    suspend fun uploadVoiceAudio(
+        sessionId: String,
+        turnId: String,
+        takeId: String,
+        sessionRevision: Int,
+        expectedVoiceRevision: Int,
+        sha256: String,
+        format: String,
+        bytes: ByteArray,
+        operationKey: String,
+    ): VoiceUploadReceiptDto {
+        val response = try {
+            client.post(root + "/interviews/$sessionId/turns/$turnId/audio") {
+                authHeader()?.let { (name, value) -> header(name, value) }
+                header("Idempotency-Key", operationKey)
+                timeout {
+                    requestTimeoutMillis = 120_000
+                    socketTimeoutMillis = 120_000
+                }
+                setBody(
+                    MultiPartFormDataContent(
+                        formData {
+                            append("take_id", takeId)
+                            append("session_revision", sessionRevision.toString())
+                            append("expected_voice_revision", expectedVoiceRevision.toString())
+                            append("sha256", sha256)
+                            append("format", format)
+                            append(
+                                "file",
+                                bytes,
+                                Headers.build {
+                                    append(HttpHeaders.ContentType, "application/octet-stream")
+                                    append(HttpHeaders.ContentDisposition, "filename=\"answer.pcm\"")
+                                },
+                            )
+                        },
+                    ),
+                )
+            }
+        } catch (e: IOException) {
+            throw NetworkException("录音上传失败：网络不可达", e, requestSent = !beforeSendFailure(e))
+        }
+        ensureOk(response)
+        val text = try {
+            response.bodyAsText()
+        } catch (e: IOException) {
+            throw NetworkException("录音上传回执读取中断", e, requestSent = true)
+        }
+        return try {
+            json.decodeFromString<VoiceUploadReceiptDto>(text)
+        } catch (e: Exception) {
+            throw unreadableReceipt(response.status.value, e)
+        }
+    }
+
+    suspend fun createAudioTranscription(
+        assetId: String,
+        expectedVoiceRevision: Int,
+        operationKey: String,
+    ): JobDto =
+        writeJson(
+            "/audio-assets/$assetId/transcriptions",
+            "POST",
+            TranscribeRequest(expectedVoiceRevision),
+            operationKey,
+        )
+
+    suspend fun audioTranscript(assetId: String): VoiceTranscriptDto =
+        getJson("/audio-assets/$assetId/transcript")
+
+    suspend fun requestSpeech(
+        sessionId: String,
+        request: SpeechRequest,
+        operationKey: String,
+    ): SpeechAssetDto =
+        writeJson("/interviews/$sessionId/speech", "POST", request, operationKey)
+
+    suspend fun speechAsset(assetId: String): SpeechAssetDto =
+        getJson("/speech-assets/$assetId")
+
+    suspend fun speechContent(assetId: String): ByteArray {
+        try {
+            val response = client.get(root + "/speech-assets/$assetId/content") {
+                authHeader()?.let { (name, value) -> header(name, value) }
+                timeout {
+                    requestTimeoutMillis = 120_000
+                    socketTimeoutMillis = 120_000
+                }
+            }
+            ensureOk(response)
+            return response.body()
+        } catch (e: IOException) {
+            throw NetworkException("语音下载失败：网络不可达", e)
+        }
+    }
 
     // ---------------------------------------------------------------- 任务
 

@@ -6,11 +6,13 @@
   },
   "start_created": {
     "session_id": "00000000-0000-4000-8000-000000000900",
-    "revision": 1
+    "revision": 1,
+    "mode": "text"
   },
   "start_reopened": {
     "session_id": "00000000-0000-4000-8000-000000000900",
-    "revision": 1
+    "revision": 1,
+    "mode": "text"
   },
   "answer_request": {
     "revision": 1,
@@ -98,7 +100,10 @@
         "answer": {
           "answer_id": "00000000-0000-4000-8000-000000000920",
           "text": "我先检查相同键是否存在，再决定更新还是插入。",
-          "submitted_at": "2026-11-16T00:00:00Z"
+          "submitted_at": "2026-11-16T00:00:00Z",
+          "input_source": "text",
+          "audio_asset_id": null,
+          "transcript_revision": null
         }
       },
       {
@@ -180,7 +185,10 @@
         "answer": {
           "answer_id": "00000000-0000-4000-8000-000000000920",
           "text": "我先检查相同键是否存在，再决定更新还是插入。",
-          "submitted_at": "2026-11-16T00:00:00Z"
+          "submitted_at": "2026-11-16T00:00:00Z",
+          "input_source": "text",
+          "audio_asset_id": null,
+          "transcript_revision": null
         }
       }
     ],
@@ -252,7 +260,10 @@
         "answer": {
           "answer_id": "00000000-0000-4000-8000-000000000920",
           "text": "我先检查相同键是否存在，再决定更新还是插入。",
-          "submitted_at": "2026-11-16T00:00:00Z"
+          "submitted_at": "2026-11-16T00:00:00Z",
+          "input_source": "text",
+          "audio_asset_id": null,
+          "transcript_revision": null
         }
       },
       {
@@ -265,7 +276,10 @@
         "answer": {
           "answer_id": "00000000-0000-4000-8000-000000000921",
           "text": "这个判断依赖单线程访问；共享读写时需要外部同步。",
-          "submitted_at": "2026-11-16T00:00:00Z"
+          "submitted_at": "2026-11-16T00:00:00Z",
+          "input_source": "text",
+          "audio_asset_id": null,
+          "transcript_revision": null
         }
       }
     ],
@@ -293,6 +307,7 @@
         "preparation_id": "00000000-0000-4000-8000-000000000902",
         "role_id": "java-backend",
         "level": "intern",
+        "mode": "text",
         "status": "ended",
         "started_at": "2026-11-16T00:00:00Z",
         "ended_at": "2026-11-16T00:00:00Z",
@@ -391,7 +406,10 @@
             "answer": {
               "answer_id": "00000000-0000-4000-8000-000000000920",
               "text": "我先检查相同键是否存在，再决定更新还是插入。",
-              "submitted_at": "2026-11-16T00:00:00Z"
+              "submitted_at": "2026-11-16T00:00:00Z",
+              "input_source": "text",
+              "audio_asset_id": null,
+              "transcript_revision": null
             }
           },
           {
@@ -404,7 +422,10 @@
             "answer": {
               "answer_id": "00000000-0000-4000-8000-000000000921",
               "text": "这个判断依赖单线程访问；共享读写时需要外部同步。",
-              "submitted_at": "2026-11-16T00:00:00Z"
+              "submitted_at": "2026-11-16T00:00:00Z",
+              "input_source": "text",
+              "audio_asset_id": null,
+              "transcript_revision": null
             }
           }
         ],
@@ -551,7 +572,10 @@
             "answer": {
               "answer_id": "00000000-0000-4000-8000-000000000920",
               "text": "我先检查相同键是否存在，再决定更新还是插入。",
-              "submitted_at": "2026-11-16T00:00:00Z"
+              "submitted_at": "2026-11-16T00:00:00Z",
+              "input_source": "text",
+              "audio_asset_id": null,
+              "transcript_revision": null
             }
           },
           {
@@ -564,7 +588,10 @@
             "answer": {
               "answer_id": "00000000-0000-4000-8000-000000000921",
               "text": "这个判断依赖单线程访问；共享读写时需要外部同步。",
-              "submitted_at": "2026-11-16T00:00:00Z"
+              "submitted_at": "2026-11-16T00:00:00Z",
+              "input_source": "text",
+              "audio_asset_id": null,
+              "transcript_revision": null
             }
           }
         ],
@@ -693,7 +720,10 @@
             "answer": {
               "answer_id": "00000000-0000-4000-8000-000000000920",
               "text": "我先检查相同键是否存在，再决定更新还是插入。",
-              "submitted_at": "2026-11-16T00:00:00Z"
+              "submitted_at": "2026-11-16T00:00:00Z",
+              "input_source": "text",
+              "audio_asset_id": null,
+              "transcript_revision": null
             }
           },
           {
@@ -706,7 +736,10 @@
             "answer": {
               "answer_id": "00000000-0000-4000-8000-000000000921",
               "text": "这个判断依赖单线程访问；共享读写时需要外部同步。",
-              "submitted_at": "2026-11-16T00:00:00Z"
+              "submitted_at": "2026-11-16T00:00:00Z",
+              "input_source": "text",
+              "audio_asset_id": null,
+              "transcript_revision": null
             }
           }
         ],

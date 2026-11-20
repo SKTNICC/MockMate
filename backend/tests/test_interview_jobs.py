@@ -479,8 +479,9 @@ def test_score_input_carries_each_turn_prompt_and_hash_is_versioned(
     assert old_version != first
 
 
+@pytest.mark.parametrize("legacy_version", ["m2-score-v1", "m2-score-v2"])
 def test_legacy_score_slot_is_not_reused_after_prompt_version_change(
-    client: TestClient, worker, monkeypatch, db
+    client: TestClient, worker, monkeypatch, db, legacy_version
 ) -> None:
     _, token = issue_token(client)
     _prep, plan = create_confirmed_plan(client, token, worker, count=2)
@@ -494,18 +495,60 @@ def test_legacy_score_slot_is_not_reused_after_prompt_version_change(
             InterviewQuestion.position == 1,
         )
     ).one()
-    db.add(
-        JobWorkItem(
-            job_id=report_job_id,
-            slot_key=str(q1.id),
-            payload={"dimensions": []},
-            content_hash="legacy-m2-score-v1-hash",
-            validated=True,
-        )
+    turns = db.scalars(
+        select(InterviewTurn).where(InterviewTurn.question_id == q1.id)
+    ).all()
+    answers = {
+        row.turn_id: row
+        for row in db.scalars(
+            select(InterviewAnswer).where(
+                InterviewAnswer.turn_id.in_([turn.id for turn in turns])
+            )
+        ).all()
+    }
+    base = TestProvider()
+    raw_score = base.score_interview_question(
+        question={"id": str(q1.id)},
+        answers=[
+            {
+                "answer_id": str(answers[turn.id].id),
+                "kind": turn.kind,
+                "prompt": turn.prompt,
+                "text": answers[turn.id].text,
+            }
+            for turn in interviews_service._ordered_question_turns(turns)
+            if turn.id in answers
+        ],
+        dimensions=interviews_service._expected_dimensions(q1),
     )
+    dimensions = interviews_service.validate_question_score(q1, turns, answers, raw_score)
+    with monkeypatch.context() as legacy:
+        legacy.setattr(interviews_service, "SCORE_PROMPT_VERSION", legacy_version)
+        legacy_hash = interviews_service.question_slot_hash(q1, turns, answers)
+    cached = JobWorkItem(
+        job_id=report_job_id,
+        slot_key=str(q1.id),
+        payload={
+            "question_id": str(q1.id),
+            "content_hash": legacy_hash,
+            "dimensions": [dim.model_dump(mode="json") for dim in dimensions],
+        },
+        content_hash=legacy_hash,
+        validated=True,
+    )
+    # 缓存正文与引文本身合法，后续重算必须由提示词版本变化触发。
+    assert interviews_service.validate_cached_question_score(
+        cached, q1, turns, answers, legacy_hash
+    )
+    current_hash = interviews_service.question_slot_hash(q1, turns, answers)
+    assert legacy_hash != current_hash
+    with pytest.raises(interviews_service.CachedScoreSlotError):
+        interviews_service.validate_cached_question_score(
+            cached, q1, turns, answers, current_hash
+        )
+    db.add(cached)
     db.commit()
 
-    base = TestProvider()
     capturing = StubProvider(
         score=lambda *, question, answers, dimensions: base.score_interview_question(
             question=question, answers=answers, dimensions=dimensions
@@ -520,7 +563,8 @@ def test_legacy_score_slot_is_not_reused_after_prompt_version_change(
             JobWorkItem.job_id == report_job_id, JobWorkItem.slot_key == str(q1.id)
         )
     ).one()
-    assert item.content_hash != "legacy-m2-score-v1-hash"
+    db.refresh(item)
+    assert item.content_hash == current_hash
     report = client.get(f"/v1/interviews/{session_id}/report", headers=auth(token))
     assert report.status_code == 200, report.text
     assert report.json()["quality"] == "full"

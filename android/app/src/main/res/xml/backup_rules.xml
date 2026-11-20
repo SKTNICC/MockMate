@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<full-backup-content>
+    <!-- 私有录音、未提交音频与播放缓存不进入系统备份。 -->
+    <exclude domain="file" path="voice" />
+    <exclude domain="cache" path="voice-speech" />
+</full-backup-content>

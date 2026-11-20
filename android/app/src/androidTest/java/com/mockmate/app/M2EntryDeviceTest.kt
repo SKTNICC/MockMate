@@ -55,7 +55,7 @@ class M2EntryDeviceTest {
                 .fetchSemanticsNodes().isNotEmpty()
         }
         composeRule.onNodeWithText("面试记录").assertIsDisplayed()
-        composeRule.onNodeWithText("还没有面试记录。确认计划后可从计划页开始文字面试。")
+        composeRule.onNodeWithText("还没有面试记录。确认计划后可从计划页开始语音或文字面试。")
             .assertIsDisplayed()
     }
 }

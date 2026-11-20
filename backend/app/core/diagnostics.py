@@ -468,6 +468,8 @@ SUPPORTED_USAGE_FIELDS: tuple[str, ...] = (
     "total_tokens",
     "prompt_cache_hit_tokens",
     "prompt_cache_miss_tokens",
+    "audio_seconds",
+    "billed_characters",
 )
 
 EXTERNAL_REQUEST_ID_RE = re.compile(r"^[a-zA-Z0-9._:-]{1,64}$")

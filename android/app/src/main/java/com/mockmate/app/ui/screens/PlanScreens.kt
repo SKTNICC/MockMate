@@ -338,6 +338,7 @@ object PlanScreenPolicy {
 fun PlanHubScreen(vm: AppViewModel, state: AppState, preparationId: String) {
     var showConsent by rememberSaveable { mutableStateOf(false) }
     var showInterviewConsent by rememberSaveable { mutableStateOf(false) }
+    var showVoiceConsent by rememberSaveable { mutableStateOf(false) }
     val prep = state.preparation
     val plan = state.plan
     val materialsReady = prep != null && prep.resume_snapshot_id != null && prep.jd_snapshot_id != null
@@ -558,16 +559,20 @@ fun PlanHubScreen(vm: AppViewModel, state: AppState, preparationId: String) {
                 } else {
                     InfoCard(
                         title = "已保存",
-                        subtitle = "该计划已确认，可开始一场正式文字面试",
+                        subtitle = "该计划已确认，可开始一场正式模拟面试",
                         accentColor = MaterialTheme.colorScheme.secondary,
                         headerTrailing = { StatusChip("第 4 步已解锁", MaterialTheme.colorScheme.secondary) },
                     ) {
                         val existing = state.interviewForPlan
+                        val voiceAvailable = state.voiceConfig?.available == true
                         Text(
                             if (existing == null) {
-                                "本场会把你的回答及必要上下文发送给配置的 AI，用于追问判定与面后评分；需要在本场单独确认。"
+                                "语音场会先把题干播报给你，录音最多 120 秒；停止后核对转写再提交。" +
+                                    "录音会发送给配置的语音服务转写，文字追问与评分沿用原服务。"
                             } else {
-                                "本计划已有一场面试：${existing.status} · 已答 ${existing.answered_main_count}/${existing.main_question_count}。"
+                                "本计划已有一场${if (existing.mode == "voice") "语音" else "文字"}面试：" +
+                                    "${existing.status} · 已答 ${existing.answered_main_count}/${existing.main_question_count}。" +
+                                    "同计划只保留原场，不会静默复制或转换模式。"
                             },
                             style = MaterialTheme.typography.bodySmall,
                         )
@@ -581,18 +586,44 @@ fun PlanHubScreen(vm: AppViewModel, state: AppState, preparationId: String) {
                         }
                         Spacer(Modifier.height(8.dp))
                         when {
-                            existing == null -> PrimaryAction(
-                                text = "开始文字面试",
-                                enabled = !state.loading,
-                                onClick = { showInterviewConsent = true },
-                            )
+                            existing == null -> {
+                                if (voiceAvailable) {
+                                    PrimaryAction(
+                                        text = "开始语音面试",
+                                        enabled = !state.loading,
+                                        onClick = { showVoiceConsent = true },
+                                    )
+                                    Spacer(Modifier.height(6.dp))
+                                }
+                                SecondaryAction(
+                                    text = if (voiceAvailable) "改用文字面试" else "开始文字面试",
+                                    enabled = !state.loading,
+                                    onClick = { showInterviewConsent = true },
+                                )
+                                if (!voiceAvailable) {
+                                    Spacer(Modifier.height(4.dp))
+                                    Text(
+                                        "语音服务未配置或不可用；文字面试仍可正常使用。",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                            }
                             existing.status == "ended" -> PrimaryAction(
                                 text = "查看本场报告与问答",
                                 onClick = { vm.openInterviewReport(existing.session_id) },
                             )
                             else -> PrimaryAction(
-                                text = "继续文字面试",
+                                text = "继续${if (existing.mode == "voice") "语音" else "文字"}面试",
                                 onClick = { vm.openInterview(existing.session_id) },
+                            )
+                        }
+                        if (existing != null && existing.mode == "text" && voiceAvailable) {
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                "如需要语音场，请先基于当前材料重新制定并确认一个新计划；不会复制本场。",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
                         Spacer(Modifier.height(6.dp))
@@ -634,9 +665,25 @@ fun PlanHubScreen(vm: AppViewModel, state: AppState, preparationId: String) {
             confirmLabel = "同意并开始",
             onConfirm = {
                 showInterviewConsent = false
-                vm.startInterviewForPlan(preparationId, plan)
+                vm.startInterviewForPlan(preparationId, plan, mode = "text")
             },
             onDismiss = { showInterviewConsent = false },
+        )
+    }
+
+    if (showVoiceConsent && plan != null) {
+        ConsentDialog(
+            title = "确认开始本场语音面试？",
+            body = "录音会发送给配置的语音服务做整段转写；题干由语音服务合成后播放。" +
+                "停止录音后先显示原始转写，你核对并确认提交后才进入原追问与评分流程。" +
+                "录音最多 120 秒，播题和识别等待不计入作答时限；报告不按口音、音色或情绪评分。" +
+                "音频外发需要本场单独同意。",
+            confirmLabel = "同意音频处理并开始",
+            onConfirm = {
+                showVoiceConsent = false
+                vm.startInterviewForPlan(preparationId, plan, mode = "voice")
+            },
+            onDismiss = { showVoiceConsent = false },
         )
     }
 }

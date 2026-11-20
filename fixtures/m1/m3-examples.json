@@ -1,0 +1,431 @@
+{
+  "test_only": true,
+  "voice_config": {
+    "available": true,
+    "max_answer_seconds": 120,
+    "format": "pcm_s16le/16000/mono",
+    "tts_voice_id": "stella",
+    "speech_provider": "deepseek"
+  },
+  "voice_start_request": {
+    "plan_revision": 2,
+    "external_processing_consent": true,
+    "mode": "voice",
+    "audio_processing_consent": true
+  },
+  "voice_start_created": {
+    "session_id": "00000000-0000-4000-8000-000000000950",
+    "revision": 1,
+    "mode": "voice"
+  },
+  "voice_start_reopened_text": {
+    "session_id": "00000000-0000-4000-8000-000000000950",
+    "revision": 7,
+    "mode": "text"
+  },
+  "voice_upload_request": {
+    "take_id": "00000000-0000-4000-8000-000000000964",
+    "session_revision": 3,
+    "expected_voice_revision": 0,
+    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "format": "pcm_s16le/16000/mono"
+  },
+  "voice_upload_receipt": {
+    "session_id": "00000000-0000-4000-8000-000000000950",
+    "turn_id": "00000000-0000-4000-8000-000000000954",
+    "voice_revision": 1,
+    "audio": {
+      "id": "00000000-0000-4000-8000-000000000960",
+      "session_id": "00000000-0000-4000-8000-000000000950",
+      "turn_id": "00000000-0000-4000-8000-000000000954",
+      "take_id": "00000000-0000-4000-8000-000000000964",
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "byte_length": 64000,
+      "duration_ms": 2000,
+      "format": "pcm_s16le/16000/mono",
+      "status": "stored",
+      "expires_at": "2026-11-22T00:00:00Z",
+      "created_at": "2026-11-16T00:00:00Z"
+    }
+  },
+  "voice_draft_active": {
+    "session_id": "00000000-0000-4000-8000-000000000950",
+    "turn_id": "00000000-0000-4000-8000-000000000954",
+    "voice_revision": 1,
+    "active_audio": {
+      "id": "00000000-0000-4000-8000-000000000960",
+      "session_id": "00000000-0000-4000-8000-000000000950",
+      "turn_id": "00000000-0000-4000-8000-000000000954",
+      "take_id": "00000000-0000-4000-8000-000000000964",
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "byte_length": 64000,
+      "duration_ms": 2000,
+      "format": "pcm_s16le/16000/mono",
+      "status": "stored",
+      "expires_at": "2026-11-22T00:00:00Z",
+      "created_at": "2026-11-16T00:00:00Z"
+    },
+    "transcript": {
+      "audio_asset_id": "00000000-0000-4000-8000-000000000960",
+      "revision": 1,
+      "status": "ready",
+      "text": "我先检查相同键是否存在，再决定更新还是插入。",
+      "provider": "deepseek",
+      "request_id": "req_synthetic_asr",
+      "error_code": null,
+      "updated_at": "2026-11-16T00:00:00Z"
+    },
+    "asr_job": {
+      "id": "00000000-0000-4000-8000-000000000962",
+      "state": "succeeded",
+      "attempt": 1,
+      "retryable": false,
+      "error_code": null
+    }
+  },
+  "voice_draft_processing": {
+    "session_id": "00000000-0000-4000-8000-000000000950",
+    "turn_id": "00000000-0000-4000-8000-000000000954",
+    "voice_revision": 1,
+    "active_audio": {
+      "id": "00000000-0000-4000-8000-000000000960",
+      "session_id": "00000000-0000-4000-8000-000000000950",
+      "turn_id": "00000000-0000-4000-8000-000000000954",
+      "take_id": "00000000-0000-4000-8000-000000000964",
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "byte_length": 64000,
+      "duration_ms": 2000,
+      "format": "pcm_s16le/16000/mono",
+      "status": "stored",
+      "expires_at": "2026-11-22T00:00:00Z",
+      "created_at": "2026-11-16T00:00:00Z"
+    },
+    "transcript": null,
+    "asr_job": {
+      "id": "00000000-0000-4000-8000-000000000962",
+      "state": "queued",
+      "attempt": 1,
+      "retryable": false,
+      "error_code": null
+    }
+  },
+  "voice_draft_empty": {
+    "session_id": "00000000-0000-4000-8000-000000000950",
+    "turn_id": "00000000-0000-4000-8000-000000000954",
+    "voice_revision": 2,
+    "active_audio": {
+      "id": "00000000-0000-4000-8000-000000000965",
+      "session_id": "00000000-0000-4000-8000-000000000950",
+      "turn_id": "00000000-0000-4000-8000-000000000954",
+      "take_id": "00000000-0000-4000-8000-000000000966",
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "byte_length": 64000,
+      "duration_ms": 2000,
+      "format": "pcm_s16le/16000/mono",
+      "status": "stored",
+      "expires_at": "2026-11-22T00:00:00Z",
+      "created_at": "2026-11-16T00:00:00Z"
+    },
+    "transcript": {
+      "audio_asset_id": "00000000-0000-4000-8000-000000000960",
+      "revision": 1,
+      "status": "empty",
+      "text": "",
+      "provider": "deepseek",
+      "request_id": "req_synthetic_empty",
+      "error_code": null,
+      "updated_at": "2026-11-16T00:00:00Z"
+    },
+    "asr_job": {
+      "id": "00000000-0000-4000-8000-000000000962",
+      "state": "succeeded",
+      "attempt": 1,
+      "retryable": false,
+      "error_code": null
+    }
+  },
+  "voice_draft_failed": {
+    "session_id": "00000000-0000-4000-8000-000000000950",
+    "turn_id": "00000000-0000-4000-8000-000000000954",
+    "voice_revision": 2,
+    "active_audio": {
+      "id": "00000000-0000-4000-8000-000000000965",
+      "session_id": "00000000-0000-4000-8000-000000000950",
+      "turn_id": "00000000-0000-4000-8000-000000000954",
+      "take_id": "00000000-0000-4000-8000-000000000966",
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "byte_length": 64000,
+      "duration_ms": 2000,
+      "format": "pcm_s16le/16000/mono",
+      "status": "stored",
+      "expires_at": "2026-11-22T00:00:00Z",
+      "created_at": "2026-11-16T00:00:00Z"
+    },
+    "transcript": {
+      "audio_asset_id": "00000000-0000-4000-8000-000000000960",
+      "revision": 1,
+      "status": "failed",
+      "text": null,
+      "provider": "deepseek",
+      "request_id": "req_synthetic_failed",
+      "error_code": "AI_TIMEOUT",
+      "updated_at": "2026-11-16T00:00:00Z"
+    },
+    "asr_job": {
+      "id": "00000000-0000-4000-8000-000000000962",
+      "state": "failed",
+      "attempt": 2,
+      "retryable": false,
+      "error_code": "AI_TIMEOUT"
+    }
+  },
+  "transcript_processing": {
+    "audio_asset_id": "00000000-0000-4000-8000-000000000960",
+    "revision": 1,
+    "status": "processing",
+    "text": null,
+    "provider": null,
+    "request_id": null,
+    "error_code": null,
+    "updated_at": "2026-11-16T00:00:00Z"
+  },
+  "transcript_ready": {
+    "audio_asset_id": "00000000-0000-4000-8000-000000000960",
+    "revision": 1,
+    "status": "ready",
+    "text": "我先检查相同键是否存在，再决定更新还是插入。",
+    "provider": "deepseek",
+    "request_id": "req_synthetic_asr",
+    "error_code": null,
+    "updated_at": "2026-11-16T00:00:00Z"
+  },
+  "transcript_empty": {
+    "audio_asset_id": "00000000-0000-4000-8000-000000000960",
+    "revision": 1,
+    "status": "empty",
+    "text": "",
+    "provider": "deepseek",
+    "request_id": "req_synthetic_empty",
+    "error_code": null,
+    "updated_at": "2026-11-16T00:00:00Z"
+  },
+  "transcript_failed": {
+    "audio_asset_id": "00000000-0000-4000-8000-000000000960",
+    "revision": 1,
+    "status": "failed",
+    "text": null,
+    "provider": "deepseek",
+    "request_id": "req_synthetic_failed",
+    "error_code": "AI_TIMEOUT",
+    "updated_at": "2026-11-16T00:00:00Z"
+  },
+  "answer_request_asr": {
+    "revision": 3,
+    "turn_id": "00000000-0000-4000-8000-000000000954",
+    "text": "我先检查相同键是否存在，再决定更新还是插入。",
+    "input_source": "asr",
+    "audio_asset_id": "00000000-0000-4000-8000-000000000960",
+    "transcript_revision": 1
+  },
+  "answer_request_asr_corrected": {
+    "revision": 3,
+    "turn_id": "00000000-0000-4000-8000-000000000954",
+    "text": "我先检查相同键是否存在，再决定更新、插入还是报错。",
+    "input_source": "asr_corrected",
+    "audio_asset_id": "00000000-0000-4000-8000-000000000960",
+    "transcript_revision": 1
+  },
+  "answer_request_voice_text_fallback": {
+    "revision": 3,
+    "turn_id": "00000000-0000-4000-8000-000000000954",
+    "text": "改用文字回答：先检查键是否存在，再决定更新还是插入。",
+    "input_source": "text"
+  },
+  "voice_detail_active": {
+    "session_id": "00000000-0000-4000-8000-000000000950",
+    "plan_id": "00000000-0000-4000-8000-000000000951",
+    "preparation_id": "00000000-0000-4000-8000-000000000952",
+    "role_id": "java-backend",
+    "level": "intern",
+    "mode": "voice",
+    "status": "active",
+    "phase": "awaiting_answer",
+    "revision": 4,
+    "started_at": "2026-11-16T00:00:00Z",
+    "ended_at": null,
+    "end_reason": null,
+    "plan_summary": {
+      "plan_id": "00000000-0000-4000-8000-000000000951",
+      "main_question_count": 6,
+      "source_counts": {
+        "bank": 3,
+        "generated": 3
+      },
+      "material_versions": [
+        {
+          "kind": "resume",
+          "snapshot_id": "00000000-0000-4000-8000-000000000001",
+          "material_id": "00000000-0000-4000-8000-000000000101",
+          "title": "虚构学生简历（无工作经历）",
+          "source_revision": 1
+        },
+        {
+          "kind": "jd",
+          "snapshot_id": "00000000-0000-4000-8000-000000000002",
+          "material_id": "00000000-0000-4000-8000-000000000102",
+          "title": "内置JD开发样例",
+          "source_revision": 1
+        }
+      ],
+      "sample_only": true
+    },
+    "opening_text": "本次语音模拟面试共 6 道主问题。回答问题前会先播报题干，录音最多 120 秒。",
+    "closing_text": null,
+    "current_main_position": 1,
+    "answered_main_count": 1,
+    "skipped_main_count": 0,
+    "current_turn": {
+      "turn_id": "00000000-0000-4000-8000-000000000955",
+      "question_id": "00000000-0000-4000-8000-000000000953",
+      "position": 1,
+      "kind": "follow_up",
+      "prompt": "你提到先检查相同键是否存在，能进一步说明判断依据和适用边界吗？",
+      "status": "pending",
+      "answer": null
+    },
+    "allowed_actions": [
+      "pause",
+      "finish",
+      "answer",
+      "skip"
+    ],
+    "transcript": [
+      {
+        "turn_id": "00000000-0000-4000-8000-000000000954",
+        "question_id": "00000000-0000-4000-8000-000000000953",
+        "position": 1,
+        "kind": "main",
+        "prompt": "图书查询接口使用 HashMap 时，怎样区分不存在的键与键对应空值？",
+        "status": "answered",
+        "answer": {
+          "answer_id": "00000000-0000-4000-8000-000000000956",
+          "text": "我先检查相同键是否存在，再决定更新还是插入。",
+          "submitted_at": "2026-11-16T00:00:00Z",
+          "input_source": "asr_corrected",
+          "audio_asset_id": "00000000-0000-4000-8000-000000000960",
+          "transcript_revision": 1
+        }
+      },
+      {
+        "turn_id": "00000000-0000-4000-8000-000000000955",
+        "question_id": "00000000-0000-4000-8000-000000000953",
+        "position": 1,
+        "kind": "follow_up",
+        "prompt": "你提到先检查相同键是否存在，能进一步说明判断依据和适用边界吗？",
+        "status": "pending",
+        "answer": null
+      }
+    ],
+    "follow_up_job": {
+      "id": "00000000-0000-4000-8000-000000000962",
+      "state": "succeeded",
+      "attempt": 1,
+      "retryable": false,
+      "error_code": null
+    },
+    "report_job": null,
+    "report_state": "not_requested"
+  },
+  "voice_history": {
+    "items": [
+      {
+        "session_id": "00000000-0000-4000-8000-000000000950",
+        "plan_id": "00000000-0000-4000-8000-000000000951",
+        "preparation_id": "00000000-0000-4000-8000-000000000952",
+        "role_id": "java-backend",
+        "level": "intern",
+        "mode": "voice",
+        "status": "active",
+        "started_at": "2026-11-16T00:00:00Z",
+        "ended_at": null,
+        "end_reason": null,
+        "main_question_count": 6,
+        "answered_main_count": 1,
+        "report_state": "not_requested"
+      }
+    ],
+    "next_cursor": null
+  },
+  "speech_request_turn": {
+    "segment": "turn",
+    "turn_id": "00000000-0000-4000-8000-000000000954"
+  },
+  "speech_asset_ready": {
+    "id": "00000000-0000-4000-8000-000000000961",
+    "session_id": "00000000-0000-4000-8000-000000000950",
+    "segment": "turn",
+    "turn_id": "00000000-0000-4000-8000-000000000954",
+    "voice_id": "stella",
+    "provider": "deepseek",
+    "format": "pcm_s16le/24000/mono",
+    "created_at": "2026-11-16T00:00:00Z",
+    "updated_at": "2026-11-16T00:00:00Z",
+    "synthetic": false,
+    "status": "ready",
+    "duration_ms": 3200,
+    "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "job_id": "00000000-0000-4000-8000-000000000963",
+    "error_code": null
+  },
+  "speech_asset_queued": {
+    "id": "00000000-0000-4000-8000-000000000961",
+    "session_id": "00000000-0000-4000-8000-000000000950",
+    "segment": "turn",
+    "turn_id": "00000000-0000-4000-8000-000000000954",
+    "voice_id": "stella",
+    "provider": "deepseek",
+    "format": "pcm_s16le/24000/mono",
+    "created_at": "2026-11-16T00:00:00Z",
+    "updated_at": "2026-11-16T00:00:00Z",
+    "synthetic": false,
+    "status": "queued",
+    "duration_ms": null,
+    "sha256": null,
+    "job_id": "00000000-0000-4000-8000-000000000963",
+    "error_code": null
+  },
+  "speech_asset_failed": {
+    "id": "00000000-0000-4000-8000-000000000961",
+    "session_id": "00000000-0000-4000-8000-000000000950",
+    "segment": "turn",
+    "turn_id": "00000000-0000-4000-8000-000000000954",
+    "voice_id": "stella",
+    "provider": "deepseek",
+    "format": "pcm_s16le/24000/mono",
+    "created_at": "2026-11-16T00:00:00Z",
+    "updated_at": "2026-11-16T00:00:00Z",
+    "synthetic": false,
+    "status": "failed",
+    "duration_ms": null,
+    "sha256": null,
+    "job_id": "00000000-0000-4000-8000-000000000963",
+    "error_code": "AI_TIMEOUT"
+  },
+  "speech_asset_synthetic": {
+    "id": "00000000-0000-4000-8000-000000000961",
+    "session_id": "00000000-0000-4000-8000-000000000950",
+    "segment": "turn",
+    "turn_id": "00000000-0000-4000-8000-000000000954",
+    "voice_id": "stella",
+    "provider": "test",
+    "format": "pcm_s16le/24000/mono",
+    "created_at": "2026-11-16T00:00:00Z",
+    "updated_at": "2026-11-16T00:00:00Z",
+    "synthetic": true,
+    "status": "ready",
+    "duration_ms": 3200,
+    "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "job_id": "00000000-0000-4000-8000-000000000963",
+    "error_code": null
+  }
+}

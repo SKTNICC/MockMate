@@ -41,6 +41,17 @@ class Settings(BaseSettings):
     max_job_attempts: int = Field(default=2, alias="MAX_JOB_ATTEMPTS")
     allow_test_fixtures: bool = Field(default=False, alias="ALLOW_TEST_FIXTURES")
 
+    # M3 语音：只在服务端保存供应商 Key；Android 不直连供应商。
+    speech_provider: str = Field(default="disabled", alias="SPEECH_PROVIDER")
+    speech_base_url: str = Field(default="https://api.deepseek.com", alias="SPEECH_BASE_URL")
+    speech_api_key: str = Field(default="", alias="SPEECH_API_KEY")
+    tts_voice_id: str = Field(default="stella", alias="TTS_VOICE_ID")
+    speech_timeout_seconds: int = Field(default=60, alias="SPEECH_TIMEOUT_SECONDS")
+    voice_max_answer_seconds: int = Field(default=120, alias="VOICE_MAX_ANSWER_SECONDS")
+    voice_sample_rate: int = Field(default=16000, alias="VOICE_SAMPLE_RATE")
+    audio_retention_hours: int = Field(default=24, alias="AUDIO_RETENTION_HOURS")
+    speech_adapter_version: str = Field(default="deepseek-speech-v1", alias="SPEECH_ADAPTER_VERSION")
+
     # 开发样板岗位开关。默认关闭；开启时角色带 sample_only=true，界面必须醒目标注。
     sample_catalog_enabled: bool = Field(default=False, alias="M1_SAMPLE_CATALOG")
     login_rate_limit_attempts: int = Field(default=10, alias="LOGIN_RATE_LIMIT_ATTEMPTS")
@@ -68,6 +79,23 @@ class Settings(BaseSettings):
     def is_production(self) -> bool:
         return self.app_env.strip().lower() == "production"
 
+    @property
+    def speech_api_key_value(self) -> str:
+        """语音 Key 只在服务端解析：明确 deepseek 时可按同一供应商继承文字 Key。"""
+        if self.speech_api_key:
+            return self.speech_api_key
+        if self.speech_provider == "deepseek" and self.ai_provider == "deepseek":
+            return self.ai_api_key
+        return ""
+
+    @property
+    def speech_available(self) -> bool:
+        if self.speech_provider == "disabled":
+            return False
+        if self.speech_provider == "deepseek":
+            return bool(self.speech_api_key_value)
+        return self.speech_provider == "test" and self.allow_test_fixtures and not self.is_production
+
     def validate_startup(self) -> None:
         problems: list[str] = []
         if not self.database_url:
@@ -80,6 +108,22 @@ class Settings(BaseSettings):
             problems.append("AI_PROVIDER=deepseek 但 AI_API_KEY/AI_MODEL 不完整")
         if self.ai_provider == "test" and not self.allow_test_fixtures:
             problems.append("AI_PROVIDER=test 必须同时显式设置 ALLOW_TEST_FIXTURES=true")
+        if self.speech_provider not in {"disabled", "deepseek", "test"}:
+            problems.append(f"SPEECH_PROVIDER 取值非法: {self.speech_provider}")
+        if self.speech_provider == "deepseek" and not self.speech_api_key_value:
+            problems.append("SPEECH_PROVIDER=deepseek 但 SPEECH_API_KEY/AI_API_KEY 均未配置")
+        if self.speech_provider == "test" and not self.allow_test_fixtures:
+            problems.append("SPEECH_PROVIDER=test 必须同时显式设置 ALLOW_TEST_FIXTURES=true")
+        if self.tts_voice_id not in {"stella", "tide"}:
+            problems.append(f"TTS_VOICE_ID 不是已核对音色: {self.tts_voice_id}")
+        if not (1 <= self.voice_max_answer_seconds <= 120):
+            problems.append("VOICE_MAX_ANSWER_SECONDS 必须在 1–120 之间")
+        if self.voice_sample_rate != 16000:
+            problems.append("VOICE_SAMPLE_RATE 当前只支持 16000")
+        if self.audio_retention_hours < 1:
+            problems.append("AUDIO_RETENTION_HOURS 必须为正")
+        if self.is_production and self.speech_provider == "test":
+            problems.append("生产环境禁止 SPEECH_PROVIDER=test")
         if self.is_production and self.allow_test_fixtures:
             problems.append("生产环境禁止 ALLOW_TEST_FIXTURES=true")
         if self.is_production and self.sample_catalog_enabled:
